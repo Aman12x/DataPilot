@@ -20,6 +20,7 @@ def compute_funnel(
     variant_col: str,
     steps: list[str] | None = None,
     segment_filter: dict[str, str] | None = None,
+    alpha: float = 0.05,
 ) -> dict[str, Any]:
     """
     Compute per-step conditional conversion rates for control vs treatment.
@@ -36,6 +37,7 @@ def compute_funnel(
                         ['impression', 'click', 'install', 'd1_retain'].
         segment_filter: Optional dict of {col: value} to pre-filter rows
                         (e.g. {'platform': 'android', 'user_segment': 'new'}).
+        alpha:          Significance level for per-step z-test (default 0.05).
 
     Returns:
         {
@@ -127,7 +129,7 @@ def compute_funnel(
             z_stat  = (trt_rate - ctrl_rate) / se
             p_value = float(2 * (1 - stats.norm.cdf(abs(z_stat))))
 
-        significant = p_value < 0.05
+        significant = p_value < alpha
 
         step_results.append({
             "step":           step,
