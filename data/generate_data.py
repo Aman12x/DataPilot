@@ -110,14 +110,21 @@ def build_users() -> pd.DataFrame:
 
 
 def assign_experiment(users: pd.DataFrame) -> pd.DataFrame:
-    """50/50 random assignment. Returns experiment table."""
+    """50/50 random assignment. Returns experiment table with one row per (user, week).
+
+    Two rows per user (week=1 and week=2) so that novelty detection can compute
+    the ATE separately for each experiment week by joining with the events table.
+    """
     variant = rng.choice(["control", "treatment"], size=N_USERS, p=[0.5, 0.5])
-    return pd.DataFrame({
+    base = pd.DataFrame({
         "user_id":         users["user_id"],
         "variant":         variant,
         "assignment_date": EXP_START_DATE,
-        "week":            1,   # will be updated per-row when building events
     })
+    # Duplicate rows for week 1 and week 2
+    wk1 = base.copy(); wk1["week"] = 1
+    wk2 = base.copy(); wk2["week"] = 2
+    return pd.concat([wk1, wk2], ignore_index=True)
 
 
 def is_affected(platform: str, segment: str, variant: str) -> bool:
@@ -161,43 +168,45 @@ def build_events(users: pd.DataFrame, experiment: pd.DataFrame) -> pd.DataFrame:
 
             dau_flag = int(rng.random() < dau_p)
 
-            if dau_flag == 0:
-                continue   # only log active days
+            # Notifications (only meaningful on active days)
+            notif_received = 0
+            notif_opened   = 0
+            notif_optout   = 0
+            sessions       = 0
+            d7_retained    = 0
 
-            # Notifications
-            notif_received = int(rng.poisson(BASE_NOTIF_RECEIVED))
-            open_rate = BASE_NOTIF_OPEN_RATE
-            optout_p  = NOTIF_OPTOUT_RATE
-            if affected and in_exp:
-                open_rate = BASE_NOTIF_OPEN_RATE * BUG_NOTIF_OPEN_DROP
-                optout_p  = NOTIF_OPTOUT_RATE * BUG_OPTOUT_MULTIPLIER
-            notif_opened = int(rng.binomial(notif_received, open_rate))
-            notif_optout = int(rng.random() < optout_p)
+            if dau_flag == 1:
+                open_rate = BASE_NOTIF_OPEN_RATE
+                optout_p  = NOTIF_OPTOUT_RATE
+                if affected and in_exp:
+                    open_rate = BASE_NOTIF_OPEN_RATE * BUG_NOTIF_OPEN_DROP
+                    optout_p  = NOTIF_OPTOUT_RATE * BUG_OPTOUT_MULTIPLIER
+                notif_received = int(rng.poisson(BASE_NOTIF_RECEIVED))
+                notif_opened   = int(rng.binomial(notif_received, open_rate))
+                notif_optout   = int(rng.random() < optout_p)
 
-            # Sessions
-            sessions = max(1, int(rng.poisson(base_ses)))
+                sessions = max(1, int(rng.poisson(base_ses)))
 
-            # D7 retention
-            d7 = base_d7
-            if affected and in_exp:
-                d7 = max(0.0, base_d7 - BUG_D7_RETENTION_DROP)
-            d7_retained = int(rng.random() < d7)
+                d7 = base_d7
+                if affected and in_exp:
+                    d7 = max(0.0, base_d7 - BUG_D7_RETENTION_DROP)
+                d7_retained = int(rng.random() < d7)
 
             is_new_flag = 1 if (d - install).days < 7 else 0
 
             rows.append({
-                "user_id":       uid,
-                "date":          d,
-                "platform":      platform,
-                "user_segment":  segment,
-                "is_new_user":   is_new_flag,
-                "dau_flag":      dau_flag,
-                "session_count": sessions,
+                "user_id":        uid,
+                "date":           d,
+                "platform":       platform,
+                "user_segment":   segment,
+                "is_new_user":    is_new_flag,
+                "dau_flag":       dau_flag,
+                "session_count":  sessions,
                 "notif_received": notif_received,
-                "notif_opened":  notif_opened,
-                "notif_optout":  notif_optout,
-                "d7_retained":   d7_retained,
-                "install_date":  install,
+                "notif_opened":   notif_opened,
+                "notif_optout":   notif_optout,
+                "d7_retained":    d7_retained,
+                "install_date":   install,
             })
 
     return pd.DataFrame(rows)
