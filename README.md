@@ -1,7 +1,6 @@
 # DataPilot
 
 An agentic AI system that replicates the core workflow of a senior Product Data Scientist.
-Built as a portfolio project targeting Meta Product DS roles.
 
 **Demo scenario:** DAU drop investigation on simulated Meta-flavored data. Ground truth is
 baked into the dataset so correctness is fully verifiable. The eval harness scores 11 criteria
