@@ -68,7 +68,7 @@ BASE_NOTIF_OPEN_RATE  = 0.35
 NOTIF_OPTOUT_RATE     = 0.02  # base daily opt-out probability
 # Bug: broken notifs → lower open rate → higher opt-out for affected group
 BUG_NOTIF_OPEN_DROP   = 0.60  # open rate falls to 60% of normal
-BUG_OPTOUT_MULTIPLIER = 3.0   # 3x opt-out rate
+BUG_OPTOUT_MULTIPLIER = 6.0   # 6x opt-out rate — high enough to be detectable across blended treatment population
 
 # ── Session counts ─────────────────────────────────────────────────────────────
 BASE_SESSIONS = {"new": 2.0, "returning": 3.5, "power": 6.0}

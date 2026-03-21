@@ -19,8 +19,8 @@ def test_mde_returns_relative_pct():
         baseline_mean=0.55,
         baseline_std=0.10,
     )
-    assert isinstance(result["mde_relative_pct"], float)
-    assert result["mde_relative_pct"] > 0
+    assert isinstance(result.mde_relative_pct, float)
+    assert result.mde_relative_pct > 0
 
 
 def test_underpowered_for_blended_effect():
@@ -32,7 +32,7 @@ def test_underpowered_for_blended_effect():
         baseline_std=0.25,      # realistic variance for a noisy DAU metric
         observed_effect_abs=0.55 * 0.016,  # ~1.6% relative blended effect
     )
-    assert result["is_powered_for_observed_effect"] is False
+    assert result.is_powered_for_observed_effect is False
 
 
 def test_powered_for_segment_effect():
@@ -44,7 +44,7 @@ def test_powered_for_segment_effect():
         baseline_std=0.08,
         observed_effect_abs=0.20,  # large effect in affected segment
     )
-    assert result["is_powered_for_observed_effect"] is True
+    assert result.is_powered_for_observed_effect is True
 
 
 def test_business_impact_string_contains_dollar():

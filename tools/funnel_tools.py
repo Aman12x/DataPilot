@@ -9,10 +9,10 @@ Pure Python, no LangGraph or Streamlit imports.
 
 from __future__ import annotations
 
-from typing import Any
-
 import pandas as pd
 from scipy import stats
+
+from tools.schemas import FunnelResult, FunnelStep
 
 
 def compute_funnel(
@@ -21,7 +21,7 @@ def compute_funnel(
     steps: list[str] | None = None,
     segment_filter: dict[str, str] | None = None,
     alpha: float = 0.05,
-) -> dict[str, Any]:
+) -> FunnelResult:
     """
     Compute per-step conditional conversion rates for control vs treatment.
 
@@ -89,7 +89,7 @@ def compute_funnel(
         if s not in pivot.columns:
             pivot[s] = 0
 
-    step_results = []
+    step_results: list[FunnelStep] = []
     largest_delta = 0.0
     biggest_dropoff_step = steps[0]
 
@@ -131,21 +131,21 @@ def compute_funnel(
 
         significant = p_value < alpha
 
-        step_results.append({
-            "step":           step,
-            "control_rate":   round(ctrl_rate, 4),
-            "treatment_rate": round(trt_rate, 4),
-            "delta":          round(delta, 4),
-            "pct_change":     round(pct_change, 2),
-            "p_value":        round(p_value, 6),
-            "significant":    significant,
-        })
+        step_results.append(FunnelStep(
+            step=step,
+            control_rate=round(ctrl_rate, 4),
+            treatment_rate=round(trt_rate, 4),
+            delta=round(delta, 4),
+            pct_change=round(pct_change, 2),
+            p_value=round(p_value, 6),
+            significant=significant,
+        ))
 
         if abs(delta) > abs(largest_delta):
             largest_delta = delta
             biggest_dropoff_step = step
 
-    return {
-        "steps":                step_results,
-        "biggest_dropoff_step": biggest_dropoff_step,
-    }
+    return FunnelResult(
+        steps=step_results,
+        biggest_dropoff_step=biggest_dropoff_step,
+    )

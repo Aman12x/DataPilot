@@ -166,6 +166,12 @@ class DBConnection:
                 cols = self._get_columns_postgres(table)
                 for col_name, col_type in cols:
                     comment = annotations.get(table, {}).get(col_name, "")
+                    # For unannotated string columns on external DBs, sample values
+                    # so the LLM knows valid enum values and doesn't hallucinate them.
+                    if not comment and col_type.lower() in self._POSTGRES_STRING_TYPES:
+                        samples = self._sample_distinct_values_postgres(table, col_name)
+                        if samples:
+                            comment = "SAMPLE VALUES: " + " | ".join(f"'{v}'" for v in samples)
                     comment_str = f"  -- {comment}" if comment else ""
                     lines.append(f"  {col_name:<22} {col_type:<10}{comment_str}")
                 lines.append("")
@@ -210,6 +216,39 @@ class DBConnection:
             f"ORDER BY ordinal_position"
         )
         return list(zip(df["column_name"], df["data_type"]))
+
+    # String-ish Postgres types that may contain categorical values worth sampling.
+    _POSTGRES_STRING_TYPES = frozenset({
+        "text", "varchar", "character varying", "character", "char",
+        "bpchar", "name", "citext",
+    })
+
+    def _sample_distinct_values_postgres(
+        self,
+        table: str,
+        col: str,
+        max_cardinality: int = 50,
+        max_show: int = 10,
+    ) -> list[str] | None:
+        """
+        Return up to `max_show` distinct values for a Postgres column if
+        its cardinality is <= max_cardinality.  Returns None on failure or
+        when the column looks high-cardinality.
+        """
+        try:
+            # Fetch one more than the limit so we know when to give up
+            df = self._query_postgres(
+                f"SELECT DISTINCT {col}::TEXT AS v "
+                f"FROM {table} "
+                f"WHERE {col} IS NOT NULL "
+                f"ORDER BY 1 LIMIT {max_cardinality + 1}"
+            )
+            vals = df["v"].dropna().astype(str).tolist()
+            if len(vals) <= max_cardinality:
+                return vals[:max_show]
+            return None      # too many distinct values — skip annotation
+        except Exception:
+            return None
 
     # ── Connection test ────────────────────────────────────────────────────────
 

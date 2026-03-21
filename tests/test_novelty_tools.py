@@ -16,7 +16,7 @@ def test_effect_is_growing(base_experiment_df):
     result = detect_novelty_effect(
         base_experiment_df, "dau_rate", "variant", "week"
     )
-    assert result["effect_direction"] == "growing"
+    assert result.effect_direction == "growing"
 
 
 def test_novelty_not_likely(base_experiment_df):
@@ -24,7 +24,7 @@ def test_novelty_not_likely(base_experiment_df):
     result = detect_novelty_effect(
         base_experiment_df, "dau_rate", "variant", "week"
     )
-    assert result["novelty_likely"] is False
+    assert result.novelty_likely is False
 
 
 def test_week_effects_computed(base_experiment_df):
@@ -32,7 +32,7 @@ def test_week_effects_computed(base_experiment_df):
     result = detect_novelty_effect(
         base_experiment_df, "dau_rate", "variant", "week"
     )
-    assert isinstance(result["week1_ate"], float)
-    assert isinstance(result["week2_ate"], float)
-    assert result["week1_ate"] != 0.0
-    assert result["week2_ate"] != 0.0
+    assert isinstance(result.week1_ate, float)
+    assert isinstance(result.week2_ate, float)
+    assert result.week1_ate != 0.0
+    assert result.week2_ate != 0.0

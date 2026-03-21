@@ -7,9 +7,10 @@ Pure Python, no LangGraph or Streamlit imports.
 from __future__ import annotations
 
 import math
-from typing import Any
 
 from scipy import stats
+
+from tools.schemas import MdeResult
 
 
 def compute_mde(
@@ -20,7 +21,7 @@ def compute_mde(
     alpha: float = 0.05,
     power: float = 0.80,
     observed_effect_abs: float | None = None,
-) -> dict[str, Any]:
+) -> MdeResult:
     """
     Compute the Minimum Detectable Effect for a two-sample t-test.
 
@@ -69,11 +70,11 @@ def compute_mde(
     else:
         is_powered = None
 
-    return {
-        "mde_absolute":                   round(mde_absolute, 6),
-        "mde_relative_pct":               round(mde_relative_pct, 2),
-        "is_powered_for_observed_effect": is_powered,
-    }
+    return MdeResult(
+        mde_absolute=round(mde_absolute, 6),
+        mde_relative_pct=round(mde_relative_pct, 2),
+        is_powered_for_observed_effect=is_powered,
+    )
 
 
 def business_impact_statement(

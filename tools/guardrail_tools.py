@@ -10,10 +10,10 @@ Pure Python, no LangGraph or Streamlit imports.
 
 from __future__ import annotations
 
-from typing import Any
-
 import pandas as pd
 from scipy import stats
+
+from tools.schemas import GuardrailMetric, GuardrailResult
 
 
 # ── Harm-direction inference by keyword ───────────────────────────────────────
@@ -55,7 +55,8 @@ def check_guardrails(
     guardrail_metrics: list[str],
     alpha: float = 0.05,
     harm_directions: dict[str, str] | None = None,
-) -> dict[str, Any]:
+    default_direction: str = "both",
+) -> GuardrailResult:
     """
     Check whether any guardrail metric was harmed by the treatment.
 
@@ -67,7 +68,14 @@ def check_guardrails(
         alpha:             Significance threshold (default 0.05).
         harm_directions:   Optional per-metric override.
                            Values: 'increase' | 'decrease' | 'both'.
-                           If omitted, direction is inferred from the metric name.
+                           When provided, takes full precedence over keyword
+                           inference for the metrics it covers.
+        default_direction: Fallback direction used when a metric is not
+                           covered by harm_directions AND keyword inference
+                           returns no match. Replaces the previous hardcoded
+                           'both' fallback. Set to 'decrease' when the
+                           primary metric is higher_is_better so unknown
+                           guardrail drops are treated as harmful.
 
     Returns:
         {
@@ -96,9 +104,7 @@ def check_guardrails(
     if missing:
         raise ValueError(f"Guardrail metrics not found in DataFrame: {missing}")
 
-    harm_directions = harm_directions or {}
-
-    guardrails = []
+    guardrails: list[GuardrailMetric] = []
     for metric in guardrail_metrics:
         ctrl = df[df[variant_col] == "control"][metric].dropna().astype(float)
         trt  = df[df[variant_col] == "treatment"][metric].dropna().astype(float)
@@ -113,8 +119,13 @@ def check_guardrails(
         _, p_value = stats.ttest_ind(trt, ctrl, equal_var=False)
         p_value = float(p_value)
 
-        # Determine harm direction
-        direction = harm_directions.get(metric, _infer_harm_direction(metric))
+        # Determine harm direction.
+        # Priority: explicit harm_directions > keyword inference > default_direction.
+        if harm_directions and metric in harm_directions:
+            direction = harm_directions[metric]
+        else:
+            inferred = _infer_harm_direction(metric)
+            direction = inferred if inferred != "both" else default_direction
 
         significant = p_value < alpha
         if direction == "increase":
@@ -124,19 +135,19 @@ def check_guardrails(
         else:  # 'both'
             breached = significant
 
-        guardrails.append({
-            "metric":         metric,
-            "control_mean":   round(ctrl_mean, 6),
-            "treatment_mean": round(trt_mean, 6),
-            "delta_pct":      round(delta_pct, 2),
-            "p_value":        round(p_value, 6),
-            "breached":       breached,
-        })
+        guardrails.append(GuardrailMetric(
+            metric=metric,
+            control_mean=round(ctrl_mean, 6),
+            treatment_mean=round(trt_mean, 6),
+            delta_pct=round(delta_pct, 2),
+            p_value=round(p_value, 6),
+            breached=breached,
+        ))
 
-    breached_count = sum(1 for g in guardrails if g["breached"])
+    breached_count = sum(1 for g in guardrails if g.breached)
 
-    return {
-        "guardrails":    guardrails,
-        "any_breached":  breached_count > 0,
-        "breached_count": breached_count,
-    }
+    return GuardrailResult(
+        guardrails=guardrails,
+        any_breached=breached_count > 0,
+        breached_count=breached_count,
+    )

@@ -1,0 +1,149 @@
+"""
+memory/semantic_cache.py — Embedding-based cache using MiniLM + SQLite.
+
+Skips LLM calls entirely when the current task is near-identical to a past run.
+Uses sentence-transformers/all-MiniLM-L6-v2 (local, no API cost).
+
+Thresholds (from .env):
+  SEMANTIC_CACHE_HARD_THRESHOLD=0.92  → full cache hit, skip API call
+  SEMANTIC_CACHE_SOFT_THRESHOLD=0.80  → soft hit, surface for analyst approval
+"""
+
+from __future__ import annotations
+
+import os
+import pickle
+import sqlite3
+from typing import Any
+
+import numpy as np
+
+from memory.store import _connect, _db_path, init_db
+
+
+def _hard_threshold() -> float:
+    return float(os.getenv("SEMANTIC_CACHE_HARD_THRESHOLD", "0.92"))
+
+
+def _soft_threshold() -> float:
+    return float(os.getenv("SEMANTIC_CACHE_SOFT_THRESHOLD", "0.80"))
+
+
+def _get_model():
+    """Load MiniLM model (cached on first call via module-level singleton)."""
+    if not hasattr(_get_model, "_model"):
+        from sentence_transformers import SentenceTransformer
+        _get_model._model = SentenceTransformer("all-MiniLM-L6-v2")
+    return _get_model._model
+
+
+def embed(text: str) -> np.ndarray:
+    """Return a normalised 384-dim embedding for the given text."""
+    vec = _get_model().encode(text, normalize_embeddings=True)
+    return np.array(vec, dtype=np.float32)
+
+
+def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+    """Cosine similarity between two normalised vectors (dot product)."""
+    return float(np.dot(a, b))
+
+
+def _ensure_cache_columns(path: str) -> None:
+    """Add cache_node_name / cached_result columns to runs if not present."""
+    with _connect(path) as con:
+        cols = {row[1] for row in con.execute("PRAGMA table_info(runs)").fetchall()}
+        if "cache_node_name" not in cols:
+            con.execute("ALTER TABLE runs ADD COLUMN cache_node_name TEXT")
+        if "cached_result" not in cols:
+            con.execute("ALTER TABLE runs ADD COLUMN cached_result BLOB")
+
+
+def check_cache(
+    task: str,
+    node_name: str,
+    path: str | None = None,
+) -> dict[str, Any] | None:
+    """
+    Look up the semantic cache for a (task, node_name) pair.
+
+    Returns:
+        None                                    — cache miss (similarity < soft threshold)
+        {"hit_type": "hard", "result": dict}    — similarity >= hard threshold
+        {"hit_type": "soft", "result": dict,
+         "similarity": float}                   — soft threshold <= similarity < hard
+    """
+    path = path or _db_path()
+    init_db(path)
+    _ensure_cache_columns(path)
+
+    query_vec = embed(task)
+
+    with _connect(path) as con:
+        rows = con.execute(
+            """
+            SELECT task_embedding, cached_result
+            FROM   runs
+            WHERE  cache_node_name = ?
+              AND  task_embedding  IS NOT NULL
+              AND  cached_result   IS NOT NULL
+            ORDER  BY timestamp DESC
+            """,
+            (node_name,),
+        ).fetchall()
+
+    best_sim    = 0.0
+    best_result = None
+
+    for row in rows:
+        stored_vec = np.frombuffer(row["task_embedding"], dtype=np.float32)
+        sim = cosine_similarity(query_vec, stored_vec)
+        if sim > best_sim:
+            best_sim    = sim
+            best_result = pickle.loads(row["cached_result"])  # noqa: S301
+
+    hard = _hard_threshold()
+    soft = _soft_threshold()
+
+    if best_result is None or best_sim < soft:
+        return None
+    if best_sim >= hard:
+        return {"hit_type": "hard", "result": best_result, "similarity": best_sim}
+    return {"hit_type": "soft", "result": best_result, "similarity": best_sim}
+
+
+def store_cache(
+    task: str,
+    node_name: str,
+    result: dict[str, Any],
+    run_id: str,
+    path: str | None = None,
+) -> None:
+    """
+    Persist the embedding + result for a completed LLM call so future runs
+    can hit the cache.
+
+    Args:
+        task:      The task string that was analysed.
+        node_name: The graph node that produced the result (e.g. 'generate_sql').
+        result:    The dict result to cache.
+        run_id:    The run_id of the row to update (must already exist in runs).
+        path:      Optional DB path override.
+    """
+    path = path or _db_path()
+    init_db(path)
+    _ensure_cache_columns(path)
+
+    vec_bytes    = embed(task).tobytes()
+    result_bytes = pickle.dumps(result)
+
+    with _connect(path) as con:
+        con.execute(
+            """
+            UPDATE runs
+               SET task_embedding   = ?,
+                   cache_node_name  = ?,
+                   cached_result    = ?
+             WHERE run_id = ?
+            """,
+            (vec_bytes, node_name, result_bytes, run_id),
+        )

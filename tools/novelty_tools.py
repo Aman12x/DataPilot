@@ -9,10 +9,10 @@ Pure Python, no LangGraph or Streamlit imports.
 
 from __future__ import annotations
 
-from typing import Any
-
 import pandas as pd
 from scipy import stats
+
+from tools.schemas import NoveltyResult
 
 
 def detect_novelty_effect(
@@ -20,7 +20,7 @@ def detect_novelty_effect(
     metric_col: str,
     variant_col: str,
     week_col: str,
-) -> dict[str, Any]:
+) -> NoveltyResult:
     """
     Compare the Average Treatment Effect in week 1 vs week 2 to determine
     whether the treatment effect is decaying (novelty), growing, or stable.
@@ -86,9 +86,9 @@ def detect_novelty_effect(
         and abs2 < 0.5 * abs1
     )
 
-    return {
-        "week1_ate":        round(week1_ate, 6),
-        "week2_ate":        round(week2_ate, 6),
-        "effect_direction": effect_direction,
-        "novelty_likely":   novelty_likely,
-    }
+    return NoveltyResult(
+        week1_ate=round(week1_ate, 6),
+        week2_ate=round(week2_ate, 6),
+        effect_direction=effect_direction,
+        novelty_likely=novelty_likely,
+    )

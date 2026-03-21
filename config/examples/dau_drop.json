@@ -1,0 +1,22 @@
+{
+  "primary_metric": "dau_rate",
+  "metric_source_col": "dau_flag",
+  "metric_agg": "mean",
+  "covariate": "pre_session_count",
+  "metric_direction": "higher_is_better",
+  "events_table": "events",
+  "experiment_table": "experiment",
+  "timeseries_table": "metrics_daily",
+  "funnel_table": "funnel",
+  "user_id_col": "user_id",
+  "date_col": "date",
+  "variant_col": "variant",
+  "week_col": "week",
+  "guardrail_metrics": ["notif_optout", "d7_retained", "session_count"],
+  "segment_cols": ["platform", "user_segment"],
+  "funnel_steps": ["impression", "click", "install", "d1_retain"],
+  "revenue_per_unit": 0.50,
+  "baseline_unit_count": 500000,
+  "experiment_weeks": 2,
+  "guardrail_harm_directions": null
+}

@@ -1,0 +1,25 @@
+{
+  "primary_metric": "revenue",
+  "metric_source_col": "revenue_usd",
+  "metric_agg": "sum",
+  "covariate": "prior_week_revenue",
+  "metric_direction": "higher_is_better",
+  "events_table": "transactions",
+  "experiment_table": "experiment_assignments",
+  "timeseries_table": null,
+  "funnel_table": null,
+  "user_id_col": "user_id",
+  "date_col": "transaction_date",
+  "variant_col": "variant",
+  "week_col": "experiment_week",
+  "guardrail_metrics": ["refund_rate", "cart_abandonment_rate"],
+  "segment_cols": ["platform", "country"],
+  "funnel_steps": [],
+  "revenue_per_unit": 1.0,
+  "baseline_unit_count": 200000,
+  "experiment_weeks": 2,
+  "guardrail_harm_directions": {
+    "refund_rate": "increase",
+    "cart_abandonment_rate": "increase"
+  }
+}

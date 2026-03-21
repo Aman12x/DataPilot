@@ -7,16 +7,16 @@ Input: pre-aggregated metrics_daily DataFrame (one row per date × platform × s
 
 from __future__ import annotations
 
-from typing import Any
-
 import pandas as pd
+
+from tools.schemas import ComponentStats, DecompositionResult, SegmentBreakdown
 
 
 def decompose_dau(
     df: pd.DataFrame,
     date_col: str = "date",
     window_days: int = 28,
-) -> dict[str, Any]:
+) -> DecompositionResult:
     """
     Decompose DAU into new / retained / resurrected / churned components and
     identify which component drove the largest change between the baseline
@@ -84,7 +84,7 @@ def decompose_dau(
         "churned":     "churned_users",
     }
 
-    result: dict[str, Any] = {}
+    component_stats: dict[str, ComponentStats] = {}
     deltas: dict[str, float] = {}
 
     mean_dau = float(daily["dau"].mean()) if daily["dau"].mean() > 0 else 1.0
@@ -101,16 +101,121 @@ def decompose_dau(
             for _, row in daily.iterrows()
         }
 
-        result[key] = {
-            "time_series":   ts,
-            "baseline_avg":  round(baseline_avg, 2),
-            "recent_avg":    round(recent_avg, 2),
-            "delta":         round(delta, 2),
-            "pct_of_dau":    round(float(daily[col].mean()) / mean_dau * 100, 2),
-        }
+        component_stats[key] = ComponentStats(
+            time_series=ts,
+            baseline_avg=round(baseline_avg, 2),
+            recent_avg=round(recent_avg, 2),
+            delta=round(delta, 2),
+            pct_of_dau=round(float(daily[col].mean()) / mean_dau * 100, 2),
+        )
 
-    # Dominant = component with largest absolute delta
-    dominant = max(deltas, key=lambda k: abs(deltas[k]))
-    result["dominant_change_component"] = dominant
+    # Dominant = component most responsible for dragging DAU down.
+    # If any component declined, pick the one with the most negative delta
+    # (the "what broke" answer, regardless of what other components did).
+    # Only fall back to largest absolute delta when all components are growing.
+    declining = {k: v for k, v in deltas.items() if v < 0}
+    if declining:
+        dominant = min(declining, key=lambda k: declining[k])
+    else:
+        dominant = max(deltas, key=lambda k: abs(deltas[k]))
 
-    return result
+    return DecompositionResult(
+        new=component_stats["new"],
+        retained=component_stats["retained"],
+        resurrected=component_stats["resurrected"],
+        churned=component_stats["churned"],
+        dominant_change_component=dominant,
+        segments=[],   # DAU path uses named components; generic segments not used here
+    )
+
+
+def decompose_metric(
+    df: pd.DataFrame,
+    metric_col: str,
+    segment_cols: list[str],
+    date_col: str = "date",
+    experiment_start=None,
+) -> DecompositionResult:
+    """
+    Generic segment-based breakdown for any metric.
+
+    For each (segment_col, segment_value) pair, computes before/after delta and
+    contribution_pct relative to the total metric change.
+
+    dominant_change_component is set to the "col=value" pair with the highest
+    absolute contribution_pct.
+
+    Args:
+        df:               DataFrame with date_col, metric_col, and all segment_cols.
+        metric_col:       Name of the metric column to decompose.
+        segment_cols:     List of dimension columns to break down by.
+        date_col:         Name of the date column.
+        experiment_start: If provided, split before/after at this date string/Timestamp.
+                          Otherwise, split at the calendar midpoint.
+
+    Returns:
+        DecompositionResult with segments list and dominant_change_component.
+    """
+    required = {date_col, metric_col} | set(segment_cols)
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"Missing columns: {sorted(missing)}")
+
+    df = df.copy()
+    df[date_col] = pd.to_datetime(df[date_col])
+
+    # Determine before/after split point
+    if experiment_start is not None:
+        split = pd.to_datetime(experiment_start)
+    else:
+        dates = df[date_col].sort_values().unique()
+        split = dates[len(dates) // 2]
+
+    before = df[df[date_col] < split]
+    after  = df[df[date_col] >= split]
+
+    if before.empty or after.empty:
+        raise ValueError(
+            f"decompose_metric: before/after split at {split} produced an empty partition."
+        )
+
+    segments: list[SegmentBreakdown] = []
+
+    for col in segment_cols:
+        if col not in df.columns:
+            continue
+        values = df[col].dropna().unique()
+        for val in values:
+            before_val = before[before[col] == val][metric_col]
+            after_val  = after[after[col] == val][metric_col]
+            if before_val.empty or after_val.empty:
+                continue
+            metric_before = float(before_val.mean())
+            metric_after  = float(after_val.mean())
+            delta         = metric_after - metric_before
+            segments.append(SegmentBreakdown(
+                segment_col=col,
+                segment_value=str(val),
+                metric_before=round(metric_before, 6),
+                metric_after=round(metric_after, 6),
+                delta=round(delta, 6),
+                contribution_pct=0.0,  # filled in below
+            ))
+
+    # Compute contribution_pct: each segment's |delta| / sum of all |delta|
+    total_abs_delta = sum(abs(s.delta) for s in segments) or 1.0
+    for s in segments:
+        s.contribution_pct = round(abs(s.delta) / total_abs_delta * 100, 2)
+
+    # Sort by descending |delta|
+    segments.sort(key=lambda s: abs(s.delta), reverse=True)
+
+    dominant = (
+        f"{segments[0].segment_col}={segments[0].segment_value}"
+        if segments else "unknown"
+    )
+
+    return DecompositionResult(
+        dominant_change_component=dominant,
+        segments=segments,
+    )

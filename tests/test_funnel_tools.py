@@ -21,7 +21,7 @@ def test_biggest_dropoff_is_d1_retain(base_funnel_df):
     result = compute_funnel(
         base_funnel_df, "variant", steps=STEPS, segment_filter=ANDROID_NEW
     )
-    assert result["biggest_dropoff_step"] == "d1_retain"
+    assert result.biggest_dropoff_step == "d1_retain"
 
 
 def test_d1_retain_delta_negative(base_funnel_df):
@@ -29,8 +29,8 @@ def test_d1_retain_delta_negative(base_funnel_df):
     result = compute_funnel(
         base_funnel_df, "variant", steps=STEPS, segment_filter=ANDROID_NEW
     )
-    d1 = next(s for s in result["steps"] if s["step"] == "d1_retain")
-    assert d1["delta"] < 0
+    d1 = next(s for s in result.steps if s.step == "d1_retain")
+    assert d1.delta < 0
 
 
 def test_d1_retain_significant(base_funnel_df):
@@ -38,12 +38,12 @@ def test_d1_retain_significant(base_funnel_df):
     result = compute_funnel(
         base_funnel_df, "variant", steps=STEPS, segment_filter=ANDROID_NEW
     )
-    d1 = next(s for s in result["steps"] if s["step"] == "d1_retain")
-    assert d1["significant"] is True
+    d1 = next(s for s in result.steps if s.step == "d1_retain")
+    assert d1.significant is True
 
 
 def test_all_steps_returned(base_funnel_df):
     """Result contains one entry per step in the correct order."""
     result = compute_funnel(base_funnel_df, "variant", steps=STEPS)
-    returned_steps = [s["step"] for s in result["steps"]]
+    returned_steps = [s.step for s in result.steps]
     assert returned_steps == STEPS

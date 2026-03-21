@@ -8,11 +8,12 @@ Each returns a typed dict. Raises ValueError with a human-readable message on ba
 from __future__ import annotations
 
 import itertools
-from typing import Any
 
 import numpy as np
 import pandas as pd
 from scipy import stats
+
+from tools.schemas import CupedResult, HteResult, SegmentResult, TtestResult
 
 
 def run_cuped(
@@ -20,7 +21,7 @@ def run_cuped(
     metric_col: str,
     covariate_col: str,
     variant_col: str,
-) -> dict[str, Any]:
+) -> CupedResult:
     """
     CUPED (Controlled-experiment Using Pre-Experiment Data) variance reduction.
 
@@ -77,19 +78,19 @@ def run_cuped(
     var_after  = df["_cuped"].var(ddof=1)
     variance_reduction_pct = (1 - var_after / var_before) * 100 if var_before > 0 else 0.0
 
-    return {
-        "raw_ate":                round(float(raw_ate), 6),
-        "cuped_ate":              round(float(cuped_ate), 6),
-        "variance_reduction_pct": round(float(variance_reduction_pct), 2),
-        "theta":                  round(float(theta), 6),
-    }
+    return CupedResult(
+        raw_ate=round(float(raw_ate), 6),
+        cuped_ate=round(float(cuped_ate), 6),
+        variance_reduction_pct=round(float(variance_reduction_pct), 2),
+        theta=round(float(theta), 6),
+    )
 
 
 def run_ttest(
     control: pd.Series | np.ndarray,
     treatment: pd.Series | np.ndarray,
     alpha: float = 0.05,
-) -> dict[str, Any]:
+) -> TtestResult:
     """
     Two-sample Welch's t-test (unequal variance).
 
@@ -131,13 +132,13 @@ def run_ttest(
     ci_lower = mean_diff - t_crit * se_diff
     ci_upper = mean_diff + t_crit * se_diff
 
-    return {
-        "t_stat":      round(float(t_stat), 4),
-        "p_value":     round(float(p_value), 6),
-        "ci_lower":    round(float(ci_lower), 6),
-        "ci_upper":    round(float(ci_upper), 6),
-        "significant": bool(p_value < alpha),
-    }
+    return TtestResult(
+        t_stat=round(float(t_stat), 4),
+        p_value=round(float(p_value), 6),
+        ci_lower=round(float(ci_lower), 6),
+        ci_upper=round(float(ci_upper), 6),
+        significant=bool(p_value < alpha),
+    )
 
 
 def run_hte(
@@ -147,7 +148,7 @@ def run_hte(
     segment_cols: list[str],
     alpha: float = 0.05,
     min_segment_size: int = 30,
-) -> dict[str, Any]:
+) -> HteResult:
     """
     Heterogeneous Treatment Effect analysis via manual subgroup t-tests.
 
@@ -202,19 +203,18 @@ def run_hte(
         except ValueError:
             continue
 
-        ate           = ttest["ci_lower"] + (ttest["ci_upper"] - ttest["ci_lower"]) / 2
         ate           = float(trt.mean() - ctrl.mean())
         segment_share = len(subdf) / total_users
 
-        results.append({
-            "segment":       ",".join(label_parts),
-            "effect_size":   round(ate, 6),
-            "segment_share": round(segment_share, 4),
-            "p_value":       ttest["p_value"],
-            "significant":   ttest["significant"],
-            "n_control":     len(ctrl),
-            "n_treatment":   len(trt),
-        })
+        results.append(SegmentResult(
+            segment=",".join(label_parts),
+            effect_size=round(ate, 6),
+            segment_share=round(segment_share, 4),
+            p_value=ttest.p_value,
+            significant=ttest.significant,
+            n_control=len(ctrl),
+            n_treatment=len(trt),
+        ))
 
     if not results:
         raise ValueError(
@@ -223,15 +223,15 @@ def run_hte(
         )
 
     # Sort by absolute effect size descending
-    results.sort(key=lambda r: abs(r["effect_size"]), reverse=True)
+    results.sort(key=lambda r: abs(r.effect_size), reverse=True)
 
     top = results[0]
-    return {
-        "top_segment":   top["segment"],
-        "effect_size":   top["effect_size"],
-        "segment_share": top["segment_share"],
-        "all_segments":  results,
-    }
+    return HteResult(
+        top_segment=top.segment,
+        effect_size=top.effect_size,
+        segment_share=top.segment_share,
+        all_segments=results,
+    )
 
 
 # ── Internal helpers ───────────────────────────────────────────────────────────

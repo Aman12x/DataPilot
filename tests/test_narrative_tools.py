@@ -96,7 +96,7 @@ def _build(**overrides):
 def test_all_seven_sections_present():
     """Narrative draft contains all 7 required section headers."""
     result = format_narrative(**_build())
-    draft = result["narrative_draft"]
+    draft = result.narrative_draft
     for section in ["TL;DR", "What we found", "Where it's concentrated",
                     "What else is affected", "Confidence level",
                     "Recommendation", "Caveats"]:
@@ -106,7 +106,7 @@ def test_all_seven_sections_present():
 def test_affected_segment_mentioned():
     """Top HTE segment (android + new) appears in the narrative."""
     result = format_narrative(**_build())
-    draft = result["narrative_draft"].lower()
+    draft = result.narrative_draft.lower()
     assert "android" in draft
     assert "new" in draft
 
@@ -114,7 +114,7 @@ def test_affected_segment_mentioned():
 def test_guardrail_breach_flagged():
     """Breached guardrail metrics appear in the narrative."""
     result = format_narrative(**_build())
-    draft = result["narrative_draft"]
+    draft = result.narrative_draft
     assert "notif_optout" in draft
     assert "d7_retained" in draft
 
@@ -122,32 +122,32 @@ def test_guardrail_breach_flagged():
 def test_novelty_ruled_out_mentioned():
     """Narrative states novelty is ruled out when novelty_likely=False."""
     result = format_narrative(**_build())
-    draft = result["narrative_draft"]
+    draft = result.narrative_draft
     assert "novelty ruled out" in draft
 
 
 def test_recommendation_returned():
-    """recommendation key is a non-empty string."""
+    """recommendation is a non-empty string."""
     result = format_narrative(**_build())
-    assert isinstance(result["recommendation"], str)
-    assert len(result["recommendation"]) > 0
+    assert isinstance(result.recommendation, str)
+    assert len(result.recommendation) > 0
 
 
 def test_caveats_present():
     """Caveats section contains at least one caveat bullet."""
     result = format_narrative(**_build())
-    caveats_section = result["narrative_draft"].split("## Caveats")[-1]
+    caveats_section = result.narrative_draft.split("## Caveats")[-1]
     assert "- " in caveats_section
 
 
 def test_clean_guardrails_message():
     """When no guardrails are breached, narrative says so."""
     result = format_narrative(**_build(guardrail_result=GUARDRAILS_CLEAN))
-    draft = result["narrative_draft"]
+    draft = result.narrative_draft
     assert "within acceptable bounds" in draft
 
 
 def test_analyst_notes_included():
     """Analyst notes appear in the draft when provided."""
     result = format_narrative(**_build(analyst_notes="Focus on week-2 effect only."))
-    assert "Focus on week-2 effect only." in result["narrative_draft"]
+    assert "Focus on week-2 effect only." in result.narrative_draft

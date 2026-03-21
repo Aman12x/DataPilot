@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from tools.schemas import NarrativeResult
+
 
 def format_narrative(
     metric: str,
@@ -27,7 +29,7 @@ def format_narrative(
     forecast_result: dict[str, Any],
     business_impact: str,
     analyst_notes: str = "",
-) -> dict[str, str]:
+) -> NarrativeResult:
     """
     Format all analysis results into a PM-ready markdown narrative.
 
@@ -52,10 +54,13 @@ def format_narrative(
             recommendation:   str,   # extracted one-sentence action recommendation
         }
     """
-    sig        = ttest_result.get("significant", False)
-    p_value    = ttest_result.get("p_value", 1.0)
-    cuped_ate  = cuped_result.get("cuped_ate", 0.0)
-    var_red    = cuped_result.get("variance_reduction_pct", 0.0)
+    # Distinguish "test ran, not significant" from "test never ran".
+    ttest_ran  = bool(ttest_result)
+    sig        = ttest_result.get("significant", False)   if ttest_ran else None
+    p_value    = ttest_result.get("p_value", None)        if ttest_ran else None
+    cuped_ran  = bool(cuped_result)
+    cuped_ate  = cuped_result.get("cuped_ate", 0.0)       if cuped_ran else None
+    var_red    = cuped_result.get("variance_reduction_pct", 0.0) if cuped_ran else None
     top_seg    = hte_result.get("top_segment", "unknown")
     seg_effect = hte_result.get("effect_size", 0.0)
     seg_share  = hte_result.get("segment_share", 0.0)
@@ -87,16 +92,31 @@ def format_narrative(
     anomaly_severity  = anomaly_result.get("severity", 0.0)
 
     # ── 1. TL;DR ────────────────────────────────────────────────────────────────
-    sig_str = "statistically significant" if sig else "not statistically significant"
+    if sig is None:
+        sig_str = "significance unknown (analysis did not run)"
+    else:
+        sig_str = "statistically significant" if sig else "not statistically significant"
+
+    ate_str = f"CUPED ATE={cuped_ate:+.4f}" if cuped_ate is not None else "CUPED ATE=n/a"
+    p_str   = f"p={p_value:.4f}"            if p_value  is not None else "p=n/a"
+
     tldr = (
         f"A {anomaly_dir} in **{metric}** was detected"
         + (f" starting {anomaly_dates[0]}" if anomaly_dates else "")
         + f", driven primarily by the **{dominant_comp}** component. "
-        f"The experiment effect (CUPED ATE={cuped_ate:+.4f}) is {sig_str} "
-        f"(p={p_value:.4f}), concentrated in the **{top_seg}** segment."
+        f"The experiment effect ({ate_str}) is {sig_str} "
+        f"({p_str}), concentrated in the **{top_seg}** segment."
     )
 
     # ── 2. What we found ────────────────────────────────────────────────────────
+    if cuped_ate is not None and var_red is not None and p_value is not None:
+        cuped_line = (
+            f"- **Experiment (CUPED):** ATE={cuped_ate:+.4f} "
+            f"(variance reduction {var_red:.1f}%), {p_str} → {sig_str.upper()}."
+        )
+    else:
+        cuped_line = "- **Experiment:** Analysis could not be computed — required columns may be missing."
+
     found_lines = [
         f"- **Decomposition:** `{dominant_comp}` is the dominant change component.",
         f"- **Anomaly:** {anomaly_dir.capitalize()} detected"
@@ -106,8 +126,7 @@ def format_narrative(
         f"{forecast_method} confidence interval"
         + (" — confirms real signal." if forecast_outside else " — drop may be within normal variance.")
         + (f" ⚠ {forecast_warning}" if forecast_warning else ""),
-        f"- **Experiment (CUPED):** ATE={cuped_ate:+.4f} "
-        f"(variance reduction {var_red:.1f}%), p={p_value:.4f} → {sig_str.upper()}.",
+        cuped_line,
     ]
 
     # ── 3. Where it's concentrated ──────────────────────────────────────────────
@@ -172,9 +191,10 @@ def format_narrative(
             f"significant {metric} impact confirmed with no guardrail breaches."
         )
     else:
+        p_display = f"p={p_value:.4f}" if p_value is not None else "significance unknown"
         recommendation = (
             f"Collect more data — effect in **{top_seg}** is directionally negative "
-            f"but not yet significant (p={p_value:.4f}); monitor guardrails closely."
+            f"but not yet significant ({p_display}); monitor guardrails closely."
         )
 
     # ── 7. Caveats ──────────────────────────────────────────────────────────────
@@ -237,7 +257,7 @@ def format_narrative(
 {chr(10).join(caveats)}{analyst_section}
 """
 
-    return {
-        "narrative_draft": narrative_draft,
-        "recommendation":  recommendation,
-    }
+    return NarrativeResult(
+        narrative_draft=narrative_draft,
+        recommendation=recommendation,
+    )

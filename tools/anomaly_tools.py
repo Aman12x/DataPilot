@@ -7,10 +7,10 @@ Inputs: pre-aggregated metrics_daily DataFrame.
 
 from __future__ import annotations
 
-from typing import Any
-
 import numpy as np
 import pandas as pd
+
+from tools.schemas import AnomalyResult, SliceDimension, SliceResult
 
 
 def detect_anomaly(
@@ -20,7 +20,7 @@ def detect_anomaly(
     method: str = "zscore",
     window: int = 14,
     threshold: float = 2.5,
-) -> dict[str, Any]:
+) -> AnomalyResult:
     """
     Detect anomalous dates in a metric time series using a rolling Z-score.
 
@@ -87,11 +87,11 @@ def detect_anomaly(
     flagged_z = z_scores[anomaly_mask]
     direction = "drop" if (len(flagged_z) > 0 and flagged_z.mean() < 0) else "spike"
 
-    return {
-        "anomaly_dates": anomaly_dates,
-        "severity":      round(severity, 3),
-        "direction":     direction,
-    }
+    return AnomalyResult(
+        anomaly_dates=anomaly_dates,
+        severity=round(severity, 3),
+        direction=direction,
+    )
 
 
 def slice_and_dice(
@@ -99,10 +99,15 @@ def slice_and_dice(
     metric_col: str,
     date_col: str = "date",
     dimension_cols: list[str] | None = None,
-) -> dict[str, Any]:
+    experiment_start=None,
+) -> SliceResult:
     """
     Rank which dimension values contributed most to a metric change between
-    the first half and second half of the date range.
+    the "before" and "after" periods.
+
+    The split date is determined by (in priority order):
+      1. ``experiment_start`` — the known experiment start date, if provided.
+      2. Calendar midpoint of the date range (fallback).
 
     For each dimension in dimension_cols, computes:
         delta_v = after_avg(v) - before_avg(v)
@@ -111,10 +116,12 @@ def slice_and_dice(
     Contributions for all values of a single dimension sum to 100%.
 
     Args:
-        df:             DataFrame with date_col, metric_col, and dimension_cols.
-        metric_col:     Metric to slice (e.g. 'dau').
-        date_col:       Date column name.
-        dimension_cols: List of categorical columns to slice by (e.g. ['platform']).
+        df:               DataFrame with date_col, metric_col, and dimension_cols.
+        metric_col:       Metric to slice (e.g. 'dau').
+        date_col:         Date column name.
+        dimension_cols:   List of categorical columns to slice by (e.g. ['platform']).
+        experiment_start: Optional date (str or datetime) marking the experiment start.
+                          Used as the before/after split point when provided.
 
     Returns:
         {
@@ -141,10 +148,13 @@ def slice_and_dice(
     df[date_col] = pd.to_datetime(df[date_col])
     df = df.sort_values(date_col)
 
-    # Split at the midpoint of the date range
-    dates      = sorted(df[date_col].unique())
-    mid_idx    = len(dates) // 2
-    split_date = dates[mid_idx]
+    # Split at the first anomaly date when available (passed in from detect_anomaly),
+    # otherwise fall back to the calendar midpoint.
+    dates = sorted(df[date_col].unique())
+    if experiment_start is not None:
+        split_date = pd.Timestamp(experiment_start)
+    else:
+        split_date = dates[len(dates) // 2]
 
     before = df[df[date_col] <  split_date]
     after  = df[df[date_col] >= split_date]
@@ -156,7 +166,7 @@ def slice_and_dice(
     total_after_avg  = after[metric_col].sum()  / n_after
     total_delta      = total_after_avg - total_before_avg
 
-    results: list[dict] = []
+    results: list[SliceDimension] = []
 
     for dim_col in dimension_cols:
         for val in sorted(df[dim_col].dropna().unique()):
@@ -166,13 +176,13 @@ def slice_and_dice(
 
             contrib = (delta / total_delta * 100) if total_delta != 0 else 0.0
 
-            results.append({
-                "dimension":        dim_col,
-                "value":            str(val),
-                "delta":            round(float(delta), 2),
-                "contribution_pct": round(float(contrib), 2),
-            })
+            results.append(SliceDimension(
+                dimension=dim_col,
+                value=str(val),
+                delta=round(float(delta), 2),
+                contribution_pct=round(float(contrib), 2),
+            ))
 
-    results.sort(key=lambda r: abs(r["contribution_pct"]), reverse=True)
+    results.sort(key=lambda r: abs(r.contribution_pct), reverse=True)
 
-    return {"ranked_dimensions": results}
+    return SliceResult(ranked_dimensions=results)

@@ -13,9 +13,9 @@ def test_components_sum_to_dau(base_metrics_daily_df):
     """new + retained + resurrected ≈ total DAU (within 10% — int rounding only)."""
     result = decompose_dau(base_metrics_daily_df, date_col="date", window_days=30)
 
-    new_avg  = result["new"]["recent_avg"]
-    ret_avg  = result["retained"]["recent_avg"]
-    res_avg  = result["resurrected"]["recent_avg"]
+    new_avg  = result.new.recent_avg
+    ret_avg  = result.retained.recent_avg
+    res_avg  = result.resurrected.recent_avg
 
     # Reconstruct recent-period mean DAU from the daily aggregates
     import pandas as pd
@@ -31,4 +31,4 @@ def test_components_sum_to_dau(base_metrics_daily_df):
 def test_dominant_component_is_new(base_metrics_daily_df):
     """dominant_change_component is 'new' when new_users fraction drops at experiment start."""
     result = decompose_dau(base_metrics_daily_df, date_col="date", window_days=30)
-    assert "new" in result["dominant_change_component"]
+    assert "new" in result.dominant_change_component

@@ -9,10 +9,10 @@ Never hard-fails — degrades gracefully and sets 'warning' in result.
 
 from __future__ import annotations
 
-from typing import Any
-
 import numpy as np
 import pandas as pd
+
+from tools.schemas import ForecastResult
 
 
 def forecast_baseline(
@@ -20,7 +20,7 @@ def forecast_baseline(
     metric_col: str,
     date_col: str = "date",
     forecast_days: int = 14,
-) -> dict[str, Any]:
+) -> ForecastResult:
     """
     Fit a baseline on all but the last `forecast_days` rows, then compare
     the actual values in that held-out window against the forecast CI.
@@ -57,27 +57,43 @@ def forecast_baseline(
         .reset_index(drop=True)
     )
 
+    # Gracefully reduce forecast window when the series is too short
     if len(daily) <= forecast_days:
-        raise ValueError(
-            f"Need more than {forecast_days} dates. Got {len(daily)}."
-        )
+        forecast_days = max(1, len(daily) // 3)
 
     train = daily.iloc[:-forecast_days].copy()
     test  = daily.iloc[-forecast_days:].copy()
 
-    if len(train) < 7:
-        raise ValueError(f"Training window too short ({len(train)} days). Need ≥ 7.")
+    if len(train) < 3:
+        # Not enough history to fit any baseline — return a neutral result
+        return ForecastResult(
+            forecast_df=pd.DataFrame(),
+            actual_vs_forecast_delta=0.0,
+            outside_ci=False,
+            method="rolling_mean",
+            warning=f"Series too short ({len(daily)} dates) for a reliable forecast.",
+        )
 
     try:
-        result = _forecast_prophet(train, test, date_col, metric_col)
+        return _forecast_prophet(train, test, date_col, metric_col)
     except ImportError:
-        result = _forecast_rolling(train, test, date_col, metric_col)
-        result["warning"] = "Prophet not installed — used rolling mean fallback."
+        r = _forecast_rolling(train, test, date_col, metric_col)
+        return ForecastResult(
+            forecast_df=r.forecast_df,
+            actual_vs_forecast_delta=r.actual_vs_forecast_delta,
+            outside_ci=r.outside_ci,
+            method=r.method,
+            warning="Prophet not installed — used rolling mean fallback.",
+        )
     except Exception as e:
-        result = _forecast_rolling(train, test, date_col, metric_col)
-        result["warning"] = f"Prophet failed ({e}) — used rolling mean fallback."
-
-    return result
+        r = _forecast_rolling(train, test, date_col, metric_col)
+        return ForecastResult(
+            forecast_df=r.forecast_df,
+            actual_vs_forecast_delta=r.actual_vs_forecast_delta,
+            outside_ci=r.outside_ci,
+            method=r.method,
+            warning=f"Prophet failed ({e}) — used rolling mean fallback.",
+        )
 
 
 # ── Prophet ────────────────────────────────────────────────────────────────────
@@ -87,7 +103,7 @@ def _forecast_prophet(
     test: pd.DataFrame,
     date_col: str,
     metric_col: str,
-) -> dict[str, Any]:
+) -> ForecastResult:
     from prophet import Prophet  # raises ImportError if not installed
 
     prophet_train = train.rename(columns={date_col: "ds", metric_col: "y"})
@@ -123,13 +139,13 @@ def _forecast_prophet(
         "actual":     actual,
     })
 
-    return {
-        "forecast_df":              forecast_df,
-        "actual_vs_forecast_delta": round(delta, 2),
-        "outside_ci":               outside_ci,
-        "method":                   "prophet",
-        "warning":                  None,
-    }
+    return ForecastResult(
+        forecast_df=forecast_df,
+        actual_vs_forecast_delta=round(delta, 2),
+        outside_ci=outside_ci,
+        method="prophet",
+        warning=None,
+    )
 
 
 # ── Rolling mean fallback ──────────────────────────────────────────────────────
@@ -139,7 +155,7 @@ def _forecast_rolling(
     test: pd.DataFrame,
     date_col: str,
     metric_col: str,
-) -> dict[str, Any]:
+) -> ForecastResult:
     series = train[metric_col].astype(float)
 
     window       = min(7, len(series))
@@ -163,10 +179,10 @@ def _forecast_rolling(
         "actual":     actual,
     })
 
-    return {
-        "forecast_df":              forecast_df,
-        "actual_vs_forecast_delta": round(delta, 2),
-        "outside_ci":               outside_ci,
-        "method":                   "rolling_mean",
-        "warning":                  None,
-    }
+    return ForecastResult(
+        forecast_df=forecast_df,
+        actual_vs_forecast_delta=round(delta, 2),
+        outside_ci=outside_ci,
+        method="rolling_mean",
+        warning=None,
+    )
