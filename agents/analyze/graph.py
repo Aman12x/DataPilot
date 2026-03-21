@@ -8,7 +8,9 @@ Graph flow:
          │                                              └─ declined ─► inject_history
          └─ miss / soft hit ─────────────────────────► inject_history
               └─► load_schema
-                   └─► generate_sql
+                   └─► resolve_task_intent  (HITL 0 — conditional, only if ambiguous)
+                        └─► infer_metric_config
+                             └─► generate_sql
                         └─► query_gate  (HITL 1)
                              └─► execute_query
                                   └─► decompose_metric
@@ -61,6 +63,7 @@ from agents.analyze.nodes import (
     log_run_node,
     narrative_gate,
     query_gate,
+    resolve_task_intent,
     run_cuped_node,
     run_hte_node,
     run_ttest_node,
@@ -179,6 +182,7 @@ def build_graph(checkpointer=None) -> StateGraph:
     builder.add_node("semantic_cache_gate",  semantic_cache_gate)
     builder.add_node("inject_history",        inject_history)
     builder.add_node("load_schema",           load_schema)
+    builder.add_node("resolve_task_intent",   resolve_task_intent)
     builder.add_node("infer_metric_config",   infer_metric_config_node)
     builder.add_node("generate_sql",          generate_sql)
     builder.add_node("query_gate",           query_gate)
@@ -226,7 +230,8 @@ def build_graph(checkpointer=None) -> StateGraph:
 
     # Main pipeline — linear through query execution
     builder.add_edge("inject_history",       "load_schema")
-    builder.add_edge("load_schema",          "infer_metric_config")
+    builder.add_edge("load_schema",          "resolve_task_intent")
+    builder.add_edge("resolve_task_intent",  "infer_metric_config")
     builder.add_edge("infer_metric_config",  "generate_sql")
     builder.add_edge("generate_sql",    "query_gate")
     builder.add_conditional_edges(

@@ -29,6 +29,7 @@ from tools.schemas import (
 class AgentState(TypedDict, total=False):
     # ── Input ─────────────────────────────────────────────────────────────────
     task: str                           # raw analyst/PM question
+    task_clarification: str             # analyst answer to the intent clarifying question (if any)
     relevant_history: list[dict]        # injected from memory store at run start
     db_backend: str                     # 'duckdb' | 'postgres'
     metric_config: MetricConfig         # single source of truth for all metric references

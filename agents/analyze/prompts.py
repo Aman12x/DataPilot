@@ -253,6 +253,36 @@ ANALYST_NOTES_BLOCK = """\
 """
 
 
+# ── TASK_INTENT_PROMPT ────────────────────────────────────────────────────────
+# Used by resolve_task_intent node to identify the primary metric from task wording.
+# Parameterised: {task}, {available_metrics}, {default_metric}
+
+TASK_INTENT_PROMPT = """\
+Analyze the analyst's task and identify the primary metric they want to measure.
+
+Available columns in schema: {available_metrics}
+Current default metric: {default_metric}
+
+Rules:
+- If the task clearly names or implies a specific metric, resolve it.
+- Set ambiguous=true only if two different metrics would produce materially
+  different analyses AND the task gives no signal to choose between them.
+- Do not ask if the answer is inferable from the task wording.
+- Return JSON only — no prose.
+
+Return a JSON object with these exact keys:
+  primary_metric      — the metric column to analyze (string)
+  metric_direction    — "higher_is_better" | "lower_is_better"
+  covariate           — best pre-experiment covariate column (string)
+  guardrail_metrics   — list of secondary metric columns to watch (list of strings)
+  ambiguous           — true if the task doesn't specify which metric to use (boolean)
+  clarifying_question — question to ask if ambiguous, otherwise null
+  reasoning           — one sentence explaining the metric choice (string)
+
+Task: {task}
+"""
+
+
 # ── SCHEMA_CONFIG_INFERENCE_PROMPT ────────────────────────────────────────────
 # One-time prompt run when a user connects an external DB with no config file.
 # Parameterised: {schema_context}

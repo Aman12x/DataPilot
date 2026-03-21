@@ -347,6 +347,17 @@ def _render_narrative_gate(payload: dict, snap=None) -> None:
         _download_button(narrative, snap=snap)
 
 
+def _render_intent_gate(payload: dict) -> None:
+    st.subheader("One question before we start")
+    st.markdown(f"**{payload.get('question', 'Which metric should this analysis focus on?')}**")
+    answer = st.text_input("Your answer:", key="intent_clarification")
+    if st.button("Continue", type="primary"):
+        if answer.strip():
+            _resume({"answer": answer.strip()})
+        else:
+            st.warning("Please answer before continuing.")
+
+
 def _render_semantic_cache_gate(payload: dict) -> None:
     hit_type = payload.get("hit_type", "hard")
     st.subheader("Cached analysis found" if hit_type == "hard" else "Similar analysis found")
@@ -501,7 +512,9 @@ def main() -> None:
         gate = payload.get("gate")
         st.session_state.current_gate = gate
 
-        if gate == "semantic_cache":
+        if gate == "intent":
+            _render_intent_gate(payload)
+        elif gate == "semantic_cache":
             _render_semantic_cache_gate(payload)
         elif gate == "query":
             _render_query_gate(payload, snap)
@@ -527,7 +540,7 @@ def _gate_progress(payload: dict | None) -> float:
     if payload is None:
         return 1.0
     gate = (payload or {}).get("gate", "")
-    return {"semantic_cache": 0.05, "query": 0.15, "analysis": 0.75, "narrative": 0.95}.get(gate, 0.5)
+    return {"semantic_cache": 0.05, "intent": 0.08, "query": 0.15, "analysis": 0.75, "narrative": 0.95}.get(gate, 0.5)
 
 
 if __name__ == "__main__":
