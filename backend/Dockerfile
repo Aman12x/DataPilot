@@ -29,4 +29,4 @@ EXPOSE 8000
 
 # Single worker: _runs and _run_owners are in-process dicts.
 # For multi-worker scale-out, migrate to a Redis-backed run registry first.
-CMD ["uvicorn", "backend.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+CMD ["sh", "-c", "uvicorn backend.api.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]
