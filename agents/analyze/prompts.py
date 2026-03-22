@@ -399,9 +399,15 @@ You are free to:
 - Include all relevant category columns in GROUP BY
 
 **Case D — Task asks for multiple of the above** \
-Use the FIRST matching case above. For multi-objective tasks (e.g. "show trend AND \
-top scorers AND breakdown by position"), write ONE query that answers the MOST \
-important sub-question. Prefer Case A (trends) when time comparison is central.
+Priority order: **A > C > B**. For multi-objective tasks, write ONE query using the \
+highest-priority matching case:
+- If the task asks about time trends → Case A
+- If the task asks for group/category breakdowns → Case C (even if it also asks for top-N individuals)
+- Individual rankings (Case B) only if the task asks ONLY for a ranked list
+
+**Why Case C > Case B**: group breakdowns (e.g. "avg salary by department and level") \
+capture the full population and answer ranking questions implicitly — the highest-avg \
+group IS the top group. Individual rankings are an additional drill-down, not the primary answer.
 
 **Aggregation rules for numeric columns:**
 - Binary flags (churned, converted, 0/1): `MAX()` — did entity ever have this outcome?

@@ -113,7 +113,11 @@ def compute_correlations(df: pd.DataFrame, top_n: int = 10) -> CorrelationResult
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 _TIME_KEYWORDS  = {"season", "year", "month", "week", "date", "period", "quarter", "day"}
-_GROUP_KEYWORDS = {"position", "pos", "team", "category", "segment", "group", "type", "tier", "region"}
+_GROUP_KEYWORDS = {
+    "position", "pos", "team", "category", "segment", "group", "type", "tier", "region",
+    "department", "dept", "division", "brand", "platform", "diagnosis", "level", "grade",
+    "status", "channel", "source", "cohort", "bucket", "class", "label",
+}
 
 
 def _compute_top_rows(df: pd.DataFrame, n: int = 10) -> list[dict] | None:

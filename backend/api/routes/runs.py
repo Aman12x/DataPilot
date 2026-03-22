@@ -301,6 +301,31 @@ async def stream_run(
             if await request.is_disconnected():
                 break
 
+            # On reconnect: if a gate interrupt is already pending in the graph
+            # state, replay it immediately without blocking on the queue.
+            # This handles the case where the graph hit an interrupt before the
+            # SSE client connected (e.g. intent gate fires during fast startup).
+            interrupt_payload = _snap_to_interrupt_payload(graph, run_id)
+            if interrupt_payload is not None:
+                gate    = interrupt_payload.get("gate", "unknown")
+                expires = int(time.time()) + _GATE_TIMEOUT_SECS
+                logger.info("run.gate (replay) run=%s gate=%s", run_id, gate)
+                from ..run_manager import get_redis_client as _get_redis
+                _r = _get_redis()
+                if _r:
+                    await _r.set(f"run:gate_deadline:{run_id}", expires,
+                                 ex=_GATE_TIMEOUT_SECS + 60)
+                yield {
+                    "data": json.dumps({
+                        "type":       "gate",
+                        "gate":       gate,
+                        "payload":    interrupt_payload,
+                        "expires_at": expires,
+                    }, cls=_JsonEncoder),
+                    "id": effective_last_id,
+                }
+                return
+
             item = await read_result(run_id, effective_last_id)
 
             if item is None:
