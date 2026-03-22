@@ -33,12 +33,17 @@ logger = logging.getLogger(__name__)
 
 # ── Initialise Langfuse (disabled automatically if keys are absent) ────────────
 
+_LANGFUSE_ENABLED = bool(
+    os.getenv("LANGFUSE_PUBLIC_KEY") and os.getenv("LANGFUSE_SECRET_KEY")
+)
+
 try:
-    from langfuse import observe as _lf_observe, get_client as _lf_get_client
-    _client = _lf_get_client()
-    _LANGFUSE_ENABLED = bool(
-        os.getenv("LANGFUSE_PUBLIC_KEY") and os.getenv("LANGFUSE_SECRET_KEY")
-    )
+    if _LANGFUSE_ENABLED:
+        from langfuse import observe as _lf_observe, get_client as _lf_get_client
+        _client = _lf_get_client()
+    else:
+        _lf_observe = None
+        _client     = None
 except Exception:           # noqa: BLE001
     _LANGFUSE_ENABLED = False
     _client            = None
