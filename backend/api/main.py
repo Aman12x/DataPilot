@@ -198,3 +198,8 @@ app.include_router(auth_router)
 app.include_router(runs_router)
 app.include_router(upload_router)
 app.include_router(samples_router)
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
