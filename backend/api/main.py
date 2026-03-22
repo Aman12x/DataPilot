@@ -133,28 +133,33 @@ async def lifespan(app: FastAPI):
     upload_dir = os.getenv("UPLOAD_DIR", "tmp_uploads")
     os.makedirs(upload_dir, exist_ok=True)
 
-    # ── DuckDB sample data ────────────────────────────────────────────────────
-    try:
-        import runpy
-        data_script = os.path.join(_PROJECT_ROOT, "data", "generate_data.py")
-        db_file     = os.path.join(_PROJECT_ROOT, "data", "dau_experiment.db")
-        if os.path.exists(data_script) and not os.path.exists(db_file):
-            runpy.run_path(data_script, run_name="__main__")
-            logger.info("DuckDB sample data generated")
-        else:
-            logger.info("DuckDB sample data ready")
-    except Exception as exc:
-        logger.warning("Could not generate DuckDB data: %s", exc)
+    # ── DuckDB + embedding warm-up run in background ──────────────────────────
+    # These are slow (~30s total) but not needed for the /health check.
+    # Running them as a background task lets uvicorn accept requests immediately
+    # so Railway's healthcheck passes while data generation continues.
+    import asyncio
 
-    # ── Pre-warm embedding model ──────────────────────────────────────────────
-    # Load MiniLM once at startup so the first user request doesn't pay the
-    # ~5 s cold-start penalty for SentenceTransformer weight loading.
-    try:
-        import asyncio
-        await asyncio.to_thread(_prewarm_embedder)
-        logger.info("Embedding model pre-warmed")
-    except Exception as exc:
-        logger.warning("Could not pre-warm embedding model: %s", exc)
+    async def _background_init():
+        try:
+            import runpy
+            data_script = os.path.join(_PROJECT_ROOT, "data", "generate_data.py")
+            db_file     = os.path.join(_PROJECT_ROOT, "data", "dau_experiment.db")
+            if os.path.exists(data_script) and not os.path.exists(db_file):
+                await asyncio.to_thread(
+                    runpy.run_path, data_script, run_name="__main__"
+                )
+                logger.info("DuckDB sample data generated")
+            else:
+                logger.info("DuckDB sample data ready")
+        except Exception as exc:
+            logger.warning("Could not generate DuckDB data: %s", exc)
+        try:
+            await asyncio.to_thread(_prewarm_embedder)
+            logger.info("Embedding model pre-warmed")
+        except Exception as exc:
+            logger.warning("Could not pre-warm embedding model: %s", exc)
+
+    asyncio.create_task(_background_init())
 
     yield
 
