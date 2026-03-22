@@ -23,7 +23,8 @@ Graph flow:
                                                                      └─► compute_mde
                                                                           └─► check_guardrails
                                                                                └─► compute_funnel
-                                                                                    └─► analysis_gate  (HITL 2)
+                                                                                    └─► generate_charts
+                                                                                         └─► analysis_gate  (HITL 2)
                                                                                          └─► generate_narrative
                                                                                               └─► narrative_gate  (HITL 3)
                                                                                                    ├─ approved ─► log_run ─► END
@@ -50,10 +51,13 @@ from agents.analyze.nodes import (
     compute_funnel_node,
     compute_mde_node,
     decompose_metric,
+    describe_data_node,
     detect_anomaly_node,
     detect_novelty_node,
     execute_query,
+    find_correlations_node,
     forecast_baseline_node,
+    generate_charts_node,
     generate_narrative,
     generate_sql,
     infer_metric_config_node,
@@ -136,6 +140,13 @@ def _route_after_cache_gate(state: AgentState) -> str:
     return "inject_history"
 
 
+def _route_after_execute_query(state: AgentState) -> str:
+    """Route to the general analysis path or the A/B test path."""
+    if state.get("analysis_mode", "ab_test") == "general":
+        return "describe_data"
+    return "load_auxiliary_data"
+
+
 def _route_after_narrative_gate(state: AgentState) -> str:
     """
     After narrative_gate:
@@ -205,6 +216,8 @@ def build_graph(checkpointer=None) -> StateGraph:
     builder.add_node("check_guardrails", check_guardrails_node)
     builder.add_node("compute_funnel",   compute_funnel_node)
 
+    builder.add_node("generate_charts",    generate_charts_node)
+
     # HITL gates + narrative
     builder.add_node("analysis_gate",      analysis_gate)
     builder.add_node("generate_narrative", generate_narrative)
@@ -240,8 +253,20 @@ def build_graph(checkpointer=None) -> StateGraph:
         {"execute_query": "execute_query", "generate_sql": "generate_sql"},
     )
 
-    # Load metrics_daily + funnel after the experiment query is done
-    builder.add_edge("execute_query",        "load_auxiliary_data")
+    # General-analysis nodes
+    builder.add_node("describe_data",      describe_data_node)
+    builder.add_node("find_correlations",  find_correlations_node)
+
+    # Route after execute_query: general → describe_data, ab_test → load_auxiliary_data
+    builder.add_conditional_edges(
+        "execute_query",
+        _route_after_execute_query,
+        {"describe_data": "describe_data", "load_auxiliary_data": "load_auxiliary_data"},
+    )
+
+    # General analysis path: describe → correlations → (shared) generate_charts → analysis_gate
+    builder.add_edge("describe_data",     "find_correlations")
+    builder.add_edge("find_correlations", "generate_charts")
 
     # Pre-experiment context (sequential for initial build; can be parallelised later)
     builder.add_edge("load_auxiliary_data",  "decompose_metric")
@@ -259,8 +284,9 @@ def build_graph(checkpointer=None) -> StateGraph:
     builder.add_edge("compute_mde",      "check_guardrails")
     builder.add_edge("check_guardrails", "compute_funnel")
 
-    # HITL gate 2 → narrative
-    builder.add_edge("compute_funnel", "analysis_gate")
+    # Charts → HITL gate 2 → narrative
+    builder.add_edge("compute_funnel",    "generate_charts")
+    builder.add_edge("generate_charts",   "analysis_gate")
     builder.add_edge("analysis_gate",  "generate_narrative")
     builder.add_edge("generate_narrative", "narrative_gate")
 

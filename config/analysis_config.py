@@ -43,6 +43,7 @@ class MetricConfig(BaseModel):
     date_col: str = "date"
     variant_col: str = "variant"
     week_col: str = "week"
+    assignment_date_col: str = "assignment_date"  # experiment table column marking exp start
 
     # ── Analysis configuration ────────────────────────────────────────────────
     guardrail_metrics: list[str]
@@ -131,7 +132,7 @@ DEFAULT_DAU_CONFIG = MetricConfig(
     primary_metric=os.getenv("DEFAULT_METRIC",          "dau_rate"),
     metric_source_col=os.getenv("DEFAULT_METRIC_SOURCE_COL", "dau_flag"),
     metric_agg=os.getenv("DEFAULT_METRIC_AGG",          "mean"),
-    covariate=os.getenv("DEFAULT_COVARIATE",            "pre_session_count"),
+    covariate=os.getenv("DEFAULT_COVARIATE",            "session_count"),
     metric_direction=os.getenv("DEFAULT_METRIC_DIRECTION", "higher_is_better"),  # type: ignore[arg-type]
     events_table=os.getenv("DEFAULT_EVENTS_TABLE",      "events"),
     experiment_table=os.getenv("DEFAULT_EXPERIMENT_TABLE", "experiment"),

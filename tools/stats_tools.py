@@ -56,7 +56,7 @@ def run_cuped(
 
     # Theta: OLS coefficient of metric ~ covariate (pooled)
     cov_matrix = np.cov(df[metric_col], df[covariate_col])
-    var_covariate = np.var(df[covariate_col], ddof=1)
+    var_covariate = float(df[covariate_col].var(ddof=1))
     if var_covariate == 0:
         raise ValueError(f"Covariate '{covariate_col}' has zero variance — cannot apply CUPED.")
 

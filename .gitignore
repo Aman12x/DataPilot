@@ -39,3 +39,13 @@ Thumbs.db
 dist/
 build/
 *.egg-info/
+
+# ── Runtime SQLite WAL files ──────────────────────────────────────────────────
+memory/*.db-shm
+memory/*.db-wal
+memory/graph.db
+
+# ── User uploads ──────────────────────────────────────────────────────────────
+tmp_uploads/
+frontend/node_modules/
+frontend/dist/

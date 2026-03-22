@@ -13,8 +13,10 @@ from typing_extensions import TypedDict, NotRequired
 from config.analysis_config import MetricConfig
 from tools.schemas import (
     AnomalyResult,
+    CorrelationResult,
     CupedResult,
     DecompositionResult,
+    DescribeResult,
     ForecastResult,
     FunnelResult,
     GuardrailResult,
@@ -23,15 +25,23 @@ from tools.schemas import (
     NoveltyResult,
     SliceResult,
     TtestResult,
+    TrustIndicators,
 )
 
 
 class AgentState(TypedDict, total=False):
     # ── Input ─────────────────────────────────────────────────────────────────
     task: str                           # raw analyst/PM question
+    analysis_mode: str                  # 'ab_test' | 'general'
     task_clarification: str             # analyst answer to the intent clarifying question (if any)
     relevant_history: list[dict]        # injected from memory store at run start
     db_backend: str                     # 'duckdb' | 'postgres'
+    duckdb_path: str                    # path to a user-uploaded DuckDB file (CSV/Excel upload)
+    pg_host:     str                    # postgres credentials (only used when db_backend='postgres')
+    pg_port:     int
+    pg_dbname:   str
+    pg_user:     str
+    pg_password: str
     metric_config: MetricConfig         # single source of truth for all metric references
     user_id: str                        # authenticated user — scopes memory store queries
 
@@ -92,6 +102,14 @@ class AgentState(TypedDict, total=False):
 
     # ── Analyst overrides (accumulated across all 3 HITL gates) ──────────────
     analyst_override: dict              # keys: sql_edited, analysis_notes, narrative_notes, recommendation_override
+
+    # ── General analysis (analysis_mode == 'general') ─────────────────────────
+    describe_result:     DescribeResult
+    correlation_result:  CorrelationResult
+
+    # ── Visualisations ────────────────────────────────────────────────────────
+    charts: list[dict]                  # list of ChartSpec dicts (serialised for SSE)
+    trust_indicators: dict              # TrustIndicators dict (serialised for SSE)
 
     # ── Memory ────────────────────────────────────────────────────────────────
     run_id: str

@@ -165,3 +165,64 @@ class MdeResult(BaseModel):
 class NarrativeResult(BaseModel):
     narrative_draft: str
     recommendation:  str
+
+
+# ── describe_tools ────────────────────────────────────────────────────────────
+
+class ColumnSummary(BaseModel):
+    name:       str
+    dtype:      str
+    non_null:   int
+    null_count: int
+    # numeric
+    mean:       Optional[float] = None
+    std:        Optional[float] = None
+    min:        Optional[float] = None
+    p25:        Optional[float] = None
+    median:     Optional[float] = None
+    p75:        Optional[float] = None
+    max:        Optional[float] = None
+    # categorical
+    n_unique:   Optional[int]   = None
+    top_values: Optional[list[str]] = None   # top-5 value: count strings
+
+
+class DescribeResult(BaseModel):
+    row_count:   int
+    col_count:   int
+    columns:     list[ColumnSummary]
+
+
+class CorrelationPair(BaseModel):
+    col_a:       str
+    col_b:       str
+    correlation: float          # Pearson r, rounded to 4 dp
+
+
+class CorrelationResult(BaseModel):
+    pairs: list[CorrelationPair]  # top N by |r|, descending
+
+
+# ── chart_tools ───────────────────────────────────────────────────────────────
+
+class ChartSpec(BaseModel):
+    """Serialisable chart definition consumed by recharts in the frontend."""
+    chart_type:     str                         # 'bar' | 'bar_horizontal' | 'line' | 'scatter'
+    title:          str
+    insight:        str                         # 1-sentence plain-language takeaway
+    data:           list[dict]                  # recharts-compatible array of dicts
+    x_key:          str
+    y_key:          str
+    y_key2:         Optional[str]  = None       # second series (grouped bars)
+    color:          str            = "#89b4fa"
+    color2:         Optional[str]  = None
+    error_bar_low:  Optional[str]  = None
+    error_bar_high: Optional[str]  = None
+    x_label:        Optional[str]  = None
+    y_label:        Optional[str]  = None
+
+
+class TrustIndicators(BaseModel):
+    n_data_points:     int
+    confidence_level:  str   # 'high' | 'medium' | 'low'
+    confidence_reason: str

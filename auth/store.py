@@ -43,6 +43,108 @@ def init_db(path: str | None = None) -> None:
                 created_at TEXT NOT NULL
             )
         """)
+        # Revoked refresh tokens — checked on every /auth/refresh call.
+        # jti (JWT ID) is stored; tokens without a jti are treated as revoked
+        # to prevent use of old tokens issued before this table existed.
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS revoked_tokens (
+                jti        TEXT PRIMARY KEY,
+                revoked_at TEXT NOT NULL
+            )
+        """)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                token      TEXT PRIMARY KEY,
+                user_id    TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                used       INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+
+
+def revoke_token(jti: str, path: str | None = None) -> None:
+    """Mark a refresh token JTI as revoked."""
+    path = path or _auth_db_path()
+    init_db(path)
+    ts = datetime.now(timezone.utc).isoformat()
+    with _connect(path) as con:
+        con.execute(
+            "INSERT OR IGNORE INTO revoked_tokens (jti, revoked_at) VALUES (?, ?)",
+            (jti, ts),
+        )
+
+
+def create_reset_token(email: str, path: str | None = None) -> str | None:
+    """
+    Create a 1-hour password-reset token for the given email.
+    Returns the token string, or None if no account with that email exists.
+    """
+    from datetime import timedelta
+    path = path or _auth_db_path()
+    init_db(path)
+    with _connect(path) as con:
+        row = con.execute("SELECT user_id FROM users WHERE email = ?",
+                          (email.strip().lower(),)).fetchone()
+    if row is None:
+        return None
+    token      = secrets.token_urlsafe(32)
+    expires_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    with _connect(path) as con:
+        con.execute(
+            "INSERT INTO password_reset_tokens (token, user_id, expires_at) VALUES (?, ?, ?)",
+            (token, row["user_id"], expires_at),
+        )
+    return token
+
+
+def consume_reset_token(token: str, path: str | None = None) -> str | None:
+    """
+    Validate and consume a reset token.
+    Returns user_id on success, None if invalid/expired/already used.
+    Marks the token as used so it cannot be replayed.
+    """
+    path = path or _auth_db_path()
+    init_db(path)
+    now = datetime.now(timezone.utc).isoformat()
+    with _connect(path) as con:
+        row = con.execute(
+            """SELECT user_id, expires_at, used FROM password_reset_tokens
+               WHERE token = ?""",
+            (token,),
+        ).fetchone()
+        if row is None or row["used"] or row["expires_at"] < now:
+            return None
+        con.execute(
+            "UPDATE password_reset_tokens SET used = 1 WHERE token = ?", (token,)
+        )
+    return row["user_id"]
+
+
+def update_password(user_id: str, new_password: str, path: str | None = None) -> bool:
+    """Update the password for a user. Returns True on success."""
+    if len(new_password) < 8:
+        return False
+    path = path or _auth_db_path()
+    init_db(path)
+    salt     = secrets.token_hex(32)
+    pwd_hash = _hash_password(new_password, salt)
+    with _connect(path) as con:
+        con.execute(
+            "UPDATE users SET pwd_hash = ?, salt = ? WHERE user_id = ?",
+            (pwd_hash, salt, user_id),
+        )
+    return True
+
+
+def is_token_revoked(jti: str, path: str | None = None) -> bool:
+    """Return True if this JTI has been revoked."""
+    path = path or _auth_db_path()
+    init_db(path)
+    with _connect(path) as con:
+        row = con.execute(
+            "SELECT 1 FROM revoked_tokens WHERE jti = ?", (jti,)
+        ).fetchone()
+    return row is not None
 
 
 @dataclass

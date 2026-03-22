@@ -26,9 +26,11 @@ from langgraph.types import interrupt
 from agents.analyze.prompts import (
     ANALYST_NOTES_BLOCK,
     HISTORY_INJECTION_PREFIX,
+    INSIGHTS_NARRATIVE_PROMPT,
     NARRATIVE_PROMPT,
     SCHEMA_CONFIG_INFERENCE_PROMPT,
     SQL_CORRECTION_PROMPT,
+    SQL_GENERATION_GENERAL_PROMPT,
     SQL_GENERATION_PROMPT,
     SYSTEM_PROMPT,
     TASK_INTENT_PROMPT,
@@ -42,6 +44,7 @@ from memory.store import log_run, update_eval_score
 from tools import (
     anomaly_tools,
     decomposition_tools,
+    describe_tools,
     forecast_tools,
     funnel_tools,
     guardrail_tools,
@@ -52,6 +55,11 @@ from tools import (
 )
 from tools.db_tools import DBConnection
 from tools.schemas import SliceResult
+from tools.chart_tools import (
+    compute_trust_indicators,
+    generate_ab_charts,
+    generate_general_charts,
+)
 
 load_dotenv()
 
@@ -98,6 +106,11 @@ def _anthropic_client() -> anthropic.Anthropic:
 
 def _model() -> str:
     return os.getenv("MODEL", "claude-sonnet-4-20250514")
+
+
+def _fast_model() -> str:
+    """Haiku for latency-sensitive tasks (SQL gen, correction) where speed > depth."""
+    return os.getenv("FAST_MODEL", "claude-haiku-4-5-20251001")
 
 
 def _build_cached_messages(
@@ -218,12 +231,18 @@ def _canonical_experiment_sql(mc: "MetricConfig") -> str:
     segment_selects = "\n".join(f"    e.{c}," for c in mc.segment_cols)
     segment_group   = ", ".join(f"e.{c}" for c in mc.segment_cols)
 
+    # Cast both sides to VARCHAR for date comparisons so that VARCHAR date
+    # columns (e.g. "month" as "2023-01") never cause type-mismatch errors
+    # against the DATE assignment_date column in the stub experiment table.
+    min_assign = f"CAST((SELECT MIN({mc.assignment_date_col}) FROM {mc.experiment_table}) AS VARCHAR)"
+    date_cast  = f"CAST(e.{mc.date_col} AS VARCHAR)"
+
     return f"""\
 WITH pre_exp AS (
     SELECT {mc.user_id_col},
            {covariate_agg_expr} AS {mc.covariate}
     FROM   {mc.events_table} pre_events
-    WHERE  {mc.date_col} < (SELECT MIN(assignment_date) FROM {mc.experiment_table})
+    WHERE  CAST(pre_events.{mc.date_col} AS VARCHAR) < {min_assign}
     GROUP  BY {mc.user_id_col}
 )
 SELECT
@@ -237,25 +256,39 @@ SELECT
 FROM       {mc.experiment_table} ex
 JOIN       {mc.events_table} e
            ON  e.{mc.user_id_col} = ex.{mc.user_id_col}
-           AND e.{mc.date_col} >= (SELECT MIN(assignment_date) FROM {mc.experiment_table})
+           AND {date_cast} >= {min_assign}
 LEFT JOIN  pre_exp p ON ex.{mc.user_id_col} = p.{mc.user_id_col}
-GROUP BY   e.{mc.user_id_col}, ex.{mc.variant_col}, ex.{mc.week_col},
-           {segment_group}, p.{mc.covariate}
+GROUP BY   e.{mc.user_id_col}, ex.{mc.variant_col}, ex.{mc.week_col}{", " + segment_group if segment_group else ""}, p.{mc.covariate}
 LIMIT 50000"""
 
 
 def _extract_sql(text: str) -> str:
     """Extract SQL from a ```sql ... ``` code block in LLM output."""
+    # Prefer fully closed fence
     match = re.search(r"```sql\s*(.*?)```", text, re.DOTALL | re.IGNORECASE)
     if match:
         return match.group(1).strip()
-    # Fallback: if no fences, return raw text stripped
-    return text.strip()
+    # Handle unclosed fence (LLM output truncated before closing ```)
+    match = re.search(r"```sql\s*(.*)", text, re.DOTALL | re.IGNORECASE)
+    if match:
+        return match.group(1).strip().rstrip("`").strip()
+    # Fallback: return raw text stripped of any stray backticks
+    return text.strip().strip("`").strip()
 
 
 def _db_conn(state: AgentState) -> DBConnection:
     backend = state.get("db_backend", "duckdb")
-    path    = os.getenv("DUCKDB_PATH", "data/dau_experiment.db")
+    if backend == "postgres":
+        return DBConnection(
+            backend="postgres",
+            host=state.get("pg_host")     or os.getenv("PG_HOST", "localhost"),
+            port=int(state.get("pg_port") or os.getenv("PG_PORT", "5432")),
+            dbname=state.get("pg_dbname") or os.getenv("PG_DBNAME", ""),
+            user=state.get("pg_user")     or os.getenv("PG_USER", ""),
+            password=state.get("pg_password") or os.getenv("PG_PASSWORD", ""),
+        )
+    # prefer state-injected path (CSV/Excel upload) over env-var default
+    path = state.get("duckdb_path") or os.getenv("DUCKDB_PATH", "data/dau_experiment.db")
     return DBConnection(backend=backend, path=path)
 
 
@@ -290,7 +323,8 @@ def _validate_sql_references(sql: str, schema_context: str) -> dict[str, list[st
     for line in schema_context.splitlines():
         s = line.strip()
         if s.startswith("TABLE:"):
-            current = s.split(":", 1)[1].strip().lower()
+            raw = s.split(":", 1)[1].strip()
+            current = raw.split("--")[0].strip().lower()  # strip "-- N rows" annotation
             tables[current] = set()
         elif current and s and not s.startswith("--") and not s.startswith("DIALECT"):
             col = s.split()[0].lower()
@@ -357,6 +391,55 @@ def _validate_sql_references(sql: str, schema_context: str) -> dict[str, list[st
     return {"bad_tables": bad_tables, "bad_columns": bad_columns}
 
 
+def _tables_in_sql(sql: str) -> set[str]:
+    """
+    Extract real (non-CTE) table names from FROM/JOIN clauses.
+    Used to filter few-shot examples whose SQL references tables absent from
+    the current schema — prevents demo-DB examples from misleading the LLM
+    when the user has uploaded a completely different dataset.
+    """
+    # Identify CTE aliases so we don't count them as real tables
+    cte_names: set[str] = set()
+    for m in re.finditer(r'\bWITH\s+(\w+)\s+AS\b', sql, re.IGNORECASE):
+        cte_names.add(m.group(1).lower())
+    for m in re.finditer(r',\s*(\w+)\s+AS\s*\(', sql, re.IGNORECASE):
+        cte_names.add(m.group(1).lower())
+
+    tables: set[str] = set()
+    for m in re.finditer(r'\b(?:FROM|JOIN)\s+(\w+)', sql, re.IGNORECASE):
+        name = m.group(1).lower()
+        if name.upper() not in _SQL_KEYWORDS and len(name) > 2 and name not in cte_names:
+            tables.add(name)
+    return tables
+
+
+def _filter_few_shot_by_schema(
+    examples: list[dict],
+    known_tables: set[str],
+) -> list[dict]:
+    """
+    Drop any few-shot example whose SQL references a table that does not exist
+    in the current schema.
+
+    Rationale: the memory store accumulates examples from all past runs.
+    If a user uploads a SaaS-churn CSV, we must not inject examples from the
+    built-in demo DB (which reference `events`, `experiment`, `metrics_daily`)
+    because these table names do not exist in their upload — the LLM may mimic
+    the JOIN pattern and generate broken SQL.
+
+    An example is kept when:
+      - Its SQL references no tables (degenerate but safe), OR
+      - Every table it references is present in the current schema.
+    """
+    if not known_tables:
+        return examples
+    return [
+        ex for ex in examples
+        if not _tables_in_sql(ex.get("sql", ""))
+        or _tables_in_sql(ex.get("sql", "")).issubset(known_tables)
+    ]
+
+
 def _build_few_shot_block(examples: list[dict]) -> str:
     """
     Format a list of {task, sql} dicts as a few-shot in-context block for
@@ -383,13 +466,30 @@ def _known_schema_names(schema_context: str) -> tuple[set[str], set[str]]:
     for line in schema_context.splitlines():
         s = line.strip()
         if s.startswith("TABLE:"):
-            current = s.split(":", 1)[1].strip().lower()
+            raw = s.split(":", 1)[1].strip()
+            current = raw.split("--")[0].strip().lower()  # strip "-- N rows" annotation
             known_tables.add(current)
         elif current and s and not s.startswith("--") and not s.startswith("DIALECT"):
             col = s.split()[0].lower()
             if col:
                 known_columns.add(col)
     return known_tables, known_columns
+
+
+def _columns_for_table(schema_context: str, table_name: str) -> set[str]:
+    """Return the lowercased column names for a specific table in the schema."""
+    cols: set[str] = set()
+    inside = False
+    for line in schema_context.splitlines():
+        s = line.strip()
+        if s.startswith("TABLE:"):
+            raw = s.split(":", 1)[1].strip()
+            inside = raw.split("--")[0].strip().lower() == table_name.lower()
+        elif inside and s and not s.startswith("--") and not s.startswith("DIALECT"):
+            col = s.split()[0].lower()
+            if col:
+                cols.add(col)
+    return cols
 
 
 def _sanitise_metric_config(
@@ -400,15 +500,18 @@ def _sanitise_metric_config(
     """
     Cross-check MetricConfig column/table fields against the live schema.
 
-    For any field whose value doesn't appear in the schema, log a warning and
-    substitute the corresponding value from `defaults`.  Table name fields are
-    checked against known_tables; column name fields against known_columns.
+    For any field whose value doesn't appear in the schema:
+      1. Try the corresponding `defaults` value.
+      2. If that also isn't in the schema (common for uploaded files where
+         built-in demo defaults like 'pre_session_count' don't apply), fall
+         back to the first available column from the live schema rather than
+         silently writing a non-existent name into the config.
+
+    Table name fields are checked against known_tables; column name fields
+    against known_columns.
 
     Returns:
         (sanitised MetricConfig, list of warning strings)
-
-    This prevents hallucinated column names from infer_metric_config_node
-    from propagating to _canonical_experiment_sql() and generating broken SQL.
     """
     if not schema_context.strip():
         return mc, []  # no schema to validate against
@@ -417,22 +520,44 @@ def _sanitise_metric_config(
     if not known_tables and not known_columns:
         return mc, []
 
+    # Stable fallback pool: columns sorted so the pick is deterministic
+    _sorted_cols = sorted(known_columns)
+
+    def _best_col(*candidates: str) -> str:
+        """Return first candidate present in schema, or first schema column."""
+        for c in candidates:
+            if c and c.lower() in known_columns:
+                return c
+        return _sorted_cols[0] if _sorted_cols else candidates[-1]
+
+    def _best_table(*candidates: str | None) -> str | None:
+        for c in candidates:
+            if c and c.lower() in known_tables:
+                return c
+        return None
+
     warnings: list[str] = []
     overrides: dict = {}
 
     def _check_col(field: str, value: str, fallback: str) -> None:
-        if value.lower() not in known_columns:
-            warnings.append(
-                f"{field}={value!r} not found in schema — using default {fallback!r}"
-            )
-            overrides[field] = fallback
+        if value.lower() in known_columns:
+            return
+        effective = _best_col(fallback, value)
+        warnings.append(
+            f"{field}={value!r} not in schema"
+            + (f" (default {fallback!r} also absent)" if fallback.lower() not in known_columns else "")
+            + f" — using {effective!r}"
+        )
+        overrides[field] = effective
 
     def _check_table(field: str, value: str | None, fallback: str | None) -> None:
-        if value and value.lower() not in known_tables:
-            warnings.append(
-                f"{field}={value!r} not found in schema — using default {fallback!r}"
-            )
-            overrides[field] = fallback
+        if not value or value.lower() in known_tables:
+            return
+        effective = _best_table(fallback, value)
+        warnings.append(
+            f"{field}={value!r} not in schema — using {effective!r}"
+        )
+        overrides[field] = effective
 
     # Column name fields
     _check_col("metric_source_col", mc.metric_source_col, defaults.metric_source_col)
@@ -443,29 +568,30 @@ def _sanitise_metric_config(
     _check_col("week_col",          mc.week_col,          defaults.week_col)
 
     # Table name fields (optional tables may be None)
-    _check_table("events_table",      mc.events_table,      defaults.events_table)
-    _check_table("experiment_table",  mc.experiment_table,  defaults.experiment_table)
+    _check_table("events_table",     mc.events_table,     defaults.events_table)
+    _check_table("experiment_table", mc.experiment_table, defaults.experiment_table)
     if mc.timeseries_table:
         _check_table("timeseries_table", mc.timeseries_table, defaults.timeseries_table)
     if mc.funnel_table:
         _check_table("funnel_table", mc.funnel_table, defaults.funnel_table)
 
-    # List fields — drop any element not in schema columns
+    # List fields — drop elements not in schema; try defaults as fallback only if
+    # the default values themselves exist in the schema (demo DB case).
+    # For uploads where defaults also aren't in the schema, the result is an
+    # empty list rather than a list of non-existent column names.
     clean_guardrails = [m for m in mc.guardrail_metrics if m.lower() in known_columns]
     if len(clean_guardrails) < len(mc.guardrail_metrics):
         dropped = set(mc.guardrail_metrics) - set(clean_guardrails)
-        warnings.append(
-            f"guardrail_metrics: removed {sorted(dropped)} (not in schema)"
-        )
-        overrides["guardrail_metrics"] = clean_guardrails or defaults.guardrail_metrics
+        warnings.append(f"guardrail_metrics: removed {sorted(dropped)} (not in schema)")
+        schema_defaults = [m for m in defaults.guardrail_metrics if m.lower() in known_columns]
+        overrides["guardrail_metrics"] = clean_guardrails or schema_defaults
 
     clean_segments = [c for c in mc.segment_cols if c.lower() in known_columns]
     if len(clean_segments) < len(mc.segment_cols):
         dropped = set(mc.segment_cols) - set(clean_segments)
-        warnings.append(
-            f"segment_cols: removed {sorted(dropped)} (not in schema)"
-        )
-        overrides["segment_cols"] = clean_segments or defaults.segment_cols
+        warnings.append(f"segment_cols: removed {sorted(dropped)} (not in schema)")
+        schema_defaults = [c for c in defaults.segment_cols if c.lower() in known_columns]
+        overrides["segment_cols"] = clean_segments or schema_defaults
 
     if not overrides:
         return mc, []
@@ -492,7 +618,7 @@ def _llm_correct_sql(
     )
     try:
         response = _anthropic_client().messages.create(
-            model=_model(),
+            model=_fast_model(),
             max_tokens=_MAX_TOKENS_SQL,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -572,10 +698,12 @@ def inject_history(state: AgentState) -> dict:
 
 @observe(name="load_schema")
 def load_schema(state: AgentState) -> dict:
-    task = state.get("task", "")
+    task      = state.get("task", "")
+    is_upload = bool(state.get("duckdb_path"))
 
-    # Use cache unless task explicitly requests refresh
-    refresh = "schema changed" in task.lower() or "refresh schema" in task.lower()
+    # Uploads always get a fresh schema inspection — each file is unique and
+    # must never read from or write to the shared demo-DB cache.
+    refresh = is_upload or "schema changed" in task.lower() or "refresh schema" in task.lower()
 
     if not refresh and os.path.exists(_SCHEMA_CACHE_PATH):
         try:
@@ -589,9 +717,11 @@ def load_schema(state: AgentState) -> dict:
 
     if schema_context is None:
         schema_context = _db_conn(state).inspect_schema()
-        os.makedirs(os.path.dirname(_SCHEMA_CACHE_PATH), exist_ok=True)
-        with open(_SCHEMA_CACHE_PATH, "w") as f:
-            json.dump({"schema_context": schema_context}, f, indent=2)
+        if not is_upload:
+            # Only cache the shared demo-DB schema, never per-upload schemas.
+            os.makedirs(os.path.dirname(_SCHEMA_CACHE_PATH), exist_ok=True)
+            with open(_SCHEMA_CACHE_PATH, "w") as f:
+                json.dump({"schema_context": schema_context}, f, indent=2)
 
     # Prepend SQL dialect so the LLM never has to guess the engine.
     # This is the single most effective guard against dialect-specific syntax errors.
@@ -607,6 +737,13 @@ def load_schema(state: AgentState) -> dict:
         "metric_config":  mc,
         "metric":         mc.primary_metric,
         "covariate":      mc.covariate,
+        # Wipe Postgres credentials from the checkpoint immediately after use.
+        # They are only needed for _db_conn(); keeping them in state leaks
+        # them into the SQLite/Postgres checkpoint file on disk.
+        "pg_password": "",
+        "pg_user":     "",
+        "pg_host":     "",
+        "pg_dbname":   "",
     }
 
 
@@ -642,6 +779,7 @@ def _llm_resolve_intent(
     messages = _build_cached_messages(schema_context, history_text, task_prompt)
 
     safe_default = {
+        "analysis_mode":       "ab_test",
         "primary_metric":      mc.primary_metric,
         "metric_direction":    mc.metric_direction,
         "covariate":           mc.covariate,
@@ -705,11 +843,13 @@ def _apply_intent_to_config(
         if direction in ("higher_is_better", "lower_is_better"):
             overrides["metric_direction"] = direction
     if covariate := result.get("covariate"):
-        if not known_columns or covariate.lower() in known_columns:
+        events_cols_cov = _columns_for_table(schema_context, mc.events_table)
+        in_events = not events_cols_cov or covariate.lower() in events_cols_cov
+        if in_events and (not known_columns or covariate.lower() in known_columns):
             overrides["covariate"] = covariate
         else:
             logger.warning(
-                "_apply_intent_to_config: covariate %r not in schema — keeping original.",
+                "_apply_intent_to_config: covariate %r not in events table — keeping original.",
                 covariate,
             )
     if guardrails := result.get("guardrail_metrics"):
@@ -718,9 +858,15 @@ def _apply_intent_to_config(
             if valid:
                 overrides["guardrail_metrics"] = valid
 
-    # metric_source_col should match primary_metric when both are schema columns
+    # metric_source_col should match primary_metric only if primary exists in
+    # the events table specifically.  A metric like "dau" may exist in a
+    # timeseries table but NOT in events; in that case preserve the original
+    # metric_source_col (e.g. "dau_flag") so canonical SQL stays valid.
     if "primary_metric" in overrides:
-        overrides["metric_source_col"] = primary
+        events_cols = _columns_for_table(schema_context, mc.events_table)
+        if not events_cols or primary.lower() in events_cols:
+            overrides["metric_source_col"] = primary
+        # else: primary is not an events column — keep original metric_source_col
 
     try:
         updated = mc.model_copy(update=overrides)
@@ -770,11 +916,22 @@ def resolve_task_intent(state: AgentState) -> dict:
 
     updated_mc = _apply_intent_to_config(result, mc, schema_context)
 
+    # Auto-detect analysis_mode from LLM — only if not explicitly set by the caller.
+    # "general" tasks shouldn't be forced through the full A/B experiment pipeline.
+    detected_mode = result.get("analysis_mode", "ab_test")
+    if detected_mode not in ("ab_test", "general"):
+        detected_mode = "ab_test"
+    # Prefer an explicitly passed mode (e.g. from API caller who knows their data),
+    # but fall back to LLM detection when the state has no mode or has the default.
+    current_mode = state.get("analysis_mode", "")
+    final_mode = current_mode if current_mode in ("ab_test", "general") else detected_mode
+
     return {
         "metric_config":      updated_mc,
         "metric":             updated_mc.primary_metric,
         "covariate":          updated_mc.covariate,
         "task_clarification": clarification,
+        "analysis_mode":      final_mode,
     }
 
 
@@ -791,34 +948,46 @@ def generate_sql(state: AgentState) -> dict:
     history_text   = _format_history(state.get("relevant_history", []))
     db_backend     = state.get("db_backend", "duckdb")
     mc             = state.get("metric_config") or load_metric_config()
+    mode           = state.get("analysis_mode", "ab_test")
 
-    # ── Few-shot retrieval ────────────────────────────────────────────────────
-    # Retrieve up to 2 verified question-SQL pairs from the memory store and
-    # inject them as in-context examples.  Empty on first run; grows over time.
-    sql_examples    = retrieve_sql_examples(task)
-    few_shot_block  = _build_few_shot_block(sql_examples)
+    # ── Few-shot retrieval — schema-filtered ─────────────────────────────────
+    # Only inject examples whose SQL references tables present in the current
+    # schema.  Prevents demo-DB examples (events, experiment, metrics_daily)
+    # from misleading the LLM when the user uploads a different dataset.
+    current_tables = _known_schema_names(schema_context)[0]
+    sql_examples   = retrieve_sql_examples(task, user_id=state.get("user_id"))
+    sql_examples   = _filter_few_shot_by_schema(sql_examples, current_tables)
+    few_shot_block = _build_few_shot_block(sql_examples)
 
-    task_prompt = SQL_GENERATION_PROMPT.format(
-        task=task,
-        schema_context=schema_context,
-        db_backend=db_backend,
-        metric_context=_metric_context(mc),
-        primary_metric=mc.primary_metric,
-        metric_source_col=mc.metric_source_col,
-        metric_agg=mc.metric_agg,
-        covariate=mc.covariate,
-        variant_col=mc.variant_col,
-        week_col=mc.week_col,
-        guardrail_metrics_csv=", ".join(mc.guardrail_metrics),
-        segment_cols_csv=", ".join(mc.segment_cols),
-        sql_template=_canonical_experiment_sql(mc),
-        few_shot_block=few_shot_block,
-    )
+    if mode == "general":
+        task_prompt = SQL_GENERATION_GENERAL_PROMPT.format(
+            task=task,
+            schema_context=schema_context,
+            db_backend=db_backend,
+            metric_context=_metric_context(mc),
+        )
+    else:
+        task_prompt = SQL_GENERATION_PROMPT.format(
+            task=task,
+            schema_context=schema_context,
+            db_backend=db_backend,
+            metric_context=_metric_context(mc),
+            primary_metric=mc.primary_metric,
+            metric_source_col=mc.metric_source_col,
+            metric_agg=mc.metric_agg,
+            covariate=mc.covariate,
+            variant_col=mc.variant_col,
+            week_col=mc.week_col,
+            guardrail_metrics_csv=", ".join(mc.guardrail_metrics),
+            segment_cols_csv=", ".join(mc.segment_cols),
+            sql_template=_canonical_experiment_sql(mc),
+            few_shot_block=few_shot_block,
+        )
     messages = _build_cached_messages(schema_context, history_text, task_prompt)
 
-    with trace_generation("generate_sql", _model(), task_prompt) as gen:
+    with trace_generation("generate_sql", _fast_model(), task_prompt) as gen:
         response = _anthropic_client().messages.create(
-            model=_model(),
+            model=_fast_model(),
             max_tokens=_MAX_TOKENS_SQL,
             messages=messages,
         )
@@ -870,11 +1039,25 @@ def generate_sql(state: AgentState) -> dict:
 
 @observe(name="query_gate")
 def query_gate(state: AgentState) -> dict:
+    warnings    = state.get("sql_validation_warnings", [])
+    db_backend  = state.get("db_backend", "duckdb")
+
+    # Auto-approve clean queries on non-Postgres backends (uploaded files, demo data).
+    # Postgres queries always require human review — they run against external production DBs.
+    # Any query with validation warnings always requires review regardless of backend.
+    if db_backend != "postgres" and not warnings:
+        logger.info("query_gate: auto-approving clean %s query", db_backend)
+        return {
+            "query_approved": True,
+            "generated_sql":  state.get("generated_sql", ""),
+            "analyst_override": {},
+        }
+
     payload = {
         "gate":                     "query",
         "generated_sql":            state.get("generated_sql", ""),
         "cache_hit":                state.get("semantic_cache_hit", False),
-        "sql_validation_warnings":  state.get("sql_validation_warnings", []),
+        "sql_validation_warnings":  warnings,
         "message":                  "Review the generated SQL. Approve, or provide a corrected query.",
     }
     analyst_response = interrupt(payload)
@@ -963,6 +1146,54 @@ def execute_query(state: AgentState) -> dict:
             raise ValueError(
                 f"execute_query: LLM SQL and canonical SQL both failed. Last error: {exc}"
             ) from exc
+
+    # Deduplicate columns — LLM SQL may emit the same column twice (e.g. when
+    # covariate == a guardrail metric).  Keep the first occurrence only.
+    if df.columns.duplicated().any():
+        df = df.loc[:, ~df.columns.duplicated()]
+
+    # ── Phase 3 (general mode only): panel-data deduplication guard ───────────
+    # If the result has a recognisable entity-ID column with duplicates, the
+    # LLM probably forgot to GROUP BY and returned raw panel/longitudinal rows.
+    # Ask the LLM to add the missing aggregation and re-execute once.
+    _ENTITY_COLS = {"user_id", "customer_id", "patient_id", "userid",
+                    "uid", "entity_id", "id", "shipment_id"}
+    if state.get("analysis_mode") == "general":
+        entity_col = next((c for c in df.columns if c.lower() in _ENTITY_COLS), None)
+        if entity_col and df[entity_col].duplicated().any():
+            n_rows    = len(df)
+            n_entity  = df[entity_col].nunique()
+            ratio     = round(n_rows / max(n_entity, 1), 1)
+            logger.warning(
+                "execute_query: panel data detected — %d rows but only %d distinct %s "
+                "(%.1f rows/entity). Requesting aggregation fix.",
+                n_rows, n_entity, entity_col, ratio,
+            )
+            hint = (
+                f"The query returned {n_rows} rows but only {n_entity} distinct "
+                f"'{entity_col}' values ({ratio} rows per entity). "
+                f"This is panel/longitudinal data that must be collapsed to one row "
+                f"per {entity_col}. Add GROUP BY {entity_col} (and any categorical "
+                f"columns) with MAX() for binary flags and AVG() for numeric metrics."
+            )
+            fixed = _llm_correct_sql(current_sql, hint, schema_context, task)
+            if fixed.strip() and fixed.strip() != current_sql.strip():
+                try:
+                    df_fixed = _db_conn(state).query(fixed)
+                    entity_col2 = next(
+                        (c for c in df_fixed.columns if c.lower() in _ENTITY_COLS), None
+                    )
+                    if entity_col2 and not df_fixed[entity_col2].duplicated().any():
+                        logger.info(
+                            "execute_query: aggregation fix succeeded — %d rows → %d.",
+                            n_rows, len(df_fixed),
+                        )
+                        df = df_fixed
+                        current_sql = fixed
+                    else:
+                        logger.warning("execute_query: aggregation fix still has duplicates — keeping original.")
+                except Exception as exc:
+                    logger.warning("execute_query: aggregation fix failed (%s) — keeping original.", exc)
 
     result: dict = {"query_result": df}
     if current_sql != sql:
@@ -1331,41 +1562,130 @@ def compute_funnel_node(state: AgentState) -> dict:
     return {"funnel_result": result}
 
 
+# ── Node 16b: describe_data_node (general analysis) ───────────────────────────
+
+@observe(name="describe_data")
+def describe_data_node(state: AgentState) -> dict:
+    df = _safe_df(state)
+    if df is None:
+        logger.warning("describe_data: no query_result, skipping.")
+        return {}
+    try:
+        result = describe_tools.describe_dataframe(df)
+        return {"describe_result": result}
+    except Exception as exc:
+        logger.warning("describe_data: failed (%s), skipping.", exc)
+        return {}
+
+
+# ── Node 16c: find_correlations_node (general analysis) ───────────────────────
+
+@observe(name="find_correlations")
+def find_correlations_node(state: AgentState) -> dict:
+    df = _safe_df(state)
+    if df is None:
+        logger.warning("find_correlations: no query_result, skipping.")
+        return {}
+    try:
+        result = describe_tools.compute_correlations(df)
+        return {"correlation_result": result}
+    except Exception as exc:
+        logger.warning("find_correlations: failed (%s), skipping.", exc)
+        return {}
+
+
+# ── Node 16d: generate_charts_node ────────────────────────────────────────────
+
+@observe(name="generate_charts")
+def generate_charts_node(state: AgentState) -> dict:
+    """
+    Deterministic chart generation — no LLM calls.
+    Runs after the analysis computations but before the analysis gate so that
+    charts are available in the gate's interrupt payload.
+    """
+    mode = state.get("analysis_mode", "ab_test")
+    try:
+        if mode == "general":
+            describe = state.get("describe_result")
+            corr     = state.get("correlation_result")
+            if describe and corr:
+                specs  = generate_general_charts(describe, corr)
+                charts = [s.model_dump() for s in specs]
+                ti     = compute_trust_indicators(describe, None, describe.row_count)
+            else:
+                charts = []
+                n_rows = len(state.get("query_result", pd.DataFrame()))  # type: ignore[arg-type]
+                ti     = compute_trust_indicators(None, None, n_rows)
+        else:
+            metric  = state.get("metric", "metric")
+            ttest   = state.get("ttest_result")
+            cuped   = state.get("cuped_result")
+            hte     = state.get("hte_result")
+            novelty = state.get("novelty_result")
+            funnel  = state.get("funnel_result")
+            if ttest and cuped:
+                specs  = generate_ab_charts(metric, ttest, cuped, hte, novelty, funnel)
+                charts = [s.model_dump() for s in specs]
+            else:
+                charts = []
+            n_rows = len(state.get("query_result", pd.DataFrame()))  # type: ignore[arg-type]
+            ti     = compute_trust_indicators(None, ttest, n_rows)
+        return {"charts": charts, "trust_indicators": ti.model_dump()}
+    except Exception as exc:
+        logger.warning("generate_charts: failed (%s), skipping.", exc)
+        return {}
+
+
 # ── Node 17: analysis_gate (HITL interrupt 2) ─────────────────────────────────
 
 @observe(name="analysis_gate")
 def analysis_gate(state: AgentState) -> dict:
-    slice_res     = state.get("slice_result")
-    slice_dims    = slice_res.ranked_dimensions if slice_res else []
-    top_slice     = slice_dims[0] if slice_dims else {}
+    mode = state.get("analysis_mode", "ab_test")
 
-    guardrail_res = state.get("guardrail_result")
-    breached      = [g for g in (guardrail_res.guardrails if guardrail_res else []) if g.breached]
+    if mode == "general":
+        describe_res     = state.get("describe_result")
+        correlation_res  = state.get("correlation_result")
+        payload = {
+            "gate":             "analysis",
+            "analysis_mode":    "general",
+            "describe_result":  _to_dict(describe_res),
+            "correlation_result": _to_dict(correlation_res),
+            "message":          "Review the data summary and insights. Approve or add notes.",
+        }
+    else:
+        slice_res     = state.get("slice_result")
+        slice_dims    = slice_res.ranked_dimensions if slice_res else []
+        top_slice     = slice_dims[0] if slice_dims else {}
 
-    forecast_res  = state.get("forecast_result")
-    cuped_res     = state.get("cuped_result")
-    ttest_res     = state.get("ttest_result")
-    hte_res       = state.get("hte_result")
-    novelty_res   = state.get("novelty_result")
-    funnel_res    = state.get("funnel_result")
-    mde_res       = state.get("mde_result")
+        guardrail_res = state.get("guardrail_result")
+        breached      = [g for g in (guardrail_res.guardrails if guardrail_res else []) if g.breached]
 
-    payload = {
-        "gate":                    "analysis",
-        "decomposition":           _to_dict(state.get("decomposition_result")),
-        "top_anomaly_slice":       top_slice,
-        "forecast_outside_ci":     forecast_res.outside_ci if forecast_res else None,
-        "cuped_variance_reduction": cuped_res.variance_reduction_pct if cuped_res else None,
-        "significant":             ttest_res.significant if ttest_res else None,
-        "top_segment":             hte_res.top_segment if hte_res else None,
-        "novelty_likely":          novelty_res.novelty_likely if novelty_res else None,
-        "guardrails_breached":     guardrail_res.any_breached if guardrail_res else None,
-        "breached_metrics":        [g.model_dump() for g in breached],
-        "biggest_funnel_dropoff":  funnel_res.biggest_dropoff_step if funnel_res else None,
-        "mde_powered":             mde_res.is_powered_for_observed_effect if mde_res else None,
-        "business_impact":         state.get("business_impact"),
-        "message":                 "Review the analysis results. Approve or add notes/overrides.",
-    }
+        forecast_res  = state.get("forecast_result")
+        cuped_res     = state.get("cuped_result")
+        ttest_res     = state.get("ttest_result")
+        hte_res       = state.get("hte_result")
+        novelty_res   = state.get("novelty_result")
+        funnel_res    = state.get("funnel_result")
+        mde_res       = state.get("mde_result")
+
+        payload = {
+            "gate":                    "analysis",
+            "analysis_mode":           "ab_test",
+            "decomposition":           _to_dict(state.get("decomposition_result")),
+            "top_anomaly_slice":       top_slice,
+            "forecast_outside_ci":     forecast_res.outside_ci if forecast_res else None,
+            "cuped_variance_reduction": cuped_res.variance_reduction_pct if cuped_res else None,
+            "significant":             ttest_res.significant if ttest_res else None,
+            "top_segment":             hte_res.top_segment if hte_res else None,
+            "novelty_likely":          novelty_res.novelty_likely if novelty_res else None,
+            "guardrails_breached":     guardrail_res.any_breached if guardrail_res else None,
+            "breached_metrics":        [g.model_dump() for g in breached],
+            "biggest_funnel_dropoff":  funnel_res.biggest_dropoff_step if funnel_res else None,
+            "mde_powered":             mde_res.is_powered_for_observed_effect if mde_res else None,
+            "business_impact":         state.get("business_impact"),
+            "message":                 "Review the analysis results. Approve or add notes/overrides.",
+        }
+
     analyst_response = interrupt(payload)
 
     notes = analyst_response.get("notes", "")
@@ -1386,55 +1706,62 @@ def analysis_gate(state: AgentState) -> dict:
 def generate_narrative(state: AgentState) -> dict:
     mc     = state.get("metric_config") or load_metric_config()
     metric = state.get("metric") or mc.primary_metric
+    mode   = state.get("analysis_mode", "ab_test")
 
-    # Build template draft via narrative_tools (pure Python, no LLM)
-    # narrative_tools accepts plain dicts — convert Pydantic models via _to_dict
-    try:
-        template_out = narrative_tools.format_narrative(
-            metric=metric,
-            decomposition_result=_to_dict(state.get("decomposition_result")),
-            anomaly_result=_to_dict(state.get("anomaly_result")),
-            cuped_result=_to_dict(state.get("cuped_result")),
-            ttest_result=_to_dict(state.get("ttest_result")),
-            hte_result=_to_dict(state.get("hte_result")),
-            novelty_result=_to_dict(state.get("novelty_result")),
-            mde_result=_to_dict(state.get("mde_result")),
-            guardrail_result=_to_dict(state.get("guardrail_result")),
-            funnel_result=_to_dict(state.get("funnel_result")),
-            forecast_result=_to_dict(state.get("forecast_result")),
-            business_impact=state.get("business_impact") or "",
-            analyst_notes=state.get("analyst_notes") or "",
-        )
-    except Exception as exc:
-        logger.warning("narrative_tools.format_narrative failed: %s", exc)
-        from tools.schemas import NarrativeResult
-        template_out = NarrativeResult(narrative_draft="", recommendation="")
-
-    draft_narrative = template_out.narrative_draft
-
-    # Collect tool results for the LLM prompt — convert Pydantic models to dicts
-    tool_results: dict = {}
-    for k, v in state.items():
-        if k.endswith("_result") and v is not None:
-            tool_results[k] = _to_dict(v)
-    # Drop forecast_df to avoid DataFrame serialization issues
-    if "forecast_result" in tool_results:
-        tool_results["forecast_result"].pop("forecast_df", None)
-    tool_results_json = json.dumps(tool_results, default=str, indent=2)
-
-    analyst_notes     = state.get("analyst_notes") or ""
+    analyst_notes = state.get("analyst_notes") or ""
     analyst_notes_section = (
         ANALYST_NOTES_BLOCK.format(analyst_notes=analyst_notes)
         if analyst_notes.strip() else ""
     )
 
-    task_prompt = NARRATIVE_PROMPT.format(
-        metric=metric,
-        metric_direction=mc.metric_direction,
-        tool_results_json=tool_results_json,
-        draft_narrative=draft_narrative,
-        analyst_notes_section=analyst_notes_section,
-    )
+    # Collect all *_result fields for the LLM prompt
+    tool_results: dict = {}
+    for k, v in state.items():
+        if k.endswith("_result") and v is not None:
+            tool_results[k] = _to_dict(v)
+    if "forecast_result" in tool_results:
+        tool_results["forecast_result"].pop("forecast_df", None)
+    tool_results_json = json.dumps(tool_results, default=str, indent=2)
+
+    if mode == "general":
+        task_prompt = INSIGHTS_NARRATIVE_PROMPT.format(
+            task=state.get("task", ""),
+            tool_results_json=tool_results_json,
+            analyst_notes_section=analyst_notes_section,
+        )
+        # General analysis: no template draft — LLM works directly from stats
+        from tools.schemas import NarrativeResult
+        template_out = NarrativeResult(narrative_draft="", recommendation="")
+    else:
+        # A/B test path: build template draft via narrative_tools first
+        try:
+            template_out = narrative_tools.format_narrative(
+                metric=metric,
+                decomposition_result=_to_dict(state.get("decomposition_result")),
+                anomaly_result=_to_dict(state.get("anomaly_result")),
+                cuped_result=_to_dict(state.get("cuped_result")),
+                ttest_result=_to_dict(state.get("ttest_result")),
+                hte_result=_to_dict(state.get("hte_result")),
+                novelty_result=_to_dict(state.get("novelty_result")),
+                mde_result=_to_dict(state.get("mde_result")),
+                guardrail_result=_to_dict(state.get("guardrail_result")),
+                funnel_result=_to_dict(state.get("funnel_result")),
+                forecast_result=_to_dict(state.get("forecast_result")),
+                business_impact=state.get("business_impact") or "",
+                analyst_notes=analyst_notes,
+            )
+        except Exception as exc:
+            logger.warning("narrative_tools.format_narrative failed: %s", exc)
+            from tools.schemas import NarrativeResult
+            template_out = NarrativeResult(narrative_draft="", recommendation="")
+
+        task_prompt = NARRATIVE_PROMPT.format(
+            metric=metric,
+            metric_direction=mc.metric_direction,
+            tool_results_json=tool_results_json,
+            draft_narrative=template_out.narrative_draft,
+            analyst_notes_section=analyst_notes_section,
+        )
 
     schema_context = state.get("schema_context", "")
     history_text   = _format_history(state.get("relevant_history", []))
@@ -1538,6 +1865,7 @@ def log_run_node(state: AgentState) -> dict:
         task=task,
         run_id=run_id,
         user_id=state.get("user_id"),
+        analysis_mode=state.get("analysis_mode") or "ab_test",
         metric=state.get("metric") or "",
         covariate=state.get("covariate") or "",
         db_backend=state.get("db_backend") or "duckdb",
@@ -1597,7 +1925,11 @@ def infer_metric_config_node(state: AgentState) -> dict:
     LLM infers MetricConfig from schema. Result stored in state for UI form pre-fill.
     Only runs when metric_config is not already set in state.
     """
-    if state.get("metric_config"):
+    # Skip if config is already set — UNLESS this is an uploaded file.
+    # Uploads have a unique schema that differs from the DAU demo defaults that
+    # load_schema/resolve_task_intent fall back to; inference must always run
+    # so guardrail_metrics, segment_cols, table names etc. match the real data.
+    if state.get("metric_config") and not state.get("duckdb_path"):
         return {}
 
     schema_context = state.get("schema_context", "")
@@ -1607,9 +1939,9 @@ def infer_metric_config_node(state: AgentState) -> dict:
 
     prompt = SCHEMA_CONFIG_INFERENCE_PROMPT.format(schema_context=schema_context)
 
-    with trace_generation("infer_metric_config", _model(), prompt) as gen:
+    with trace_generation("infer_metric_config", _fast_model(), prompt) as gen:
         response = _anthropic_client().messages.create(
-            model=_model(),
+            model=_fast_model(),
             max_tokens=512,
             messages=[{"role": "user", "content": prompt}],
         )

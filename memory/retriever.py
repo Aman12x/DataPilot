@@ -86,6 +86,7 @@ def retrieve_sql_examples(
     top_n: int = 2,
     min_similarity: float = 0.40,
     path: str | None = None,
+    user_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """
     Retrieve verified question-SQL pairs from the memory store, ranked by
@@ -125,17 +126,32 @@ def retrieve_sql_examples(
         return []
 
     with _connect(path) as con:
-        rows = con.execute(
-            """
-            SELECT task, task_embedding, cached_result
-            FROM   runs
-            WHERE  cache_node_name = 'generate_sql'
-              AND  task_embedding  IS NOT NULL
-              AND  cached_result   IS NOT NULL
-            ORDER  BY timestamp DESC
-            LIMIT  200
-            """,
-        ).fetchall()
+        if user_id:
+            rows = con.execute(
+                """
+                SELECT task, task_embedding, cached_result
+                FROM   runs
+                WHERE  cache_node_name = 'generate_sql'
+                  AND  task_embedding  IS NOT NULL
+                  AND  cached_result   IS NOT NULL
+                  AND  user_id         = ?
+                ORDER  BY timestamp DESC
+                LIMIT  200
+                """,
+                (user_id,),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                """
+                SELECT task, task_embedding, cached_result
+                FROM   runs
+                WHERE  cache_node_name = 'generate_sql'
+                  AND  task_embedding  IS NOT NULL
+                  AND  cached_result   IS NOT NULL
+                ORDER  BY timestamp DESC
+                LIMIT  200
+                """,
+            ).fetchall()
 
     scored: list[dict[str, Any]] = []
     for row in rows:

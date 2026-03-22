@@ -1,138 +1,164 @@
 # DataPilot
 
-An agentic AI system that replicates the core workflow of a senior Product Data Scientist.
+An agentic AI data analyst that helps anyone — product, healthcare, finance, ecommerce, logistics — investigate their data and make better decisions.
 
-**Demo scenario:** DAU drop investigation on simulated Meta-flavored data. Ground truth is
-baked into the dataset so correctness is fully verifiable. The eval harness scores 11 criteria
-automatically — current score: **11/11 (100%)**.
+Ask a question in plain English. DataPilot generates SQL, runs rigorous statistical analysis, and produces a clear evidence-based report. You review and approve at every step.
+
+**Eval scores:** 11/11 on DAU experiment · 11/11 cross-domain generalisability (clinical trial + ecommerce A/B)
 
 ---
 
 ## What it does
 
-Given a natural-language task ("Why did DAU drop in the most recent experiment?"), DataPilot:
+Given a natural-language task, DataPilot:
 
-1. Generates SQL against your database and shows it for review
-2. Runs the full analysis pipeline: decomposition → anomaly detection → CUPED experiment analysis → HTE → novelty detection → guardrails → funnel → forecast
-3. Writes a PM-ready narrative with explicit caveats and a one-sentence recommendation
-4. Logs every run to a memory store so future runs benefit from past corrections
+1. **Understands your question** — auto-detects whether it's an experiment comparison or general exploration; asks one clarifying question if genuinely ambiguous
+2. **Generates SQL** — against your database or uploaded file, shown for review before execution
+3. **Runs the right analysis** — for experiments: CUPED, t-test, HTE, novelty detection, guardrails, funnel, forecast; for general: describe, correlations, trend analysis
+4. **Writes a structured report** — TL;DR, findings, subgroup breakdown, confidence level, recommendation, caveats
+5. **Remembers past runs** — future runs on similar tasks inherit analyst corrections and preferences
 
-The analyst reviews and can override at three checkpoints — nothing is sent forward without approval.
+Nothing is sent forward without your approval. Every checkpoint is interruptible.
+
+---
+
+## Works across domains
+
+Upload a CSV or connect a database. DataPilot infers the schema and adapts:
+
+| Domain | Example task |
+|--------|-------------|
+| Product | "Did the new checkout flow increase revenue? Which devices benefited most?" |
+| Healthcare | "Did Drug A improve recovery scores vs placebo? Check for side effects by age group." |
+| SaaS | "What factors most strongly predict customer churn? Which plans churn fastest?" |
+| Logistics | "Why are deliveries being delayed? Which carriers have the worst on-time rates?" |
+| Finance | "Which customer segments have the highest default rates? Is the trend worsening?" |
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              DATAPILOT                                      │
-│                                                                             │
-│  ┌──────────────┐     ┌──────────────────────────────────────────────────┐ │
-│  │   Streamlit  │     │              LangGraph Agent                     │ │
-│  │    ui/app.py │────►│                                                  │ │
-│  │              │     │  START                                           │ │
-│  │  Gate 1: SQL │◄────│  └─► check_semantic_cache                       │ │
-│  │  Gate 2: Stats│    │       ├─ hit  ─► semantic_cache_gate 🛑         │ │
-│  │  Gate 3: Narr│    │       └─ miss ─► inject_history                 │ │
-│  │              │     │                  └─► load_schema                │ │
-│  │  sidebar:    │     │                       └─► infer_metric_config   │ │
-│  │  · past runs │     │                            └─► generate_sql     │ │
-│  │  · cost saved│     │                                 └─► query_gate 🛑│ │
-│  │  · DB picker │     │                                      └─► execute_query│ │
-│  └──────────────┘     │                                           │      │ │
-│                        │              ┌────────────────────────────┘      │ │
-│                        │              ▼                                   │ │
-│  ┌──────────────┐     │  load_auxiliary_data                             │ │
-│  │   tools/     │     │  ├─► decompose_metric   (new/retained/resurrected)│ │
-│  │              │◄────│  ├─► detect_anomaly     (zscore + slice_and_dice)│ │
-│  │ stats_tools  │     │  ├─► forecast_baseline  (Prophet / rolling mean) │ │
-│  │ decomp_tools │     │  ├─► run_cuped          (variance reduction)     │ │
-│  │ anomaly_tools│     │  ├─► run_ttest          (Welch t-test)           │ │
-│  │ forecast_tool│     │  ├─► run_hte            (subgroup t-tests)       │ │
-│  │ guardrail_t  │     │  ├─► detect_novelty     (week1 vs week2 ATE)     │ │
-│  │ novelty_tools│     │  ├─► compute_mde        (power + biz impact)     │ │
-│  │ mde_tools    │     │  ├─► check_guardrails   (secondary metrics)      │ │
-│  │ funnel_tools │     │  └─► compute_funnel     (conditional step rates) │ │
-│  │ narrative_t  │     │                 │                                 │ │
-│  └──────────────┘     │                 └─► analysis_gate 🛑             │ │
-│                        │                      └─► generate_narrative      │ │
-│  ┌──────────────┐     │                           └─► narrative_gate 🛑  │ │
-│  │   memory/    │     │                                └─► log_run ──► END│ │
-│  │              │◄────│                                                  │ │
-│  │ store.py     │     └──────────────────────────────────────────────────┘ │
-│  │ retriever.py │                                                           │
-│  │ semantic_    │     🛑 = HITL interrupt — analyst approves or overrides  │
-│  │   cache.py   │                                                           │
-│  └──────────────┘                                                           │
-│                                                                             │
-│  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐               │
-│  │  tools/      │     │  agents/     │     │  config/     │               │
-│  │  db_tools.py │     │  state.py    │     │  analysis_   │               │
-│  │  DuckDB ─┐  │     │  AgentState  │     │  config.py   │               │
-│  │  Postgres─┘  │     │  TypedDict   │     │  MetricConfig│               │
-│  └──────────────┘     └──────────────┘     └──────────────┘               │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                           DATAPILOT                                     │
+│                                                                         │
+│  ┌──────────────────┐     ┌─────────────────────────────────────────┐  │
+│  │  React Frontend  │     │          LangGraph Agent                │  │
+│  │  (Vite + TS)     │     │                                         │  │
+│  │                  │     │  START                                  │  │
+│  │  ✦ Login / Auth  │     │  └─► check_semantic_cache               │  │
+│  │  ✦ Task input    │────►│       └─► inject_history                │  │
+│  │  ✦ File upload   │     │            └─► load_schema              │  │
+│  │  ✦ Gate UIs      │◄────│                 └─► resolve_task_intent │  │
+│  │  ✦ Live progress │ SSE │  (auto-detects ab_test vs general)      │  │
+│  │  ✦ Analysis view │     │                      └─► generate_sql   │  │
+│  │  ✦ History       │     │                           └─► query_gate 🛑│ │
+│  └──────────────────┘     │                                └─► execute │  │
+│                            │                                    │       │  │
+│  ┌──────────────────┐     │         A/B experiment path:        │       │  │
+│  │  FastAPI Backend │     │  decompose → anomaly → forecast      │       │  │
+│  │                  │     │  → CUPED → t-test → HTE → novelty   │       │  │
+│  │  POST /runs      │     │  → MDE → guardrails → funnel         │       │  │
+│  │  GET  /runs/     │     │           └─► analysis_gate 🛑        │       │  │
+│  │       {id}/stream│     │                └─► generate_narrative │       │  │
+│  │  POST /runs/     │     │                     └─► narrative_gate 🛑    │  │
+│  │       {id}/resume│     │                          └─► log_run → END   │  │
+│  │  POST /upload    │     │                                         │  │
+│  │  GET  /samples   │     │         General analysis path:          │  │
+│  │  POST /auth/*    │     │  describe → correlations → analysis_gate│  │
+│  └──────────────────┘     └─────────────────────────────────────────┘  │
+│                                                                         │
+│  🛑 = HITL interrupt — analyst approves or overrides before continuing  │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Caching — three layers
+### Three caching layers
 
 ```
 Request
   │
   ▼
 Layer 1: Semantic cache (SQLite + MiniLM embeddings)
-  similarity > 0.92 → return cached result, skip entire graph   ← zero API cost
-  similarity 0.80–0.92 → show cached result, ask analyst        ← analyst decides
-  similarity < 0.80 → cache miss, run normally
+  similarity > 0.92 → return cached result instantly        ← zero API cost
+  similarity 0.80–0.92 → show cached, ask analyst
+  similarity < 0.80 → cache miss, run pipeline
   │
   ▼
-Layer 2: Prompt caching (Anthropic native cache_control)
-  [STATIC — always cached]                [DYNAMIC — never cached]
-  system prompt                           task string
-  schema context               +          run-specific data
-  history injection prefix
-                                                                  ← 90% token cost reduction on hits
+Layer 2: Anthropic prompt caching
+  Static blocks (system prompt, schema) cached across runs  ← 90% token cost reduction
   │
   ▼
-Layer 3: KV prefix reuse (within session)
-  Same compiled prefix reused across all API calls in a session  ← automatic, no config needed
-```
-
-### Self-improvement loop
-
-```
-Run N                              Memory store (SQLite)
-  │                                       │
-  ├─ analyst edits SQL        ──────────► analyst_override{"sql_edited": true}
-  ├─ analyst adds notes       ──────────► analyst_override{"analysis_notes": "..."}
-  ├─ analyst revises narrative──────────► analyst_override{"narrative_notes": "..."}
-  └─ completeness score       ──────────► eval_score (0–1, auto-computed)
-                                          │
-Run N+1                                   │
-  └─ inject_history ◄───────────────────-┘
-       │
-       └─ "ANALYST CORRECTED SQL — double-check JOINs"
-          "ANALYST NOTED: '...' — apply unless task clearly differs"
-          "ANALYST OVERRODE RECOMMENDATION: '...'"
+Layer 3: KV prefix reuse (within session, automatic)
 ```
 
 ---
 
-## Analyst skillset covered
+## Stack
 
-| Capability | Tool | Ground truth verifiable? |
-|---|---|---|
-| Metric decomposition (new / retained / resurrected / churned) | `decomposition_tools` | ✅ new_users drives drop |
-| Anomaly detection + slice-and-dice | `anomaly_tools` | ✅ android ranks first |
-| CUPED variance reduction | `stats_tools.run_cuped` | ✅ >15% reduction |
-| T-test significance | `stats_tools.run_ttest` | ✅ p < 0.05 |
-| HTE subgroup analysis | `stats_tools.run_hte` | ✅ platform=android, user_segment=new |
-| Novelty effect detection | `novelty_tools` | ✅ effect growing, not decaying |
-| Guardrail metric monitoring | `guardrail_tools` | ✅ notif_optout breached |
-| Funnel drop-off analysis | `funnel_tools` | ✅ d1_retain worsens for android/new |
-| Forecast baseline (Prophet) | `forecast_tools` | ✅ actuals outside CI |
-| MDE + business impact | `mde_tools` | ✅ ~3% MDE, near observed effect |
-| PM-ready narrative | `narrative_tools` + LLM | ✅ mentions android, new, caveats |
+| Layer | Technology |
+|-------|-----------|
+| Frontend | React 18 + TypeScript + Vite |
+| Backend | FastAPI + uvicorn + SSE |
+| Agent graph | LangGraph 1.1 (SqliteSaver / PostgresSaver) |
+| LLM | Anthropic Claude (claude-sonnet-4-20250514) |
+| Database | DuckDB (local/upload) · PostgreSQL (external) |
+| Auth | JWT (HS256) + bcrypt · refresh token revocation |
+| Caching | Semantic cache (MiniLM) · Anthropic prompt cache |
+| Run state | Redis Streams (multi-pod) · asyncio.Queue (local) |
+| Email | Resend (password reset) |
+| Observability | Sentry · structured logging · `/health` |
+| Stats | scipy · numpy · Prophet |
+| Tests | pytest · 135 tests |
+
+---
+
+## Quick start (local dev)
+
+```bash
+# 1. Clone and install
+git clone <repo>
+cd datapilot
+python -m venv venv && source venv/bin/activate
+pip install -r backend/requirements.txt
+
+# 2. Configure
+cp .env.example .env
+# Set ANTHROPIC_API_KEY in .env
+
+# 3. Generate demo dataset
+python data/generate_data.py
+
+# 4. Start backend
+cd backend
+uvicorn api.main:app --reload --port 8000
+
+# 5. Start frontend (separate terminal)
+cd frontend
+npm install && npm run dev
+# → http://localhost:5173
+```
+
+---
+
+## Deploy to Railway
+
+Two services from the same repo:
+
+| Service | Root dir | Key env vars |
+|---------|----------|-------------|
+| `backend` | `backend/` | `ANTHROPIC_API_KEY`, `SECRET_KEY`, `CORS_ORIGINS`, `APP_URL` |
+| `frontend` | `frontend/` | `VITE_API_URL` (backend's public URL) |
+
+**Required before deploying:**
+1. `openssl rand -hex 32` → set as `SECRET_KEY`
+2. Set `VITE_API_URL` on the frontend service (backend's Railway URL)
+3. Set `CORS_ORIGINS` + `APP_URL` on the backend service (frontend's Railway URL)
+4. Add a Railway volume at `/app/memory` on the backend service (persists graph state + auth DB)
+
+**Optional:**
+- `RESEND_API_KEY` + `EMAIL_FROM` — enables password reset emails
+- `REDIS_URL` — Redis plugin in Railway, enables multi-pod safe run state
+- `SENTRY_DSN` — error tracking
 
 ---
 
@@ -140,152 +166,107 @@ Run N+1                                   │
 
 ```
 datapilot/
+├── frontend/                   React + TypeScript SPA
+│   ├── src/
+│   │   ├── api/client.ts       axios + JWT refresh interceptor
+│   │   ├── hooks/useSSE.ts     SSE subscription + reconnect
+│   │   ├── hooks/useTokenRefresh.ts  proactive JWT refresh
+│   │   ├── pages/
+│   │   │   ├── Login.tsx       sign in / register / forgot password
+│   │   │   ├── Analysis.tsx    task input + sample quick-start + gate router
+│   │   │   └── History.tsx     past runs with inline narrative view
+│   │   └── components/gates/   one component per HITL interrupt type
+│   └── Dockerfile
+│
+├── backend/                    FastAPI server
+│   ├── api/
+│   │   ├── main.py             app, CORS, lifespan, Sentry
+│   │   ├── deps.py             JWT auth dependency
+│   │   ├── run_manager.py      Redis Streams / asyncio.Queue run state
+│   │   ├── pdf.py              fpdf2 report generation
+│   │   └── routes/
+│   │       ├── auth.py         register, login, refresh, logout, password reset
+│   │       ├── runs.py         create, stream (SSE), resume, list, detail, PDF
+│   │       ├── upload.py       CSV/Excel → DuckDB
+│   │       └── samples.py      serve built-in sample datasets
+│   └── Dockerfile
+│
 ├── agents/
-│   ├── state.py                # AgentState TypedDict — single contract between nodes
+│   ├── state.py                AgentState TypedDict
 │   └── analyze/
-│       ├── graph.py            # LangGraph graph — 21 nodes, 3 HITL gates
-│       ├── nodes.py            # node functions (pure: call tools, no inline logic)
-│       └── prompts.py          # all prompt templates as module-level constants
-├── tools/                      # pure Python, no LangGraph/Streamlit deps
-│   ├── db_tools.py             # DuckDB + Postgres unified interface
-│   ├── stats_tools.py          # CUPED, t-test, HTE
-│   ├── decomposition_tools.py  # DAU component breakdown
-│   ├── anomaly_tools.py        # zscore anomaly + slice-and-dice
-│   ├── forecast_tools.py       # Prophet (rolling mean fallback)
-│   ├── guardrail_tools.py      # secondary metric sweep
-│   ├── novelty_tools.py        # week-over-week ATE decay
-│   ├── mde_tools.py            # MDE + business impact statement
-│   ├── funnel_tools.py         # conditional step conversion rates
-│   └── narrative_tools.py      # structured PM narrative formatter
+│       ├── graph.py            LangGraph graph — nodes, routing, HITL gates
+│       ├── nodes.py            node functions (auto-detects analysis_mode)
+│       └── prompts.py          all prompt templates (domain-neutral)
+│
+├── tools/                      pure Python, no framework deps
+│   ├── db_tools.py             DuckDB + Postgres unified interface
+│   ├── stats_tools.py          CUPED, t-test, HTE
+│   ├── decomposition_tools.py  metric component breakdown
+│   ├── anomaly_tools.py        zscore anomaly + slice-and-dice
+│   ├── forecast_tools.py       Prophet (rolling mean fallback)
+│   ├── guardrail_tools.py      secondary metric sweep
+│   ├── novelty_tools.py        week-over-week ATE decay
+│   ├── mde_tools.py            MDE + business impact
+│   ├── funnel_tools.py         conditional step conversion
+│   └── narrative_tools.py      structured report formatter
+│
 ├── memory/
-│   ├── store.py                # SQLite run logger with cost tracking
-│   ├── retriever.py            # keyword-overlap history retrieval
-│   └── semantic_cache.py       # MiniLM embeddings + SQLite cache
-├── ui/
-│   ├── app.py                  # Streamlit frontend (renders only, zero agent logic)
-│   ├── auth_page.py            # sign-in / sign-up
-│   ├── db_connect.py           # database connection + MetricConfig sidebar
-│   └── report_export.py        # PDF export via fpdf2
+│   ├── store.py                SQLite run logger
+│   ├── retriever.py            history retrieval for few-shot injection
+│   └── semantic_cache.py       MiniLM embeddings + similarity cache
+│
+├── auth/store.py               user auth (bcrypt, JWT, password reset tokens)
 ├── config/
-│   ├── analysis_config.py      # MetricConfig Pydantic model
-│   ├── metric_config.json      # default DAU drop config
-│   └── examples/               # preset configs for other scenarios
-├── auth/
-│   └── store.py                # user auth (SQLite, bcrypt)
+│   ├── analysis_config.py      MetricConfig Pydantic model
+│   ├── metric_config.json      default DAU config (overridden by inference)
+│   └── examples/               preset configs for other scenarios
+│
 ├── data/
-│   └── generate_data.py        # deterministic synthetic dataset (seed=42)
+│   ├── generate_data.py        deterministic synthetic DAU dataset (seed=42)
+│   └── samples/                domain sample CSVs (clinical, ecommerce, SaaS, logistics)
+│
 ├── evals/
-│   └── analyze_eval.py         # 11-criterion offline eval harness
-├── tests/                      # 52 unit tests, all passing
-├── .env.example
-├── Makefile
-└── requirements.txt
+│   ├── analyze_eval.py         11-criterion DAU eval — score: 11/11
+│   └── generalisability_eval.py  11-criterion cross-domain eval — score: 11/11
+│
+└── tests/                      135 unit + API integration tests
 ```
 
 ---
 
-## Quick start
+## Eval scores
 
 ```bash
-# 1. Clone and install
-git clone <repo>
-cd datapilot
-python -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
-
-# 2. Configure
-cp .env.example .env
-# Set ANTHROPIC_API_KEY in .env
-
-# 3. Generate the demo dataset
-make data
-
-# 4. Run the eval (no API key needed for 9/11 criteria)
-make eval
-
-# 5. Start the app
-make app
-# → http://localhost:8501
+python evals/analyze_eval.py          # DAU experiment scenario
+python evals/generalisability_eval.py # cross-domain: clinical + ecommerce
 ```
 
-### Environment variables
-
-| Variable | Default | Description |
-|---|---|---|
-| `ANTHROPIC_API_KEY` | — | Required for SQL generation and narrative |
-| `MODEL` | `claude-sonnet-4-20250514` | Anthropic model ID |
-| `DUCKDB_PATH` | `data/dau_experiment.db` | Path to DuckDB file |
-| `MEMORY_DB_PATH` | `memory/datapilot_memory.db` | SQLite memory store |
-| `FORECAST_BACKEND` | `prophet` | `prophet` or `rolling_mean` |
-| `REVENUE_PER_DAU` | `0.50` | USD per DAU for MDE business impact |
-| `BASELINE_DAU` | `500000` | Scale denominator for business impact |
-| `SEMANTIC_CACHE_HARD_THRESHOLD` | `0.92` | Above this: skip API, return cached |
-| `SEMANTIC_CACHE_SOFT_THRESHOLD` | `0.80` | Above this: show cached, ask analyst |
-| `LANGFUSE_HOST` | — | Optional: Langfuse tracing endpoint |
-
----
-
-## Eval harness
-
-```bash
-make eval          # skip narrative (no API key needed) — scores 9 of 11 criteria
-make eval-full     # all 11 criteria including LLM narrative
+**DAU experiment (11/11):**
+```
+  PASS  hte_correct_segment       android/new surfaces as top HTE segment
+  PASS  cuped_variance_reduced    >15% variance reduction
+  PASS  ttest_significant         p < 0.05
+  PASS  decomp_identifies_new     new_users is dominant declining component
+  PASS  slice_ranks_android_first slice-and-dice ranks android #1
+  PASS  forecast_flags_drop       actuals outside Prophet CI
+  PASS  guardrails_breached_found at least one guardrail breached
+  PASS  optout_breached           notif_optout specifically flagged
+  PASS  novelty_ruled_out         effect growing, not decaying
+  PASS  narrative_mentions_segment narrative mentions android + new
+  PASS  narrative_has_caveats     caveats section present
 ```
 
-Current scores:
-
+**Cross-domain generalisability (11/11):**
 ```
-  PASS  hte_correct_segment          android/new surfaces as top HTE segment
-  PASS  cuped_variance_reduced       >15% variance reduction
-  PASS  ttest_significant            p < 0.05
-  PASS  decomp_identifies_new        new_users is dominant declining component
-  PASS  slice_ranks_android_first    slice-and-dice ranks android #1
-  PASS  forecast_flags_drop          actuals outside Prophet CI
-  PASS  guardrails_breached_found    at least one guardrail breached
-  PASS  optout_breached              notif_optout specifically flagged
-  PASS  novelty_ruled_out            effect growing, not decaying
-  PASS  narrative_mentions_segment   narrative mentions android + new
-  PASS  narrative_has_caveats        caveats section present
-
-Score: 11/11 = 100%  ✅
+  PASS  🏥 Clinical: t-test executes on recovery scores
+  PASS  🏥 Clinical: treatment has significantly higher recovery
+  PASS  🏥 Clinical: CUPED runs with baseline_severity covariate
+  PASS  🏥 Clinical: HTE finds subgroup differential
+  PASS  🏥 Clinical: guardrail check on side_effect_count
+  PASS  🏥 Clinical: MDE calculation completes
+  PASS  🛒 Ecomm: t-test executes on revenue_usd
+  PASS  🛒 Ecomm: CUPED runs with session_duration covariate
+  PASS  🛒 Ecomm: HTE finds device/segment differential
+  PASS  🛒 Ecomm: guardrail check on orders metric
+  PASS  🛒 Ecomm: MDE is a plausible percentage
 ```
-
-Eval scores are written back to the memory store after each run, so the self-improvement loop
-has ground-truth signal for the demo scenario.
-
----
-
-## Key design rules
-
-**Rule 1 — Agents read/write state. Tools compute.**
-No stats, SQL, or string formatting inside node functions. If it's logic, it lives in `tools/`.
-
-**Rule 2 — HITL via `interrupt()` only.**
-Never `input()`, never Streamlit polling. LangGraph `interrupt()` + `Command(resume=...)` keeps
-the graph serializable.
-
-**Rule 3 — State is the contract.**
-All data between nodes lives in `AgentState`. Nodes never call each other.
-
-**Rule 4 — Streamlit renders, agents decide.**
-`ui/app.py` only calls `graph.invoke()` and reads from state. Zero stats, zero SQL.
-
-**Rule 5 — Every run gets logged.**
-`memory/store.py` captures task, overrides, eval score, token costs, and quality signal
-on every completed run.
-
----
-
-## Stack
-
-| Layer | Library | Version |
-|---|---|---|
-| LLM | Anthropic Claude | `anthropic` 0.86 |
-| Agent graph | LangGraph | 1.1.2 |
-| UI | Streamlit | 1.55 |
-| Database | DuckDB | 1.5 |
-| Forecasting | Prophet | 1.3 |
-| Semantic cache | sentence-transformers (MiniLM) | 5.3 |
-| Stats | scipy, numpy | — |
-| PDF export | fpdf2 | 2.8.7 |
-| Memory | SQLite (stdlib) | — |

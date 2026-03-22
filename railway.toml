@@ -1,0 +1,25 @@
+# Backend service — Railway Root Directory must be / (repo root) so the
+# Docker build context includes agents/, tools/, auth/, memory/, etc.
+[build]
+builder = "dockerfile"
+dockerfilePath = "backend/Dockerfile"
+
+[deploy]
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
+
+# ── Volume mount (REQUIRED for data persistence) ───────────────────────────────
+# In the Railway dashboard: Service → Volumes → Add Volume
+#   Mount path: /app/memory
+# This persists:
+#   memory/graph.db       — LangGraph checkpoints (in-progress runs survive redeploy)
+#   memory/auth.db        — User accounts
+#   memory/datapilot_memory.db — Run history
+#   data/dau_experiment.db     — Sample DuckDB (generated once at startup)
+#
+# Without a volume, all SQLite files are wiped on every redeploy and
+# users lose their accounts + history.
+#
+# Railway CLI: railway volume create --service backend --mount /app/memory

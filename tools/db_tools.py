@@ -9,10 +9,19 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any
 
 import duckdb
 import pandas as pd
+
+# Compiled once at import time — blocks any LLM-generated mutation statement.
+# DuckDB already enforces read_only=True at the driver level; this adds a
+# defence-in-depth check that also covers PostgreSQL connections.
+_MUTATION_RE = re.compile(
+    r"\b(INSERT|UPDATE|DELETE|DROP|TRUNCATE|ALTER|CREATE|REPLACE|MERGE)\b",
+    re.IGNORECASE,
+)
 
 
 # Schema comments: human-readable column descriptions injected into inspect_schema() output.
@@ -96,7 +105,12 @@ class DBConnection:
     # ── Query ──────────────────────────────────────────────────────────────────
 
     def query(self, sql: str) -> pd.DataFrame:
-        """Execute SQL and return a DataFrame."""
+        """Execute SQL and return a DataFrame. Only SELECT is permitted."""
+        if _MUTATION_RE.search(sql):
+            raise ValueError(
+                "Mutation SQL is not permitted — only SELECT statements are allowed. "
+                f"Blocked: {sql[:120]!r}"
+            )
         if self.backend == "duckdb":
             return self._query_duckdb(sql)
         return self._query_postgres(sql)
@@ -149,10 +163,22 @@ class DBConnection:
             tables = self._get_tables_duckdb()
             lines = []
             for table in tables:
-                lines.append(f"TABLE: {table}")
+                profile = self._table_profile_duckdb(table)
+                row_note = f"  -- {profile['n_rows']:,} rows" if profile else ""
+                lines.append(f"TABLE: {table}{row_note}")
                 cols = self._get_columns_duckdb(table)
                 for col_name, col_type in cols:
                     comment = annotations.get(table, {}).get(col_name, "")
+                    if not comment and profile:
+                        col_info = profile["columns"].get(col_name, {})
+                        parts = []
+                        n_distinct = col_info.get("n_distinct")
+                        if n_distinct is not None:
+                            parts.append(f"{n_distinct:,} distinct")
+                        samples = col_info.get("samples")
+                        if samples:
+                            parts.append("e.g. " + ", ".join(f"'{v}'" for v in samples))
+                        comment = "  ".join(parts)
                     comment_str = f"  -- {comment}" if comment else ""
                     lines.append(f"  {col_name:<22} {col_type:<10}{comment_str}")
                 lines.append("")
@@ -201,6 +227,51 @@ class DBConnection:
             return [(row[1], row[2]) for row in result]
         finally:
             con.close()
+
+    # Number of sample values to show per column in schema context.
+    _PROFILE_MAX_SAMPLES = 5
+    # Only show samples for columns with at most this many distinct values.
+    _PROFILE_SAMPLE_CARDINALITY = 50
+
+    def _table_profile_duckdb(self, table: str) -> dict | None:
+        """
+        Return a lightweight data profile for a DuckDB table:
+          { n_rows: int, columns: { col: { n_distinct: int, samples: list[str] } } }
+
+        Distinct counts and sample values are only collected for columns with
+        <= _PROFILE_SAMPLE_CARDINALITY distinct values (categoricals, date cols, etc.)
+        so the schema comment stays readable. High-cardinality columns (IDs, free text)
+        only show the distinct count.
+
+        Returns None on any error so schema inspection never fails.
+        """
+        try:
+            con = duckdb.connect(self._path, read_only=True)
+            try:
+                cols = self._get_columns_duckdb(table)
+                n_rows = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]  # type: ignore[index]
+                col_profiles: dict[str, dict] = {}
+                for col_name, _ in cols:
+                    try:
+                        n_distinct = con.execute(
+                            f"SELECT COUNT(DISTINCT {col_name}) FROM {table}"
+                        ).fetchone()[0]  # type: ignore[index]
+                        samples: list[str] = []
+                        if n_distinct <= self._PROFILE_SAMPLE_CARDINALITY:
+                            rows = con.execute(
+                                f"SELECT DISTINCT CAST({col_name} AS VARCHAR) "
+                                f"FROM {table} WHERE {col_name} IS NOT NULL "
+                                f"ORDER BY 1 LIMIT {self._PROFILE_MAX_SAMPLES}"
+                            ).fetchall()
+                            samples = [r[0] for r in rows if r[0] is not None]
+                        col_profiles[col_name] = {"n_distinct": n_distinct, "samples": samples}
+                    except Exception:
+                        pass
+                return {"n_rows": n_rows, "columns": col_profiles}
+            finally:
+                con.close()
+        except Exception:
+            return None
 
     def _get_tables_postgres(self) -> list[str]:
         df = self._query_postgres(

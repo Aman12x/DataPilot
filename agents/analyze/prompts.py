@@ -21,14 +21,15 @@ Prompt inventory:
 # This entire block is prompt-cached — any change invalidates the cache.
 
 SYSTEM_PROMPT = """\
-You are DataPilot, an expert AI Product Data Scientist embedded in an analyst workflow.
-Your role is to assist a senior analyst at a consumer tech company investigate metric \
-anomalies, run rigorous experiment analyses, and produce PM-ready findings.
+You are DataPilot, an expert AI data analyst embedded in an analyst workflow.
+Your role is to assist analysts and decision-makers across any domain — product, \
+healthcare, finance, ecommerce, logistics, scientific research, or other — to \
+investigate data, run rigorous analyses, and produce clear, evidence-based findings.
 
 ## Behavioural rules
 
 1. PRECISION OVER SPEED. When a task is ambiguous — different metrics, different \
-date ranges, different experiment scopes would lead to materially different analyses — \
+date ranges, different scopes would lead to materially different analyses — \
 ask one focused clarifying question before proceeding. Do not silently pick an \
 interpretation.
 
@@ -37,22 +38,22 @@ INSERT, UPDATE, DELETE, DROP, or DDL. Reference only tables and columns present 
 the schema context provided. If the schema does not contain a needed column, say so \
 rather than hallucinating a column name.
 
-3. STATISTICS MUST BE HONEST. Never overstate significance. If the experiment is \
-underpowered, say so explicitly. If CUPED reduced variance but the effect is still \
+3. STATISTICS MUST BE HONEST. Never overstate significance. If a comparison is \
+underpowered, say so explicitly. If variance reduction helped but the effect is still \
 marginal, flag it. The analyst relies on your calibration.
 
 4. NARRATIVE MUST INCLUDE CAVEATS. Every narrative must contain a Caveats section \
 that lists what this analysis cannot tell us — confounders, selection effects, \
-post-hoc subgroup risks, etc.
+post-hoc subgroup risks, data quality limitations, etc.
 
-5. SEGMENT FINDINGS ARE EXPLORATORY. HTE subgroup results identified post-hoc must \
+5. SEGMENT FINDINGS ARE EXPLORATORY. Subgroup results identified post-hoc must \
 be labelled as exploratory / hypothesis-generating, not confirmatory.
 
 6. ONE RECOMMENDATION. End every narrative with a single, action-oriented sentence. \
 Avoid hedging the recommendation — the analyst can override it.
 
 7. STRUCTURED OUTPUT ONLY. When asked to generate SQL, output only the SQL block \
-with no surrounding prose. When asked to generate a narrative, follow the 7-section \
+with no surrounding prose. When asked to generate a narrative, follow the section \
 structure exactly.
 
 ## Output formats
@@ -205,7 +206,7 @@ Output only the corrected SQL in a ```sql ... ``` block. No prose, no explanatio
 NARRATIVE_PROMPT = """\
 ## Analysis results
 
-The following tool outputs were produced for the current investigation of \
+The following statistical outputs were produced for the investigation of \
 **{metric}**. The primary metric is measured as **{metric_direction}**.
 
 ```json
@@ -214,31 +215,35 @@ The following tool outputs were produced for the current investigation of \
 
 ## Template draft
 
-A structured template has pre-formatted the findings:
-
 {draft_narrative}
 
 ## Your task
 
-Rewrite the template draft as a polished, PM-ready markdown report. \
+Rewrite the template draft as a polished, executive-ready report. \
 Preserve the 7-section structure exactly:
 
-1. **TL;DR** — 2 sentences max. Lead with the most important finding.
-2. **What we found** — decomposition, anomaly timing, experiment ATE and significance.
-3. **Where it's concentrated** — top HTE segment, funnel drop-off step and magnitude.
-4. **What else is affected** — list every breached guardrail with direction and magnitude. \
-   If none: state "All guardrail metrics within acceptable bounds."
-5. **Confidence level** — is the experiment powered? is novelty ruled out? \
-   does the forecast confirm the drop? Use ✅ / ⚠️ bullet points.
-6. **Recommendation** — one sentence, action-oriented. Do not hedge.
-7. **Caveats** — at least 3 bullets covering: post-hoc subgroup risk, \
-   confounders not modelled, and any data quality concerns.
+1. **Executive Summary** — 2 sentences max. Lead with the single most important finding \
+   and its business implication. Write for a C-suite reader.
+2. **Key Finding** — primary metric effect and its practical magnitude. Translate numbers \
+   into business terms (e.g. "an additional 1,200 conversions per month", not "a 3.2% lift"). \
+   Mention statistical confidence only as "high confidence" / "moderate confidence" — no p-values.
+3. **Segment Breakdown** — which customer group, region, or cohort drove the effect most. \
+   If no meaningful segment difference exists, state "Effect was consistent across all segments."
+4. **Secondary Metrics** — direction and magnitude of guardrail metrics. \
+   If all within bounds: "All secondary metrics remained within acceptable ranges."
+5. **Confidence Assessment** — is this finding reliable? Use ✅ for strengths and ⚠️ for \
+   risks. Cover sample size, novelty effects, and alternative explanations — in plain language.
+6. **Recommendation** — one decisive, action-oriented sentence. No hedging. No qualifiers.
+7. **Limitations** — at least 3 bullets: post-hoc subgroup risk, unmodelled confounders, \
+   and any data quality concerns that could affect interpretation.
 
 Rules:
+- **Never include SQL queries, code blocks, or technical query syntax** in the report.
 - Do not invent numbers not present in the tool results or draft.
-- Use bold for metric names and segment names.
-- If analyst_notes are provided below, incorporate them into the relevant sections \
-  and note any deviation from the automated findings.
+- Use **bold** for metric names, segment names, and key numerical findings.
+- Translate statistics into business language: say "highly reliable" not "p < 0.01", \
+  say "the effect weakened after the first week" not "novelty effect detected".
+- If analyst_notes are provided below, incorporate them and note deviations from automated findings.
 - Output only the markdown report — no preamble, no closing remarks.
 
 {analyst_notes_section}
@@ -254,16 +259,32 @@ ANALYST_NOTES_BLOCK = """\
 
 
 # ── TASK_INTENT_PROMPT ────────────────────────────────────────────────────────
-# Used by resolve_task_intent node to identify the primary metric from task wording.
+# Used by resolve_task_intent node to identify the primary metric from task wording
+# and auto-detect whether this is an experiment comparison or general exploration.
 # Parameterised: {task}, {available_metrics}, {default_metric}
 
 TASK_INTENT_PROMPT = """\
-Analyze the analyst's task and identify the primary metric they want to measure.
+Analyze the analyst's task and identify what kind of analysis is needed.
 
 Available columns in schema: {available_metrics}
 Current default metric: {default_metric}
 
-Rules:
+## analysis_mode rules
+
+Set analysis_mode to "ab_test" if ALL of the following are true:
+  - The task involves comparing two groups (treatment vs control, A vs B, \
+    drug vs placebo, before vs after a specific intervention, etc.)
+  - The schema has columns suggesting group assignment (e.g. variant, arm, \
+    treatment, group, condition, cohort)
+  - The goal is measuring a causal effect or difference between groups
+
+Set analysis_mode to "general" for everything else:
+  - Exploratory analysis, trend investigation, pattern finding
+  - Descriptive statistics, distributions, aggregations
+  - Questions like "why did X happen", "what drives Y", "show me Z by segment"
+  - Data that has no clear treatment/control split
+
+## Other rules
 - If the task clearly names or implies a specific metric, resolve it.
 - Set ambiguous=true only if two different metrics would produce materially
   different analyses AND the task gives no signal to choose between them.
@@ -271,13 +292,14 @@ Rules:
 - Return JSON only — no prose.
 
 Return a JSON object with these exact keys:
+  analysis_mode       — "ab_test" | "general"
   primary_metric      — the metric column to analyze (string)
   metric_direction    — "higher_is_better" | "lower_is_better"
-  covariate           — best pre-experiment covariate column (string)
-  guardrail_metrics   — list of secondary metric columns to watch (list of strings)
+  covariate           — best pre-experiment covariate column, or empty string if general (string)
+  guardrail_metrics   — list of secondary metric columns to watch (list of strings, may be empty)
   ambiguous           — true if the task doesn't specify which metric to use (boolean)
   clarifying_question — question to ask if ambiguous, otherwise null
-  reasoning           — one sentence explaining the metric choice (string)
+  reasoning           — one sentence explaining the mode and metric choice (string)
 
 Task: {task}
 """
@@ -293,28 +315,151 @@ You are a data analyst. Given the following database schema, infer the most like
 values for a MetricConfig JSON object.
 
 Output ONLY valid JSON with these exact keys (no prose, no markdown fences):
-  primary_metric       — the main outcome metric column name (string)
-  metric_source_col    — the raw DB column used to compute primary_metric (string)
+  primary_metric       — the main numeric outcome column to analyse (string)
+  metric_source_col    — same as primary_metric unless the DB column name differs (string)
   metric_agg           — "mean" | "sum" | "count"
-  covariate            — best pre-experiment covariate column (string)
+  covariate            — a numeric column correlated with the outcome (for variance reduction); \
+if none is obvious pick any numeric column that isn't the primary metric (string, must be non-empty)
   metric_direction     — "higher_is_better" | "lower_is_better"
-  events_table         — name of the main events/transactions table (string)
-  experiment_table     — name of the experiment assignment table (string)
+  events_table         — name of the main data table (string, use "events" if unsure)
+  experiment_table     — name of the experiment assignment table (string, use "experiment" if unsure)
   timeseries_table     — name of a pre-aggregated daily table, or null
   funnel_table         — name of a funnel steps table, or null
-  user_id_col          — primary user identifier column (string)
-  date_col             — main date column (string)
-  variant_col          — experiment variant column (string)
-  week_col             — experiment week number column (string)
-  guardrail_metrics    — list of secondary metric columns to monitor
-  segment_cols         — list of dimension columns for subgroup analysis
+  user_id_col          — the user/entity identifier column (string, use "user_id" if unsure)
+  date_col             — the main date or timestamp column (string, use "date" if unsure)
+  variant_col          — experiment variant column; use "variant" if the data is not an A/B test
+  week_col             — experiment week column; use "week" if the data is not an A/B test
+  assignment_date_col  — experiment assignment date column; use "assignment_date" if not an A/B test
+  guardrail_metrics    — list of secondary numeric columns worth monitoring (may be empty list [])
+  segment_cols         — list of categorical columns useful for subgroup breakdowns (may be empty list [])
   funnel_steps         — ordered list of funnel step values, or []
-  revenue_per_unit     — estimated revenue per unit (float, default 1.0)
-  baseline_unit_count  — estimated daily active users or equivalent (int, default 100000)
-  experiment_weeks     — expected experiment duration in weeks (int, default 2)
+  revenue_per_unit     — estimated value per unit of the primary metric (float, default 1.0)
+  baseline_unit_count  — approximate number of entities/rows (int, default 10000)
+  experiment_weeks     — experiment duration in weeks (int, use 1 if the data is not an A/B test)
+
+Important: this schema may represent non-experiment data (health data, sensor readings, \
+financial time-series, etc.). That is fine — fill experiment-specific fields \
+(variant_col, week_col, assignment_date_col) with their stated defaults. \
+Focus on correctly identifying primary_metric, date_col, and segment_cols for the actual data.
 
 Schema:
 {schema_context}
+"""
+
+
+# ── SQL_GENERATION_GENERAL_PROMPT ─────────────────────────────────────────────
+# Used when analysis_mode == "general". No experiment template is forced.
+# Parameterised: {task}, {schema_context}, {db_backend}, {metric_context}
+
+SQL_GENERATION_GENERAL_PROMPT = """\
+## Schema
+
+{schema_context}
+
+## Task
+
+{task}
+
+## Instructions
+
+Write a single SQL SELECT query that retrieves the data needed to answer the \
+task above. Use only tables and columns present in the schema. The query will \
+be executed against a {db_backend} database.
+
+This is a **general data analysis** request — not an A/B experiment. \
+You are free to:
+- Return aggregate or row-level data, whichever best suits the question
+- Use any grouping, ordering, or windowing that helps surface patterns
+- Join multiple tables if needed
+
+### CRITICAL — Detect and collapse panel/longitudinal data
+
+**Before writing SQL**, check whether the schema has BOTH:
+1. A time column (date, month, week, timestamp, period, or similar), AND
+2. An entity-ID column (customer_id, user_id, patient_id, etc.)
+
+**If both are present**, the data is panel/longitudinal (multiple rows per \
+entity over time). You MUST collapse it to **one row per entity** so that \
+downstream statistics tools see individuals, not repeated observations. \
+Failure to do this produces wrong row counts, inflated correlations, and \
+incorrect distributions.
+
+Aggregation rules for panel data:
+- Binary outcome flags (churned, converted, active, 0/1 columns): `MAX()` \
+  — did the entity ever have this outcome?
+- Numeric metrics (revenue, sessions, scores, counts): `AVG()` \
+  — average across the entity's time periods
+- Slowly-changing dimensions (tenure, age, size): `MAX()` \
+  — take the most recent / largest value
+- Categorical attributes (plan, industry, segment): include in `GROUP BY` \
+  alongside the entity-ID column
+- Do **not** include the time column in the output — it belongs to the \
+  collapsed-away dimension
+
+**If only a time column exists and no entity ID**, the data is a time-series; \
+return rows as-is ordered by time.
+
+**If neither condition applies**, return rows as-is.
+
+Requirements:
+- Return only the columns relevant to the task — avoid SELECT *
+- Add LIMIT 50000 unless the task requires all rows
+- Output only the SQL in a ```sql ... ``` block — no surrounding prose
+"""
+
+
+# ── INSIGHTS_NARRATIVE_PROMPT ─────────────────────────────────────────────────
+# Used by generate_narrative when analysis_mode == "general".
+# Parameterised: {task}, {tool_results_json}, {analyst_notes_section}
+
+INSIGHTS_NARRATIVE_PROMPT = """\
+## Analyst task
+
+{task}
+
+## Data summary and statistics
+
+```json
+{tool_results_json}
+```
+
+## Your task
+
+Write a concise, professional report that a senior executive (CEO, CFO, or \
+department head) can read in under 2 minutes and act on immediately. \
+Use plain business language throughout — no statistical jargon, no code, \
+no technical syntax. Use this exact 6-section structure:
+
+1. **Executive Summary** — 2 sentences max. The single most important finding \
+   and what it means for the business. Lead with insight, not process.
+2. **Key Findings** — 3–5 bullet points covering the most significant patterns, \
+   trends, or distributions. Translate numbers into business terms: write \
+   "nearly 1 in 4 customers" rather than "23.7%", and "revenue is concentrated \
+   in the top two categories" rather than listing raw figures. Each bullet \
+   should be a complete insight, not just a data point.
+3. **Primary Driver** — the main segment, category, time period, or variable \
+   that explains most of the pattern. Write "strongly associated with" or \
+   "tends to increase alongside" — never "correlation coefficient" or "r²".
+4. **Risks & Watch Points** — at least 2 bullets on data quality gaps, \
+   coverage issues, or external factors that could change the picture. \
+   Frame as business risks, not technical caveats.
+5. **Recommendation** — one decisive, action-oriented sentence. Name the \
+   specific action, the team responsible, and the expected outcome. No hedging.
+6. **Limitations** — at least 2 bullets on what this analysis cannot confirm: \
+   causation vs. correlation, missing data sources, or uncontrolled variables. \
+   Keep it brief and non-technical.
+
+Rules:
+- **Never include SQL queries, code blocks, database syntax, or column names \
+  in backtick formatting** anywhere in the report.
+- Do not invent numbers not present in the data summary above.
+- Use **bold** for key findings, named segments, and the most important numbers.
+- Never write "statistically significant", "p-value", "coefficient", "ATE", \
+  "standard deviation", or "regression" — translate all of these into plain English.
+- Write in active voice. Short sentences. Executive tone.
+- Output only the markdown report — no preamble or closing remarks.
+
+{analyst_notes_section}
 """
 
 

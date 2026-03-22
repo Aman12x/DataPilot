@@ -2,7 +2,7 @@
   "primary_metric": "dau_rate",
   "metric_source_col": "dau_flag",
   "metric_agg": "mean",
-  "covariate": "pre_session_count",
+  "covariate": "session_count",
   "metric_direction": "higher_is_better",
   "events_table": "events",
   "experiment_table": "experiment",

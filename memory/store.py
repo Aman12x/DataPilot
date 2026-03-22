@@ -51,13 +51,18 @@ def init_db(path: str | None = None) -> None:
                 semantic_cache_hits  INTEGER,
                 estimated_cost_usd   REAL,
                 notes                TEXT,
-                user_id              TEXT
+                user_id              TEXT,
+                analysis_mode        TEXT
             )
         """)
-        # Migrate existing DBs that predate the user_id column
+        # Incremental migrations for existing DBs
         existing = {row[1] for row in con.execute("PRAGMA table_info(runs)").fetchall()}
-        if "user_id" not in existing:
-            con.execute("ALTER TABLE runs ADD COLUMN user_id TEXT")
+        for col, defn in [
+            ("user_id",       "TEXT"),
+            ("analysis_mode", "TEXT"),
+        ]:
+            if col not in existing:
+                con.execute(f"ALTER TABLE runs ADD COLUMN {col} {defn}")
 
 
 def log_run(
@@ -66,6 +71,7 @@ def log_run(
     path: str | None = None,
     run_id: str | None = None,
     user_id: str | None = None,
+    analysis_mode: str = "ab_test",
     metric: str = "",
     covariate: str = "",
     db_backend: str = "duckdb",
@@ -82,7 +88,6 @@ def log_run(
 ) -> str:
     """
     Persist one run to the memory store.
-
     Returns the run_id (auto-generated UUID if not provided).
     """
     path   = path or _db_path()
@@ -100,21 +105,20 @@ def log_run(
                 run_id, timestamp, task, task_embedding, metric, covariate,
                 db_backend, analyst_override, top_segment, eval_score,
                 cache_read_tokens, cache_write_tokens, uncached_tokens,
-                semantic_cache_hits, estimated_cost_usd, notes, user_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                semantic_cache_hits, estimated_cost_usd, notes, user_id, analysis_mode
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id, ts, task, task_embedding, metric, covariate,
                 db_backend, override_json, top_segment, eval_score,
                 cache_read_tokens, cache_write_tokens, uncached_tokens,
-                semantic_cache_hits, estimated_cost_usd, notes, user_id,
+                semantic_cache_hits, estimated_cost_usd, notes, user_id, analysis_mode,
             ),
         )
     return run_id
 
 
 def update_eval_score(run_id: str, eval_score: float, path: str | None = None) -> None:
-    """Update the eval_score for an existing run."""
     path = path or _db_path()
     init_db(path)
     with _connect(path) as con:
@@ -125,7 +129,6 @@ def update_eval_score(run_id: str, eval_score: float, path: str | None = None) -
 
 
 def get_run(run_id: str, path: str | None = None) -> dict[str, Any] | None:
-    """Fetch a single run by ID. Returns None if not found."""
     path = path or _db_path()
     init_db(path)
     with _connect(path) as con:
