@@ -14,7 +14,9 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -161,9 +163,37 @@ async def lifespan(app: FastAPI):
 
     asyncio.create_task(_background_init())
 
+    # ── Upload TTL sweeper ─────────────────────────────────────────────────────
+    _UPLOAD_TTL_HOURS   = float(os.getenv("UPLOAD_TTL_HOURS", "24"))
+    _SWEEP_INTERVAL_SEC = float(os.getenv("UPLOAD_SWEEP_INTERVAL_SEC", "3600"))
+
+    async def _sweep_uploads():
+        cutoff_sec = _UPLOAD_TTL_HOURS * 3600
+        root = Path(upload_dir)
+        while True:
+            await asyncio.sleep(_SWEEP_INTERVAL_SEC)
+            try:
+                now     = time.time()
+                deleted = 0
+                for db_file in root.glob("*/*.db"):
+                    try:
+                        age = now - db_file.stat().st_mtime
+                        if age > cutoff_sec:
+                            db_file.unlink(missing_ok=True)
+                            deleted += 1
+                    except Exception as exc:
+                        logger.debug("sweep: could not remove %s — %s", db_file, exc)
+                if deleted:
+                    logger.info("Upload sweeper removed %d expired file(s) from %s", deleted, upload_dir)
+            except Exception as exc:
+                logger.warning("Upload sweeper error: %s", exc)
+
+    _sweep_task = asyncio.create_task(_sweep_uploads())
+
     yield
 
     # ── Cleanup ───────────────────────────────────────────────────────────────
+    _sweep_task.cancel()
     if redis_client:
         await redis_client.aclose()
     logger.info("DataPilot backend shut down")

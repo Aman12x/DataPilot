@@ -1863,11 +1863,16 @@ def narrative_gate(state: AgentState) -> dict:
 
 def _compute_quality_score(state: AgentState) -> float:
     """
-    Estimate run quality from tool-result completeness.
+    Estimate run quality from tool-result completeness + RAGAS-inspired signals.
 
     Returns a 0–1 float. Used when no ground-truth eval_score is available
     so every run still contributes a learning signal to the memory store.
+
+    Composite:
+      60%  completeness  — did all expected tool nodes produce results?
+      40%  eval_tools    — faithfulness + relevancy of the final narrative
     """
+    # ── Completeness ─────────────────────────────────────────────────────────
     cuped = state.get("cuped_result")
     checks = [
         bool(cuped and cuped.variance_reduction_pct > 5),
@@ -1877,7 +1882,25 @@ def _compute_quality_score(state: AgentState) -> float:
         bool(state.get("novelty_result")),
         bool(state.get("forecast_result")),
     ]
-    return sum(checks) / len(checks)
+    completeness = sum(checks) / len(checks)
+
+    # ── RAGAS signals (best-effort; degrade gracefully) ───────────────────────
+    narrative = state.get("final_narrative") or state.get("narrative_draft") or ""
+    task      = state.get("task") or ""
+    df        = state.get("query_result")
+
+    ragas_score: float | None = None
+    if narrative and task:
+        try:
+            from tools.eval_tools import evaluate_run
+            result = evaluate_run(task, narrative, df=df)
+            ragas_score = result.score if result.relevancy >= 0 else result.faithfulness
+        except Exception as exc:
+            logger.debug("_compute_quality_score: eval_tools failed — %s", exc)
+
+    if ragas_score is not None:
+        return round(0.6 * completeness + 0.4 * ragas_score, 4)
+    return round(completeness, 4)
 
 
 # ── Node 20: log_run_node ─────────────────────────────────────────────────────

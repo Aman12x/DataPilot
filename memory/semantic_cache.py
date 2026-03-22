@@ -11,8 +11,8 @@ Thresholds (from .env):
 
 from __future__ import annotations
 
+import json
 import os
-import pickle
 import sqlite3
 from typing import Any
 
@@ -108,7 +108,7 @@ def check_cache(
         sim = cosine_similarity(query_vec, stored_vec)
         if sim > best_sim:
             best_sim    = sim
-            best_result = pickle.loads(row["cached_result"])  # noqa: S301
+            best_result = json.loads(row["cached_result"])
 
     hard = _hard_threshold()
     soft = _soft_threshold()
@@ -145,7 +145,7 @@ def store_cache(
     _ensure_cache_columns(path)
 
     vec_bytes    = embed(task).tobytes()
-    result_bytes = pickle.dumps(result)
+    result_bytes = json.dumps(result)
 
     with _connect(path) as con:
         con.execute(

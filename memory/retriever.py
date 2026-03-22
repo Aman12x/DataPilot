@@ -8,13 +8,16 @@ Keyword overlap is cheap and fast — semantic similarity lives in semantic_cach
 
 from __future__ import annotations
 
-import pickle
+import json
+import logging
 import re
 from typing import Any
 
 import numpy as np
 
 from memory.store import _connect, _db_path, get_all_runs, init_db
+
+logger = logging.getLogger(__name__)
 
 
 def _tokenize(text: str) -> set[str]:
@@ -160,11 +163,12 @@ def retrieve_sql_examples(
             sim = cosine_similarity(query_vec, stored_vec)
             if sim < min_similarity:
                 continue
-            result = pickle.loads(row["cached_result"])  # noqa: S301
+            result = json.loads(row["cached_result"])
             sql = result.get("sql", "").strip()
             if sql:
                 scored.append({"task": row["task"], "sql": sql, "similarity": sim})
-        except Exception:
+        except Exception as exc:
+            logger.debug("retrieve_sql_examples: skipping malformed cache row: %s", exc)
             continue
 
     scored.sort(key=lambda x: x["similarity"], reverse=True)

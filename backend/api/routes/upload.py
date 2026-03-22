@@ -39,10 +39,14 @@ _DATE_KEYWORDS = ("date", "time", "day", "month", "timestamp", "ts", "dt")
 
 
 def resolve_upload_path(upload_id: str, user_id: str) -> str:
-    path = os.path.join(_UPLOAD_DIR, user_id, f"{upload_id}.db")
-    if not os.path.isfile(path):
+    user_dir = Path(_UPLOAD_DIR).resolve() / user_id
+    target   = (user_dir / f"{upload_id}.db").resolve()
+    # Ensure the resolved path stays inside the user's directory (defence-in-depth)
+    if not str(target).startswith(str(user_dir)):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid upload ID")
+    if not target.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Upload not found")
-    return path
+    return str(target)
 
 
 def _normalise_cols(df: pd.DataFrame) -> pd.DataFrame:
@@ -200,8 +204,10 @@ async def upload_file(
     logger.info("upload user=%s id=%s rows=%d cols=%d",
                 current_user["user_id"], upload_id, len(df), len(df.columns))
 
-    # Return original (pre-user_id-insert) column list for display
-    display_cols = [c for c in df.columns if c != "user_id" or "user_id" in df.columns]
+    # Return column list for display — exclude the synthetic user_id column that
+    # _infer_tables inserts for time-series data (it wasn't in the user's file).
+    _had_uid_originally = any(c in _USER_ID_COLS for c in df.columns)
+    display_cols = [c for c in df.columns if c != "user_id" or _had_uid_originally]
     preview = df.head(5).where(pd.notnull(df.head(5)), None).to_dict(orient="records")
     return {
         "upload_id": upload_id,
@@ -218,11 +224,7 @@ def delete_upload_endpoint(
 ) -> dict[str, str]:
     if not _UUID_RE.match(upload_id):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid upload ID")
-    # Resolve to absolute path and verify it stays within the user's upload dir
-    user_dir  = Path(_UPLOAD_DIR).resolve() / current_user["user_id"]
-    target    = (user_dir / f"{upload_id}.db").resolve()
-    if not str(target).startswith(str(user_dir)):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid upload ID")
+    target = Path(resolve_upload_path(upload_id, current_user["user_id"]))
     try:
         target.unlink(missing_ok=True)
     except OSError:

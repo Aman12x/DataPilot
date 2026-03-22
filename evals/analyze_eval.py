@@ -41,6 +41,7 @@ from tools import (
     stats_tools,
 )
 from tools.db_tools import DBConnection
+from tools.eval_tools import score_faithfulness, score_relevancy
 from memory.store import log_run, update_eval_score
 
 # ── Ground-truth SQL queries ──────────────────────────────────────────────────
@@ -152,6 +153,22 @@ EVAL_CRITERIA: dict[str, tuple[str, Callable[[dict], bool]]] = {
             "caveat" in s["narrative_draft"].lower()
             or "limitation" in s["narrative_draft"].lower()
         )),
+    ),
+    # ── RAGAS-inspired: faithfulness ─────────────────────────────────────────
+    "narrative_faithful": (
+        "Numbers cited in narrative are supported by query results (faithfulness ≥ 0.70)",
+        _safe(lambda s: score_faithfulness(
+            s.get("narrative_draft", ""),
+            s.get("query_result"),
+        )["score"] >= 0.70),
+    ),
+    # ── RAGAS-inspired: relevancy ────────────────────────────────────────────
+    "narrative_relevant": (
+        "Narrative is semantically relevant to the task (relevancy ≥ 0.60)",
+        _safe(lambda s: score_relevancy(
+            s.get("task", "DAU drop investigation"),
+            s.get("narrative_draft", ""),
+        ) >= 0.60),
     ),
 }
 
