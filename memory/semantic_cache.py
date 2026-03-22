@@ -49,22 +49,30 @@ def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def _ensure_cache_columns(path: str) -> None:
-    """Add cache_node_name / cached_result columns to runs if not present."""
+    """Add cache_node_name / cached_result / dataset_fingerprint columns to runs if not present."""
     with _connect(path) as con:
         cols = {row[1] for row in con.execute("PRAGMA table_info(runs)").fetchall()}
         if "cache_node_name" not in cols:
             con.execute("ALTER TABLE runs ADD COLUMN cache_node_name TEXT")
         if "cached_result" not in cols:
             con.execute("ALTER TABLE runs ADD COLUMN cached_result BLOB")
+        if "dataset_fingerprint" not in cols:
+            con.execute("ALTER TABLE runs ADD COLUMN dataset_fingerprint TEXT DEFAULT ''")
 
 
 def check_cache(
     task: str,
     node_name: str,
+    dataset_fingerprint: str = "",
     path: str | None = None,
 ) -> dict[str, Any] | None:
     """
-    Look up the semantic cache for a (task, node_name) pair.
+    Look up the semantic cache for a (task, node_name, dataset_fingerprint) tuple.
+
+    dataset_fingerprint scopes the cache to the specific dataset being analysed
+    (e.g. the upload_id path for CSV uploads, or empty string for the demo DB).
+    This prevents cross-dataset cache poisoning where an identical task string
+    run against different data returns a cached result from the wrong dataset.
 
     Returns:
         None                                    — cache miss (similarity < soft threshold)
@@ -83,12 +91,13 @@ def check_cache(
             """
             SELECT task_embedding, cached_result
             FROM   runs
-            WHERE  cache_node_name = ?
-              AND  task_embedding  IS NOT NULL
-              AND  cached_result   IS NOT NULL
+            WHERE  cache_node_name    = ?
+              AND  dataset_fingerprint = ?
+              AND  task_embedding     IS NOT NULL
+              AND  cached_result      IS NOT NULL
             ORDER  BY timestamp DESC
             """,
-            (node_name,),
+            (node_name, dataset_fingerprint),
         ).fetchall()
 
     best_sim    = 0.0
@@ -116,6 +125,7 @@ def store_cache(
     node_name: str,
     result: dict[str, Any],
     run_id: str,
+    dataset_fingerprint: str = "",
     path: str | None = None,
 ) -> None:
     """
@@ -123,11 +133,12 @@ def store_cache(
     can hit the cache.
 
     Args:
-        task:      The task string that was analysed.
-        node_name: The graph node that produced the result (e.g. 'generate_sql').
-        result:    The dict result to cache.
-        run_id:    The run_id of the row to update (must already exist in runs).
-        path:      Optional DB path override.
+        task:                The task string that was analysed.
+        node_name:           The graph node that produced the result (e.g. 'generate_sql').
+        result:              The dict result to cache.
+        run_id:              The run_id of the row to update (must already exist in runs).
+        dataset_fingerprint: Scopes the cache to a specific dataset (upload_id path or '').
+        path:                Optional DB path override.
     """
     path = path or _db_path()
     init_db(path)
@@ -140,10 +151,11 @@ def store_cache(
         con.execute(
             """
             UPDATE runs
-               SET task_embedding   = ?,
-                   cache_node_name  = ?,
-                   cached_result    = ?
+               SET task_embedding      = ?,
+                   cache_node_name     = ?,
+                   cached_result       = ?,
+                   dataset_fingerprint = ?
              WHERE run_id = ?
             """,
-            (vec_bytes, node_name, result_bytes, run_id),
+            (vec_bytes, node_name, result_bytes, dataset_fingerprint, run_id),
         )

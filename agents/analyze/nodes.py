@@ -632,8 +632,9 @@ def _llm_correct_sql(
 
 @observe(name="check_semantic_cache")
 def check_semantic_cache(state: AgentState) -> dict:
-    task = state.get("task", "")
-    hit  = semantic_cache.check_cache(task, "generate_sql")
+    task        = state.get("task", "")
+    fingerprint = state.get("duckdb_path", "")  # empty string for demo DB
+    hit  = semantic_cache.check_cache(task, "generate_sql", dataset_fingerprint=fingerprint)
     if hit is None:
         return {}
     cached    = hit["result"]
@@ -902,6 +903,23 @@ def resolve_task_intent(state: AgentState) -> dict:
     result = _llm_resolve_intent(task, schema_context, mc)
 
     clarification = ""
+    # Guard: if the LLM claims ambiguity because a column "doesn't exist" but it
+    # actually IS in the schema, suppress the interrupt — the LLM is hallucinating.
+    if result.get("ambiguous"):
+        _, known_cols = _known_schema_names(schema_context)
+        question = result.get("clarifying_question", "")
+        # If the question contains the name of an actual schema column, the LLM
+        # is confused — clear ambiguous flag and continue with what it resolved.
+        question_lower = question.lower()
+        hallucinating = any(col in question_lower for col in known_cols if len(col) > 3)
+        if hallucinating:
+            logger.info(
+                "resolve_task_intent: suppressing spurious ambiguity gate — "
+                "LLM asked about columns that exist in schema: %s",
+                [c for c in known_cols if len(c) > 3 and c in question_lower],
+            )
+            result["ambiguous"] = False
+
     if result.get("ambiguous"):
         analyst_response = interrupt({
             "gate":     "intent",
@@ -1126,7 +1144,11 @@ def execute_query(state: AgentState) -> dict:
                 )
 
     # ── Phase 2: Column validation + canonical SQL fallback ───────────────────
-    if df is not None:
+    # Canonical SQL fallback only applies to ab_test mode — it uses experiment
+    # tables and variant columns that don't exist in general / upload schemas.
+    is_ab = state.get("analysis_mode", "ab_test") == "ab_test"
+
+    if df is not None and is_ab:
         required = {mc.primary_metric, mc.covariate, "variant"}
         missing  = required - set(df.columns)
         if missing:
@@ -1137,6 +1159,11 @@ def execute_query(state: AgentState) -> dict:
             df = None   # trigger canonical fallback below
 
     if df is None:
+        if not is_ab:
+            raise ValueError(
+                "execute_query: LLM SQL failed for general-mode query. "
+                "Check schema context and SQL generation prompt."
+            )
         canonical_sql = _canonical_experiment_sql(mc)
         try:
             df = _db_conn(state).query(canonical_sql)
@@ -1903,6 +1930,7 @@ def log_run_node(state: AgentState) -> dict:
                     "recommendation": state.get("recommendation") or "",
                 },
                 run_id=run_id,
+                dataset_fingerprint=state.get("duckdb_path", ""),
             )
         else:
             logger.info(
