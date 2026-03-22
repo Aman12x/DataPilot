@@ -12,6 +12,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY backend/requirements.txt /app/backend/requirements.txt
 RUN pip install --no-cache-dir -r /app/backend/requirements.txt
 
+# Download MiniLM embedding model into the image layer so cold starts
+# don't hit HuggingFace at runtime (eliminates ~10s of HTTP requests).
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
+
 # Copy the entire project (agents/, tools/, memory/, auth/, etc.)
 COPY . /app
 
