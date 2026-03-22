@@ -1721,7 +1721,7 @@ def generate_narrative(state: AgentState) -> dict:
             tool_results[k] = _to_dict(v)
     if "forecast_result" in tool_results:
         tool_results["forecast_result"].pop("forecast_df", None)
-    tool_results_json = json.dumps(tool_results, default=str, indent=2)
+    tool_results_json = json.dumps(tool_results, default=str)
 
     if mode == "general":
         task_prompt = INSIGHTS_NARRATIVE_PROMPT.format(
@@ -1771,9 +1771,9 @@ def generate_narrative(state: AgentState) -> dict:
     for turn in state.get("conversation_history", []):
         messages.append(turn)
 
-    with trace_generation("generate_narrative", _model(), task_prompt, max_tokens=_MAX_TOKENS_NARRATIVE) as gen:
+    with trace_generation("generate_narrative", _fast_model(), task_prompt, max_tokens=_MAX_TOKENS_NARRATIVE) as gen:
         response = _anthropic_client().messages.create(
-            model=_model(),
+            model=_fast_model(),
             max_tokens=_MAX_TOKENS_NARRATIVE,
             messages=messages,
         )
