@@ -372,34 +372,44 @@ You are free to:
 - Use any grouping, ordering, or windowing that helps surface patterns
 - Join multiple tables if needed
 
-### CRITICAL — Detect and collapse panel/longitudinal data
+### CRITICAL — Handle panel/longitudinal data based on task intent
 
 **Before writing SQL**, check whether the schema has BOTH:
-1. A time column (date, month, week, timestamp, period, or similar), AND
-2. An entity-ID column (customer_id, user_id, patient_id, etc.)
+1. A time column (date, month, week, season, timestamp, period, or similar), AND
+2. An entity-ID column (customer_id, user_id, player_id, patient_id, etc.)
 
-**If both are present**, the data is panel/longitudinal (multiple rows per \
-entity over time). You MUST collapse it to **one row per entity** so that \
-downstream statistics tools see individuals, not repeated observations. \
-Failure to do this produces wrong row counts, inflated correlations, and \
-incorrect distributions.
+**If both are present**, choose the aggregation strategy based on what the task asks for:
 
-Aggregation rules for panel data:
-- Binary outcome flags (churned, converted, active, 0/1 columns): `MAX()` \
-  — did the entity ever have this outcome?
-- Numeric metrics (revenue, sessions, scores, counts): `AVG()` \
-  — average across the entity's time periods
-- Slowly-changing dimensions (tenure, age, size): `MAX()` \
-  — take the most recent / largest value
-- Categorical attributes (plan, industry, segment): include in `GROUP BY` \
-  alongside the entity-ID column
-- Do **not** include the time column in the output — it belongs to the \
-  collapsed-away dimension
+**Case A — Task asks about trends or changes over time** \
+(keywords: "trend", "change", "over time", "by year/season/month", "growth", "evolution"):
+- `GROUP BY time_col` and aggregate numeric metrics with `AVG()` or `SUM()`
+- Include the time column in output so trends are visible
+- ORDER BY the time column ASC
 
-**If only a time column exists and no entity ID**, the data is a time-series; \
-return rows as-is ordered by time.
+**Case B — Task asks about individual entity rankings or profiles** \
+(keywords: "top", "best", "worst", "ranking", "who", "which player/team"):
+- `GROUP BY entity_id, entity_name` (include name column alongside ID), \
+  aggregate numeric metrics with `AVG()` across all time periods
+- ORDER BY the primary metric DESC, LIMIT 20
+- Do **not** include the time column in output
 
-**If neither condition applies**, return rows as-is.
+**Case C — Task asks about group/category breakdowns** \
+(keywords: "by position", "by team", "by segment", "breakdown", "compare groups"):
+- `GROUP BY category_col`, aggregate numeric metrics with `AVG()`
+- Include all relevant category columns in GROUP BY
+
+**Case D — Task asks for multiple of the above** \
+Use the FIRST matching case above. For multi-objective tasks (e.g. "show trend AND \
+top scorers AND breakdown by position"), write ONE query that answers the MOST \
+important sub-question. Prefer Case A (trends) when time comparison is central.
+
+**Aggregation rules for numeric columns:**
+- Binary flags (churned, converted, 0/1): `MAX()` — did entity ever have this outcome?
+- Numeric metrics (points, revenue, scores): `AVG()` — average across periods
+- Categorical attributes (position, team, segment): include in `GROUP BY`
+
+**If only a time column and no entity ID**, return rows as-is ordered by time.
+**If neither time nor entity ID**, return rows as-is.
 
 Requirements:
 - Return only the columns relevant to the task — avoid SELECT *

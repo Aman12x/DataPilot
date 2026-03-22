@@ -191,6 +191,8 @@ class DescribeResult(BaseModel):
     row_count:   int
     col_count:   int
     columns:     list[ColumnSummary]
+    top_rows:    Optional[list[dict]] = None   # top-10 rows by highest-variance numeric col
+    trend_rows:  Optional[list[dict]] = None   # rows aggregated by detected time/group col
 
 
 class CorrelationPair(BaseModel):
