@@ -110,9 +110,25 @@ def generate_general_charts(
         ))
 
     # 3. Top categorical distribution ──────────────────────────────────────────
+    # Skip pivot/unpivot artifact column names and columns where every value
+    # appears exactly once (count = 1 for all top_values — meaningless distribution).
+    _SKIP_CAT_NAMES = {"variable", "value", "metric", "measure", "column_name",
+                       "statistic", "feature", "name", "key", "field"}
+
+    def _all_count_one(col_summary) -> bool:
+        """Return True if every top_value entry has count 1 (fully unique — not a useful category)."""
+        tvs = col_summary.top_values or []
+        if not tvs:
+            return False
+        return all(tv.endswith(": 1") for tv in tvs)
+
     cat_cols = [
         c for c in describe.columns
-        if c.top_values and c.n_unique is not None and 1 < c.n_unique <= 30
+        if c.top_values
+        and c.n_unique is not None
+        and 1 < c.n_unique <= 30
+        and c.name.lower() not in _SKIP_CAT_NAMES
+        and not _all_count_one(c)
     ]
     if cat_cols:
         col = cat_cols[0]
@@ -138,9 +154,17 @@ def generate_general_charts(
             ))
 
     # 4. Numeric spread (percentile chart) ────────────────────────────────────
+    # Skip columns that are themselves statistical artefacts (correlation scores,
+    # p-values, aggregation indices) — their spread is not meaningful as raw data.
+    _SKIP_NUM_NAMES = {"correlation", "r", "r2", "p_value", "pvalue", "p", "coef",
+                       "coefficient", "weight", "score", "rank", "index", "value"}
     num_cols = [
         c for c in describe.columns
-        if c.median is not None and c.std is not None and c.min is not None and c.max is not None
+        if c.median is not None
+        and c.std is not None
+        and c.min is not None
+        and c.max is not None
+        and c.name.lower() not in _SKIP_NUM_NAMES
     ]
     if num_cols:
         # Pick column with highest coefficient of variation
