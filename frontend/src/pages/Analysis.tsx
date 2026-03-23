@@ -421,9 +421,27 @@ function ChartsGrid({ charts }: { charts: ChartSpec[] }) {
 
 // ── FinishedView ───────────────────────────────────────────────────────────────
 
+const DETAILS_MARKER = "<!-- details -->";
+
+function splitNarrative(raw: string): { brief: string; details: string } {
+  const clean = sanitiseNarrative(raw);
+  const idx   = clean.indexOf(DETAILS_MARKER);
+  if (idx === -1) return { brief: clean, details: "" };
+  return {
+    brief:   clean.slice(0, idx).trim(),
+    details: clean.slice(idx + DETAILS_MARKER.length).trim(),
+  };
+}
+
 function FinishedView({ state, runId, onNewAnalysis }: { state: DoneEvent["state"]; runId: string; onNewAnalysis: () => void }) {
   const navigate = useNavigate();
-  const [copied, setCopied] = useState(false);
+  const [copied,      setCopied]      = useState(false);
+  const [showDetails, setShowDetails] = useState(false);
+
+  const { brief, details } = splitNarrative(state.narrative_draft);
+  const hasDetails = details.length > 0;
+  const hasCharts  = state.charts && state.charts.length > 0;
+  const hasTrust   = state.trust_indicators && state.trust_indicators.confidence_level;
 
   const downloadPdf = () => {
     const token  = localStorage.getItem("access_token") ?? "";
@@ -437,18 +455,25 @@ function FinishedView({ state, runId, onNewAnalysis }: { state: DoneEvent["state
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const hasTrust  = state.trust_indicators && state.trust_indicators.confidence_level;
-  const hasCharts = state.charts && state.charts.length > 0;
-
   return (
     <div style={s.finPage} className="fade-in">
       <div style={s.finInner}>
+
+        {/* Header row */}
         <div style={s.finHeader}>
           <div style={s.finTitle}>
             <span style={{ color: "#a6e3a1", fontSize: 20 }}>✓</span>
             <h2 style={{ color: "#cdd6f4", margin: 0, fontSize: 20 }}>Analysis Complete</h2>
           </div>
           <div style={s.finActions} className="fin-actions">
+            {(hasDetails || hasCharts) && (
+              <button
+                style={showDetails ? s.btnDetailsActive : s.btnDetails}
+                onClick={() => setShowDetails(v => !v)}
+              >
+                {showDetails ? "▲ Hide details" : "▼ Additional details"}
+              </button>
+            )}
             <button style={s.btnSec} onClick={copyText}>{copied ? "Copied!" : "Copy text"}</button>
             <button style={s.btnSec} onClick={downloadPdf}>↓ PDF</button>
             <button style={s.btnSec} onClick={() => navigate("/history")}>History</button>
@@ -456,20 +481,26 @@ function FinishedView({ state, runId, onNewAnalysis }: { state: DoneEvent["state
           </div>
         </div>
 
+        {/* Trust indicator */}
         {hasTrust && <TrustBanner trust={state.trust_indicators} />}
 
-        {state.recommendation && (
-          <div style={s.recBanner} className="slide-up">
-            <div style={s.recLabel}>Recommendation</div>
-            <p style={s.recText}>{state.recommendation}</p>
+        {/* Brief report — always visible */}
+        <div style={s.narrativeCard} className="slide-up">
+          <Markdown content={brief} />
+        </div>
+
+        {/* Details section — charts + deep stats */}
+        {showDetails && (
+          <div className="fade-in">
+            {hasCharts && <ChartsGrid charts={state.charts} />}
+            {details && (
+              <div style={{ ...s.narrativeCard, marginTop: 14 }}>
+                <Markdown content={details} />
+              </div>
+            )}
           </div>
         )}
 
-        {hasCharts && <ChartsGrid charts={state.charts} />}
-
-        <div style={s.narrativeCard} className="slide-up">
-          <Markdown content={sanitiseNarrative(state.narrative_draft)} />
-        </div>
       </div>
     </div>
   );
@@ -718,16 +749,14 @@ const s: Record<string, React.CSSProperties> = {
   finHeader:  { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap" as const, gap: 12 },
   finTitle:   { display: "flex", alignItems: "center", gap: 10 },
   finActions: { display: "flex", gap: 8 },
-  btnSec:     { padding: "7px 16px", background: "#313244", color: "#cdd6f4", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13 },
-  btnPri:     { padding: "7px 16px", background: "#89b4fa", color: "#1e1e2e", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13, fontWeight: 600 },
+  btnSec:          { padding: "7px 16px", background: "#313244", color: "#cdd6f4", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13 },
+  btnPri:          { padding: "7px 16px", background: "#89b4fa", color: "#1e1e2e", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13, fontWeight: 600 },
+  btnDetails:      { padding: "7px 16px", background: "transparent", color: "#89b4fa", border: "1px solid #89b4fa44", borderRadius: 6, cursor: "pointer", fontSize: 13 },
+  btnDetailsActive: { padding: "7px 16px", background: "#89b4fa1a", color: "#89b4fa", border: "1px solid #89b4fa66", borderRadius: 6, cursor: "pointer", fontSize: 13 },
 
   trustBanner: { border: "1px solid", borderRadius: 10, padding: "12px 16px", marginBottom: 16, display: "flex", flexDirection: "column" as const, gap: 6 },
 
-  recBanner:  { background: "linear-gradient(135deg, #1a2035, #1a2820)", border: "1px solid #89b4fa33", borderRadius: 10, padding: "16px 20px", marginBottom: 20 },
-  recLabel:   { color: "#89b4fa", fontSize: 10, fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.1em", marginBottom: 6 },
-  recText:    { color: "#cdd6f4", fontWeight: 600, fontSize: 15, lineHeight: 1.5, margin: 0 },
-
-  chartsSection:      { marginBottom: 24 },
+  chartsSection:      { marginBottom: 24, marginTop: 14 },
   chartsSectionLabel: { color: "#45475a", fontSize: 11, fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.08em", marginBottom: 12 },
   chartsGrid:         { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 },
 

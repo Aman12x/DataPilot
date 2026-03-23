@@ -219,25 +219,35 @@ Statistical outputs for **{metric}** (measured as **{metric_direction}**):
 ## Your task
 
 Rewrite the template draft as a numbers-forward report for business stakeholders. \
-Use the 7-section structure below. Every section must cite specific numbers from \
-the tool results. Short sentences. Active voice. No preamble.
+Short sentences. Active voice. No preamble.
+
+The report has two parts separated by the exact marker `<!-- details -->` on its own line.
+
+**Part 1 — Brief Report** (shown immediately to stakeholders):
 
 1. **Result** - State the headline number in the first sentence. \
    Format: "[Treatment] [lifted/reduced] [metric] by [X] ([treatment value] vs [control value])." \
-   Add the business translation in sentence 2: how many users/orders/dollars that represents.
+   Sentence 2: business translation (how many users, orders, or dollars this represents).
 2. **What This Means** - 2-3 sentences on practical business impact. \
-   Use absolute counts, not percentages alone. State confidence level as \
-   "high confidence" or "moderate confidence" only - no p-values or test names.
-3. **Segment Breakdown** - bullet each segment with its number. \
-   Format each bullet: "[Segment]: [treatment value] vs [control value] ([delta])." \
-   If no meaningful difference across segments, write one sentence saying so.
-4. **Secondary Metrics** - one bullet per guardrail metric with its value. \
+   Use absolute counts alongside percentages. State confidence as \
+   "high confidence" or "moderate confidence" only. No p-values or test names.
+3. **Recommendation** - one sentence. Name the action and the expected outcome. No hedging.
+
+Then output this exact line:
+
+<!-- details -->
+
+**Part 2 — Additional Details** (shown only on request):
+
+4. **Segment Breakdown** - bullet each key segment with its numbers. \
+   Format: "[Segment]: [treatment value] vs [control value] ([delta])." \
+   If no meaningful segment difference exists, write one sentence stating so.
+5. **Secondary Metrics** - one bullet per guardrail metric with its direction and value. \
    Flag breached guardrails with "FLAGGED:" prefix. \
    If all within bounds: "All secondary metrics within acceptable ranges."
-5. **Confidence** - use checkmarks for strengths, warning signs for risks. \
-   Cover: sample size, whether effect persisted over time, and any data quality concerns. \
+6. **Confidence** - use checkmarks for strengths, warning signs for risks. \
+   Cover sample size, whether the effect persisted over time, and any data quality concerns. \
    Plain language only.
-6. **Recommendation** - one sentence. Name the action and expected outcome. No hedging.
 7. **Limitations** - at least 3 bullets: subgroup analysis was exploratory (not pre-registered), \
    uncontrolled external factors, and any data quality gaps.
 
@@ -449,8 +459,11 @@ INSIGHTS_NARRATIVE_PROMPT = """\
 ## Your task
 
 Write a numbers-forward report that a department head or executive can act on in \
-under 2 minutes. Lead every section with the actual number. No preamble. \
-Use this exact 6-section structure:
+under 2 minutes. Lead every section with the actual number. No preamble.
+
+The report has two parts separated by the exact marker `<!-- details -->` on its own line.
+
+**Part 1 — Brief Report** (shown immediately to stakeholders):
 
 1. **Bottom Line** - 2 sentences max. Open with the most important number or trend \
    from the data. Sentence 2: what it means for the business.
@@ -459,16 +472,21 @@ Use this exact 6-section structure:
    Do not write a bullet without a number. Use plain counts and rates that \
    non-technical readers understand ("1 in 4 customers", "$2.3M revenue gap", \
    "down 18% quarter-over-quarter").
-3. **What Drives It** - the main segment, category, or time period that explains \
-   most of the pattern. State the size of the gap between top and bottom groups. \
-   Avoid academic language. Write "strongly associated" only if the pattern is \
-   large and consistent across the data.
-4. **Watch Points** - at least 2 bullets. Flag data coverage gaps, recent trend \
-   changes, or external factors that could change the picture. Frame each as a \
-   business risk with a suggested check ("Verify whether Q4 seasonality accounts \
-   for the November spike before adjusting targets").
-5. **Recommendation** - one sentence. Name the specific action, the team \
+3. **Recommendation** - one sentence. Name the specific action, the team \
    responsible, and the expected outcome. No hedging. No qualifiers.
+
+Then output this exact line:
+
+<!-- details -->
+
+**Part 2 — Additional Details** (shown only on request):
+
+4. **What Drives It** - the main segment, category, or time period that explains \
+   most of the pattern. State the size of the gap between top and bottom groups. \
+   Avoid academic language.
+5. **Watch Points** - at least 2 bullets. Flag data coverage gaps, recent trend \
+   changes, or external factors that could change the picture. Frame each as a \
+   business risk with a suggested check.
 6. **Limitations** - at least 2 bullets on what this analysis cannot confirm: \
    association vs. causation, missing data sources, or uncontrolled variables. \
    One sentence each.
