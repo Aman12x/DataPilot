@@ -10,6 +10,8 @@ Pure Python, no LangGraph or Streamlit imports.
 
 from __future__ import annotations
 
+import re
+
 import pandas as pd
 from scipy import stats
 
@@ -31,6 +33,9 @@ _DECREASE_BAD = {
     "open", "click", "active", "install",
 }
 
+# Separator pattern: split metric names into words on underscore, dash, dot, slash
+_SEP_RE = re.compile(r"[_\-./]+")
+
 
 def _infer_harm_direction(metric: str) -> str:
     """
@@ -38,11 +43,22 @@ def _infer_harm_direction(metric: str) -> str:
     'increase' → higher treatment value is harmful.
     'decrease' → lower treatment value is harmful.
     'both'     → any significant change is flagged.
+
+    Splits on word separators (_-./) then uses prefix matching so that
+    'retained' matches 'retain', 'sessions' matches 'session', etc.
+    Compound names like 'retention_vs_churn_ratio' match both sets and
+    return 'both' (the safest default — avoids false-positive breach suppression).
     """
-    lower = metric.lower()
-    if any(kw in lower for kw in _INCREASE_BAD):
+    words = _SEP_RE.split(metric.lower())
+
+    def _matches(kw_set: set[str]) -> bool:
+        return any(w.startswith(kw) for w in words for kw in kw_set)
+
+    has_increase = _matches(_INCREASE_BAD)
+    has_decrease = _matches(_DECREASE_BAD)
+    if has_increase and not has_decrease:
         return "increase"
-    if any(kw in lower for kw in _DECREASE_BAD):
+    if has_decrease and not has_increase:
         return "decrease"
     return "both"
 
@@ -114,7 +130,12 @@ def check_guardrails(
 
         ctrl_mean = float(ctrl.mean())
         trt_mean  = float(trt.mean())
-        delta_pct = ((trt_mean - ctrl_mean) / ctrl_mean * 100) if ctrl_mean != 0 else 0.0
+        if ctrl_mean != 0:
+            delta_pct = (trt_mean - ctrl_mean) / abs(ctrl_mean) * 100
+        else:
+            # Control baseline is 0 — relative % is undefined.
+            # Report as percentage-point absolute change (e.g. 0→0.05 = +5pp).
+            delta_pct = (trt_mean - ctrl_mean) * 100
 
         _, p_value = stats.ttest_ind(trt, ctrl, equal_var=False)
         p_value = float(p_value)

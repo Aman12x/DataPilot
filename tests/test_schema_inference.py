@@ -168,10 +168,10 @@ class TestFewShotFilter:
         filtered = _filter_few_shot_by_schema(demo_examples, tables)
         assert len(filtered) == 1
 
-    def test_empty_known_tables_keeps_all(self):
-        """When schema is unknown, don't filter anything (safe default)."""
+    def test_empty_known_tables_filters_all(self):
+        """When schema is unknown, return no examples to avoid injecting mismatched ones."""
         examples = [{"task": "x", "sql": "SELECT * FROM some_table"}]
-        assert _filter_few_shot_by_schema(examples, set()) == examples
+        assert _filter_few_shot_by_schema(examples, set()) == []
 
     def test_example_with_no_table_always_kept(self):
         """SQL with no FROM clause (edge case) should pass through."""

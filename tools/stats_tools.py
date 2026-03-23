@@ -222,8 +222,17 @@ def run_hte(
             "Try reducing min_segment_size or adding more data."
         )
 
-    # Sort by absolute effect size descending
-    results.sort(key=lambda r: abs(r.effect_size), reverse=True)
+    # Bonferroni correction: adjust significance threshold for multiple comparisons.
+    # Running K independent tests at α=0.05 gives a familywise error rate of
+    # 1-(0.95)^K, so we divide alpha by the number of tests performed.
+    n_tests = len(results)
+    if n_tests > 1:
+        bonferroni_alpha = alpha / n_tests
+        for r in results:
+            r.significant = r.p_value < bonferroni_alpha
+
+    # Sort: significant segments first, then by absolute effect size within each group.
+    results.sort(key=lambda r: (not r.significant, -abs(r.effect_size)))
 
     top = results[0]
     return HteResult(

@@ -196,9 +196,9 @@ def _metric_context(mc: MetricConfig) -> str:
         f"Primary metric:    {mc.primary_metric}",
         f"Direction:         {mc.metric_direction}",
         f"Covariate:         {mc.covariate}",
-        f"Guardrail metrics: {', '.join(mc.guardrail_metrics)}",
-        f"Segment columns:   {', '.join(mc.segment_cols)}",
-        f"Funnel steps:      {', '.join(mc.funnel_steps)}",
+        f"Guardrail metrics: {', '.join(mc.guardrail_metrics) or '(none)'}",
+        f"Segment columns:   {', '.join(mc.segment_cols) or '(none)'}",
+        f"Funnel steps:      {', '.join(mc.funnel_steps) or '(none)'}",
     ]
     return "\n".join(lines)
 
@@ -211,20 +211,20 @@ def _canonical_experiment_sql(mc: "MetricConfig") -> str:
     aggregation expressions. Used as automatic fallback when LLM SQL is invalid.
     """
     agg_map = {
-        "mean":  f"AVG(e.{mc.metric_source_col})::FLOAT",
-        "sum":   f"SUM(e.{mc.metric_source_col})::FLOAT",
-        "count": f"COUNT(*)::FLOAT",
+        "mean":  f"CAST(AVG(e.{mc.metric_source_col}) AS FLOAT)",
+        "sum":   f"CAST(SUM(e.{mc.metric_source_col}) AS FLOAT)",
+        "count": f"CAST(COUNT(*) AS FLOAT)",
     }
     pre_agg_map = {
-        "mean":  f"AVG(pre_events.{mc.covariate})::FLOAT",
-        "sum":   f"SUM(pre_events.{mc.covariate})::FLOAT",
-        "count": f"COUNT(*)::FLOAT",
+        "mean":  f"CAST(AVG(pre_events.{mc.covariate}) AS FLOAT)",
+        "sum":   f"CAST(SUM(pre_events.{mc.covariate}) AS FLOAT)",
+        "count": f"CAST(COUNT(*) AS FLOAT)",
     }
     metric_agg_expr   = agg_map.get(mc.metric_agg,   agg_map["mean"])
     covariate_agg_expr = pre_agg_map.get(mc.metric_agg, pre_agg_map["mean"])
 
     guardrail_selects = "\n".join(
-        f"    AVG(e.{m})::FLOAT       AS {m},"
+        f"    CAST(AVG(e.{m}) AS FLOAT) AS {m},"
         for m in mc.guardrail_metrics
         if m not in (mc.primary_metric, mc.metric_source_col, mc.covariate)
     )
@@ -432,7 +432,9 @@ def _filter_few_shot_by_schema(
       - Every table it references is present in the current schema.
     """
     if not known_tables:
-        return examples
+        # Schema parse failed — inject no examples rather than potentially
+        # mismatched ones from a different dataset.
+        return []
     return [
         ex for ex in examples
         if not _tables_in_sql(ex.get("sql", ""))
@@ -996,7 +998,7 @@ def generate_sql(state: AgentState) -> dict:
             covariate=mc.covariate,
             variant_col=mc.variant_col,
             week_col=mc.week_col,
-            guardrail_metrics_csv=", ".join(mc.guardrail_metrics),
+            guardrail_metrics_csv=", ".join(mc.guardrail_metrics) or "(none)",
             segment_cols_csv=", ".join(mc.segment_cols),
             sql_template=_canonical_experiment_sql(mc),
             few_shot_block=few_shot_block,
@@ -1160,10 +1162,11 @@ def execute_query(state: AgentState) -> dict:
 
     if df is None:
         if not is_ab:
-            raise ValueError(
-                "execute_query: LLM SQL failed for general-mode query. "
-                "Check schema context and SQL generation prompt."
+            logger.warning(
+                "execute_query: LLM SQL failed for general-mode query — "
+                "returning empty DataFrame. Check schema context and SQL generation prompt."
             )
+            return {"query_result": pd.DataFrame()}
         canonical_sql = _canonical_experiment_sql(mc)
         try:
             df = _db_conn(state).query(canonical_sql)
@@ -1267,10 +1270,11 @@ def load_auxiliary_data(state: AgentState) -> dict:
             # Aggregate DAU component columns to platform level for cleaner time series
             agg_cols = [c for c in ["dau", "new_users", "retained_users", "resurrected_users", "churned_users"]
                         if c in daily.columns]
-            if agg_cols and "platform" in daily.columns and mc.date_col in daily.columns:
+            seg_cols_present = [c for c in mc.segment_cols if c in daily.columns]
+            if agg_cols and seg_cols_present and mc.date_col in daily.columns:
                 daily = (
                     daily
-                    .groupby([mc.date_col, "platform"])[agg_cols]
+                    .groupby([mc.date_col] + seg_cols_present)[agg_cols]
                     .sum()
                     .reset_index()
                 )
@@ -1353,14 +1357,28 @@ def decompose_metric(state: AgentState) -> dict:
 def detect_anomaly_node(state: AgentState) -> dict:
     df     = state.get("daily_df")
     mc     = state.get("metric_config") or load_metric_config()
-    # For time-series anomaly, use "dau" from metrics_daily (not the per-user primary metric)
-    metric = "dau" if df is not None and "dau" in (df.columns if hasattr(df, "columns") else []) else (state.get("metric") or mc.primary_metric)
+    date_col = mc.date_col
 
-    if df is None or (isinstance(df, pd.DataFrame) and df.empty) or "date" not in df.columns or metric not in df.columns:
+    # Resolve which metric column to use from the timeseries.
+    # Prefer the requested/primary metric; fall back to "dau" for the built-in demo schema
+    # (where primary_metric is "dau_rate" per-user but the timeseries has "dau" aggregate).
+    cols = set(df.columns) if df is not None and hasattr(df, "columns") else set()
+    requested = state.get("metric") or mc.primary_metric
+    if requested in cols:
+        metric = requested
+    elif mc.primary_metric in cols:
+        metric = mc.primary_metric
+    elif "dau" in cols:
+        metric = "dau"
+        logger.info("detect_anomaly: using 'dau' as proxy for '%s' in timeseries.", requested)
+    else:
+        metric = requested  # caught by guard below
+
+    if df is None or (isinstance(df, pd.DataFrame) and df.empty) or date_col not in df.columns or metric not in df.columns:
         logger.warning("detect_anomaly: required columns missing in daily_df, skipping.")
         return {}
 
-    anomaly = anomaly_tools.detect_anomaly(df, metric_col=metric, date_col="date")
+    anomaly = anomaly_tools.detect_anomaly(df, metric_col=metric, date_col=date_col)
 
     dimension_cols = [c for c in mc.segment_cols if c in df.columns]
     if dimension_cols:
@@ -1370,7 +1388,7 @@ def detect_anomaly_node(state: AgentState) -> dict:
         anomaly_dates = anomaly.anomaly_dates if anomaly else []
         experiment_start = anomaly_dates[0] if anomaly_dates else None
         slices = anomaly_tools.slice_and_dice(
-            df, metric_col=metric, date_col="date",
+            df, metric_col=metric, date_col=date_col,
             dimension_cols=dimension_cols, experiment_start=experiment_start,
         )
     else:
@@ -1388,15 +1406,27 @@ def detect_anomaly_node(state: AgentState) -> dict:
 def forecast_baseline_node(state: AgentState) -> dict:
     df     = state.get("daily_df")
     mc     = state.get("metric_config") or load_metric_config()
-    # Use "dau" from metrics_daily for the forecast baseline
-    metric = "dau" if df is not None and "dau" in (df.columns if hasattr(df, "columns") else []) else (state.get("metric") or mc.primary_metric)
+    date_col = mc.date_col
 
-    if df is None or (isinstance(df, pd.DataFrame) and df.empty) or "date" not in df.columns or metric not in df.columns:
+    # Resolve metric column using the same logic as detect_anomaly_node.
+    cols = set(df.columns) if df is not None and hasattr(df, "columns") else set()
+    requested = state.get("metric") or mc.primary_metric
+    if requested in cols:
+        metric = requested
+    elif mc.primary_metric in cols:
+        metric = mc.primary_metric
+    elif "dau" in cols:
+        metric = "dau"
+        logger.info("forecast_baseline: using 'dau' as proxy for '%s' in timeseries.", requested)
+    else:
+        metric = requested
+
+    if df is None or (isinstance(df, pd.DataFrame) and df.empty) or date_col not in df.columns or metric not in df.columns:
         logger.warning("forecast_baseline: required columns missing in daily_df, skipping.")
         return {}
 
     try:
-        result = forecast_tools.forecast_baseline(df, metric_col=metric, date_col="date")
+        result = forecast_tools.forecast_baseline(df, metric_col=metric, date_col=date_col)
     except Exception as exc:
         logger.warning("forecast_baseline: failed (%s), skipping.", exc)
         return {}
@@ -1415,14 +1445,27 @@ def run_cuped_node(state: AgentState) -> dict:
 
     if df is None:
         return {}
+
+    if covariate == metric:
+        logger.warning(
+            "run_cuped: covariate '%s' is the same as metric '%s' — "
+            "CUPED requires a pre-experiment covariate, not the metric itself. Skipping.",
+            covariate, metric,
+        )
+        return {}
+
     for col in [metric, covariate, variant]:
         if col not in df.columns:
             logger.warning("run_cuped: column '%s' missing, skipping.", col)
             return {}
 
-    result = stats_tools.run_cuped(
-        df, metric_col=metric, covariate_col=covariate, variant_col=variant
-    )
+    try:
+        result = stats_tools.run_cuped(
+            df, metric_col=metric, covariate_col=covariate, variant_col=variant
+        )
+    except ValueError as exc:
+        logger.warning("run_cuped: skipping — %s", exc)
+        return {}
     return {"cuped_result": result}
 
 
@@ -1488,9 +1531,13 @@ def detect_novelty_node(state: AgentState) -> dict:
             logger.warning("detect_novelty: column '%s' missing, skipping.", col)
             return {}
 
-    result = novelty_tools.detect_novelty_effect(
-        df, metric_col=metric, variant_col="variant", week_col="week"
-    )
+    try:
+        result = novelty_tools.detect_novelty_effect(
+            df, metric_col=metric, variant_col="variant", week_col="week"
+        )
+    except ValueError as exc:
+        logger.warning("detect_novelty: skipping — %s", exc)
+        return {}
     return {"novelty_result": result}
 
 

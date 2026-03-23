@@ -7,9 +7,12 @@ Input: pre-aggregated metrics_daily DataFrame (one row per date × platform × s
 
 from __future__ import annotations
 
+import logging
 import pandas as pd
 
 from tools.schemas import ComponentStats, DecompositionResult, SegmentBreakdown
+
+logger = logging.getLogger(__name__)
 
 
 def decompose_dau(
@@ -76,6 +79,13 @@ def decompose_dau(
         mid      = n // 2
         baseline = daily.iloc[:mid]
         recent   = daily.iloc[mid:]
+
+    if len(recent) < 3:
+        logger.warning(
+            "decompose_dau: 'recent' window has only %d row(s) — "
+            "baseline split may be skewed; results may be unreliable.",
+            len(recent),
+        )
 
     components = {
         "new":         "new_users",
@@ -207,13 +217,32 @@ def decompose_metric(
     for s in segments:
         s.contribution_pct = round(abs(s.delta) / total_abs_delta * 100, 2)
 
+    # Warn when segments are moving in opposite directions and largely cancel out,
+    # since contribution_pct shows movement magnitude, not net impact.
+    if segments:
+        positive_sum = sum(s.delta for s in segments if s.delta > 0)
+        negative_sum = sum(s.delta for s in segments if s.delta < 0)
+        if positive_sum > 0 and negative_sum < 0:
+            net = positive_sum + negative_sum
+            if abs(net) < 0.5 * total_abs_delta:
+                logger.warning(
+                    "decompose_metric: segments are moving in opposite directions "
+                    "(net_delta=%.4f vs total_abs_movement=%.4f). "
+                    "contribution_pct reflects movement magnitude, not net impact.",
+                    net, total_abs_delta,
+                )
+
     # Sort by descending |delta|
     segments.sort(key=lambda s: abs(s.delta), reverse=True)
 
-    dominant = (
-        f"{segments[0].segment_col}={segments[0].segment_value}"
-        if segments else "unknown"
-    )
+    # dominant: pick the segment with the largest absolute movement,
+    # but report "no_change" when all deltas are zero (uninformative otherwise).
+    if segments and any(abs(s.delta) > 0 for s in segments):
+        dominant = f"{segments[0].segment_col}={segments[0].segment_value}"
+    elif segments:
+        dominant = "no_change"
+    else:
+        dominant = "unknown"
 
     return DecompositionResult(
         dominant_change_component=dominant,

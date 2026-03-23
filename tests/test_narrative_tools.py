@@ -123,7 +123,7 @@ def test_novelty_ruled_out_mentioned():
     """Narrative states novelty is ruled out when novelty_likely=False."""
     result = format_narrative(**_build())
     draft = result.narrative_draft
-    assert "novelty ruled out" in draft
+    assert "novelty ruled out" in draft.lower()
 
 
 def test_recommendation_returned():
