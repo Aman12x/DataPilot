@@ -206,8 +206,7 @@ Output only the corrected SQL in a ```sql ... ``` block. No prose, no explanatio
 NARRATIVE_PROMPT = """\
 ## Analysis results
 
-The following statistical outputs were produced for the investigation of \
-**{metric}**. The primary metric is measured as **{metric_direction}**.
+Statistical outputs for **{metric}** (measured as **{metric_direction}**):
 
 ```json
 {tool_results_json}
@@ -219,32 +218,38 @@ The following statistical outputs were produced for the investigation of \
 
 ## Your task
 
-Rewrite the template draft as a polished, executive-ready report. \
-Preserve the 7-section structure exactly:
+Rewrite the template draft as a numbers-forward report for business stakeholders. \
+Use the 7-section structure below. Every section must cite specific numbers from \
+the tool results. Short sentences. Active voice. No preamble.
 
-1. **Executive Summary** — 2 sentences max. Lead with the single most important finding \
-   and its business implication. Write for a C-suite reader.
-2. **Key Finding** — primary metric effect and its practical magnitude. Translate numbers \
-   into business terms (e.g. "an additional 1,200 conversions per month", not "a 3.2% lift"). \
-   Mention statistical confidence only as "high confidence" / "moderate confidence" — no p-values.
-3. **Segment Breakdown** — which customer group, region, or cohort drove the effect most. \
-   If no meaningful segment difference exists, state "Effect was consistent across all segments."
-4. **Secondary Metrics** — direction and magnitude of guardrail metrics. \
-   If all within bounds: "All secondary metrics remained within acceptable ranges."
-5. **Confidence Assessment** — is this finding reliable? Use ✅ for strengths and ⚠️ for \
-   risks. Cover sample size, novelty effects, and alternative explanations — in plain language.
-6. **Recommendation** — one decisive, action-oriented sentence. No hedging. No qualifiers.
-7. **Limitations** — at least 3 bullets: post-hoc subgroup risk, unmodelled confounders, \
-   and any data quality concerns that could affect interpretation.
+1. **Result** - State the headline number in the first sentence. \
+   Format: "[Treatment] [lifted/reduced] [metric] by [X] ([treatment value] vs [control value])." \
+   Add the business translation in sentence 2: how many users/orders/dollars that represents.
+2. **What This Means** - 2-3 sentences on practical business impact. \
+   Use absolute counts, not percentages alone. State confidence level as \
+   "high confidence" or "moderate confidence" only - no p-values or test names.
+3. **Segment Breakdown** - bullet each segment with its number. \
+   Format each bullet: "[Segment]: [treatment value] vs [control value] ([delta])." \
+   If no meaningful difference across segments, write one sentence saying so.
+4. **Secondary Metrics** - one bullet per guardrail metric with its value. \
+   Flag breached guardrails with "FLAGGED:" prefix. \
+   If all within bounds: "All secondary metrics within acceptable ranges."
+5. **Confidence** - use checkmarks for strengths, warning signs for risks. \
+   Cover: sample size, whether effect persisted over time, and any data quality concerns. \
+   Plain language only.
+6. **Recommendation** - one sentence. Name the action and expected outcome. No hedging.
+7. **Limitations** - at least 3 bullets: subgroup analysis was exploratory (not pre-registered), \
+   uncontrolled external factors, and any data quality gaps.
 
-Rules:
-- **Never include SQL queries, code blocks, or technical query syntax** in the report.
-- Do not invent numbers not present in the tool results or draft.
-- Use **bold** for metric names, segment names, and key numerical findings.
-- Translate statistics into business language: say "highly reliable" not "p < 0.01", \
-  say "the effect weakened after the first week" not "novelty effect detected".
-- If analyst_notes are provided below, incorporate them and note deviations from automated findings.
-- Output only the markdown report — no preamble, no closing remarks.
+Formatting rules:
+- No em dashes (-- or -). Use a period or restructure the sentence instead.
+- No SQL, no code blocks, no column names in backticks anywhere in the report.
+- Do not invent numbers. Every number must appear in the tool results or draft.
+- Bold the actual numbers and segment names, not adjectives.
+- Never write "statistically significant", "p-value", "ATE", "CUPED", \
+  "standard deviation", "t-test", or "regression". Translate all of these into plain English.
+- If analyst_notes are provided, incorporate them and note any deviation from automated findings.
+- Output only the markdown report. No preamble, no closing remarks.
 
 {analyst_notes_section}
 """
@@ -421,6 +426,8 @@ Requirements:
 - Return only the columns relevant to the task — avoid SELECT *
 - Add LIMIT 50000 unless the task requires all rows
 - Output only the SQL in a ```sql ... ``` block — no surrounding prose
+- **Never ask clarifying questions.** If the task is ambiguous, make a reasonable \
+assumption and write the SQL. State any assumption as a single SQL comment at the top.
 """
 
 
@@ -441,39 +448,41 @@ INSIGHTS_NARRATIVE_PROMPT = """\
 
 ## Your task
 
-Write a concise, professional report that a senior executive (CEO, CFO, or \
-department head) can read in under 2 minutes and act on immediately. \
-Use plain business language throughout — no statistical jargon, no code, \
-no technical syntax. Use this exact 6-section structure:
+Write a numbers-forward report that a department head or executive can act on in \
+under 2 minutes. Lead every section with the actual number. No preamble. \
+Use this exact 6-section structure:
 
-1. **Executive Summary** — 2 sentences max. The single most important finding \
-   and what it means for the business. Lead with insight, not process.
-2. **Key Findings** — 3–5 bullet points covering the most significant patterns, \
-   trends, or distributions. Translate numbers into business terms: write \
-   "nearly 1 in 4 customers" rather than "23.7%", and "revenue is concentrated \
-   in the top two categories" rather than listing raw figures. Each bullet \
-   should be a complete insight, not just a data point.
-3. **Primary Driver** — the main segment, category, time period, or variable \
-   that explains most of the pattern. Write "strongly associated with" or \
-   "tends to increase alongside" — never "correlation coefficient" or "r²".
-4. **Risks & Watch Points** — at least 2 bullets on data quality gaps, \
-   coverage issues, or external factors that could change the picture. \
-   Frame as business risks, not technical caveats.
-5. **Recommendation** — one decisive, action-oriented sentence. Name the \
-   specific action, the team responsible, and the expected outcome. No hedging.
-6. **Limitations** — at least 2 bullets on what this analysis cannot confirm: \
-   causation vs. correlation, missing data sources, or uncontrolled variables. \
-   Keep it brief and non-technical.
+1. **Bottom Line** - 2 sentences max. Open with the most important number or trend \
+   from the data. Sentence 2: what it means for the business.
+2. **Key Findings** - 3-5 bullets. Each bullet must include a specific number from \
+   the data. Format: "[What happened]: [number] ([context or comparison])." \
+   Do not write a bullet without a number. Use plain counts and rates that \
+   non-technical readers understand ("1 in 4 customers", "$2.3M revenue gap", \
+   "down 18% quarter-over-quarter").
+3. **What Drives It** - the main segment, category, or time period that explains \
+   most of the pattern. State the size of the gap between top and bottom groups. \
+   Avoid academic language. Write "strongly associated" only if the pattern is \
+   large and consistent across the data.
+4. **Watch Points** - at least 2 bullets. Flag data coverage gaps, recent trend \
+   changes, or external factors that could change the picture. Frame each as a \
+   business risk with a suggested check ("Verify whether Q4 seasonality accounts \
+   for the November spike before adjusting targets").
+5. **Recommendation** - one sentence. Name the specific action, the team \
+   responsible, and the expected outcome. No hedging. No qualifiers.
+6. **Limitations** - at least 2 bullets on what this analysis cannot confirm: \
+   association vs. causation, missing data sources, or uncontrolled variables. \
+   One sentence each.
 
-Rules:
-- **Never include SQL queries, code blocks, database syntax, or column names \
-  in backtick formatting** anywhere in the report.
-- Do not invent numbers not present in the data summary above.
-- Use **bold** for key findings, named segments, and the most important numbers.
-- Never write "statistically significant", "p-value", "coefficient", "ATE", \
-  "standard deviation", or "regression" — translate all of these into plain English.
-- Write in active voice. Short sentences. Executive tone.
-- Output only the markdown report — no preamble or closing remarks.
+Formatting rules:
+- No em dashes (-- or -). Use a period or restructure the sentence instead.
+- No SQL, no code blocks, no column names in backtick formatting anywhere.
+- Do not invent numbers. Every number must appear in the data summary above.
+- Bold the actual numbers and named segments. Do not bold adjectives.
+- Never write "statistically significant", "p-value", "coefficient", \
+  "correlation", "r-squared", "standard deviation", or "regression". \
+  Translate all of these into plain business language.
+- Write in active voice. Short sentences.
+- Output only the markdown report. No preamble, no closing remarks.
 
 {analyst_notes_section}
 """

@@ -115,7 +115,7 @@ def format_narrative(
             f"(variance reduction {var_red:.1f}%), {p_str} → {sig_str.upper()}."
         )
     else:
-        cuped_line = "- **Experiment:** Analysis could not be computed — required columns may be missing."
+        cuped_line = "- **Experiment:** Analysis could not be computed. Required columns may be missing."
 
     found_lines = [
         f"- **Decomposition:** `{dominant_comp}` is the dominant change component.",
@@ -124,14 +124,14 @@ def format_narrative(
         + f" (severity Z={anomaly_severity:.2f}).",
         f"- **Forecast:** Actuals are {'outside' if forecast_outside else 'within'} the "
         f"{forecast_method} confidence interval"
-        + (" — confirms real signal." if forecast_outside else " — drop may be within normal variance.")
+        + (". Confirms real signal." if forecast_outside else ". Drop may be within normal variance.")
         + (f" ⚠ {forecast_warning}" if forecast_warning else ""),
         cuped_line,
     ]
 
     # ── 3. Where it's concentrated ──────────────────────────────────────────────
     concentration_lines = [
-        f"- **Top segment (HTE):** `{top_seg}` — effect size {seg_effect:+.4f}, "
+        f"- **Top segment (HTE):** {top_seg}: effect size {seg_effect:+.4f}, "
         f"represents {seg_share:.1f}% of experiment users.",
     ]
     if dropoff_step_data:
@@ -168,43 +168,43 @@ def format_narrative(
 
     confidence_lines.append(
         f"- {'✅' if not novelty_likely else '⚠️'} **Novelty effect:** "
-        f"Effect is **{effect_direction}** (week1 ATE={week1_ate:+.4f}, week2={week2_ate:+.4f}) — "
-        f"{'novelty decay likely.' if novelty_likely else 'novelty ruled out.'}"
+        f"Effect is **{effect_direction}** (week1 ATE={week1_ate:+.4f}, week2={week2_ate:+.4f}). "
+        f"{'Novelty decay likely.' if novelty_likely else 'Novelty ruled out.'}"
     )
 
     if forecast_outside:
         confidence_lines.append("- ✅ **Forecast:** Drop confirmed outside pre-experiment confidence interval.")
     else:
-        confidence_lines.append("- ⚠️ **Forecast:** Drop within forecast CI — could be natural variance.")
+        confidence_lines.append("- ⚠️ **Forecast:** Drop within forecast CI. Could be natural variance.")
 
     confidence_lines.append(f"- **Business impact:** {business_impact}")
 
     # ── 6. Recommendation ───────────────────────────────────────────────────────
     if sig and any_breached:
         recommendation = (
-            f"Roll back or pause the experiment — statistically significant harm detected "
+            f"Roll back or pause the experiment. Significant harm detected "
             f"in **{top_seg}** ({', '.join(g['metric'] for g in breached)} guardrails breached)."
         )
     elif sig and not any_breached:
         recommendation = (
-            f"Investigate root cause in **{top_seg}** segment before shipping — "
-            f"significant {metric} impact confirmed with no guardrail breaches."
+            f"Investigate root cause in **{top_seg}** segment before shipping. "
+            f"Significant {metric} impact confirmed with no guardrail breaches."
         )
     else:
         p_display = f"p={p_value:.4f}" if p_value is not None else "significance unknown"
         recommendation = (
-            f"Collect more data — effect in **{top_seg}** is directionally negative "
-            f"but not yet significant ({p_display}); monitor guardrails closely."
+            f"Collect more data. Effect in **{top_seg}** is directionally negative "
+            f"but not yet reliable ({p_display}). Monitor guardrails closely."
         )
 
     # ── 7. Caveats ──────────────────────────────────────────────────────────────
     caveats = [
         "- This analysis covers the experiment period only; pre-experiment confounders are not fully controlled for.",
-        f"- HTE subgroup (`{top_seg}`) was identified post-hoc — results should be treated as exploratory, not confirmatory.",
+        f"- HTE subgroup ({top_seg}) was identified post-hoc. Treat results as exploratory, not confirmatory.",
         "- Funnel analysis uses randomized assignment; any selection effects at upper funnel steps are not modeled.",
     ]
     if not forecast_outside:
-        caveats.append("- Forecast did not flag the drop as anomalous — consider extending the baseline window.")
+        caveats.append("- Forecast did not flag the drop as anomalous. Consider extending the baseline window.")
     if powered is False:
         caveats.append("- Experiment may be underpowered for the blended effect; segment-level estimates are more reliable.")
     if forecast_warning:
