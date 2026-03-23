@@ -1496,7 +1496,15 @@ def run_ttest_node(state: AgentState) -> dict:
     ctrl = df[df[variant] == "control"][use_col].dropna()
     trt  = df[df[variant] == "treatment"][use_col].dropna()
 
-    result = stats_tools.run_ttest(ctrl, trt)
+    # Auto-winsorize metrics whose names suggest heavy-tailed / revenue-style distributions.
+    _SKEWED_KEYWORDS = {
+        "revenue", "spend", "amount", "price", "cost", "purchase",
+        "ltv", "count", "cnt", "sum", "total", "gmv", "orders",
+    }
+    words = re.split(r"[_\-./]+", use_col.lower())
+    winsorize_pct = 0.01 if any(w in _SKEWED_KEYWORDS for w in words) else 0.0
+
+    result = stats_tools.run_ttest(ctrl, trt, winsorize_pct=winsorize_pct)
     return {"ttest_result": result}
 
 

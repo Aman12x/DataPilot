@@ -502,6 +502,29 @@ function FinishedView({ state, runId, onNewAnalysis }: { state: DoneEvent["state
     window.open(`${API_BASE}/runs/${runId}/pdf?${params}`, "_blank");
   };
 
+  const downloadCsv = () => {
+    if (!state.charts?.length) return;
+    const rows: string[] = [];
+    for (const chart of state.charts) {
+      rows.push(`# ${chart.title}`);
+      if (!chart.data.length) { rows.push(""); continue; }
+      const keys = Object.keys(chart.data[0]);
+      rows.push(keys.join(","));
+      for (const row of chart.data) {
+        rows.push(keys.map(k => {
+          const v = String((row as Record<string, unknown>)[k] ?? "");
+          return v.includes(",") ? `"${v}"` : v;
+        }).join(","));
+      }
+      rows.push("");
+    }
+    const blob = new Blob([rows.join("\n")], { type: "text/csv" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href = url; a.download = "datapilot-analysis.csv"; a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const copyText = () => {
     navigator.clipboard.writeText(stripMarkdown(sanitiseNarrative(state.narrative_draft)));
     setCopied(true);
@@ -527,6 +550,7 @@ function FinishedView({ state, runId, onNewAnalysis }: { state: DoneEvent["state
             )}
             <button style={s.btnSec} onClick={copyText}>{copied ? "Copied!" : "Copy text"}</button>
             <button style={s.btnSec} onClick={downloadPdf}>↓ PDF</button>
+            {hasCharts && <button style={s.btnSec} onClick={downloadCsv}>↓ CSV</button>}
             <button style={s.btnSec} onClick={() => navigate("/history")}>History</button>
             <button style={s.btnPri} onClick={onNewAnalysis}>+ New Analysis</button>
           </div>
@@ -707,12 +731,24 @@ export default function Analysis() {
 
   if (done) return <FinishedView state={done.state} runId={runId!} onNewAnalysis={startOver} />;
 
+  // Between gates: show PipelineProgress with optional "processing" label
+  // when we've just submitted a gate and are waiting for the next SSE event.
+  const processingLabel = submitting || (lastGate && !gate)
+    ? "Processing your response…"
+    : undefined;
+
   return (
     <div style={s.gatePage}>
       <GateBar task={taskText} mode={activeMode} onStartOver={startOver} />
       <div style={s.gateScroll}>
         <div style={s.center}>
           <div style={{ width: "100%", maxWidth: 420 }} className="fade-in">
+            {processingLabel && (
+              <div style={s.processingBanner} className="fade-in">
+                <span style={s.processingDot} />
+                {processingLabel}
+              </div>
+            )}
             <div style={s.progressCard}>
               <PipelineProgress gate={gate?.gate ?? null} lastGate={lastGate} analysisMode={analysisMode} />
             </div>
@@ -771,7 +807,9 @@ const s: Record<string, React.CSSProperties> = {
   gateScroll: { flex: 1, display: "flex", flexDirection: "column" as const },
   gateContent:{ padding: "36px 20px 60px", flex: 1 },
 
-  progressCard: { background: "#1e1e2e", border: "1px solid #313244", borderRadius: 14, padding: "16px 24px", boxShadow: "0 8px 40px #00000044" },
+  progressCard:      { background: "#1e1e2e", border: "1px solid #313244", borderRadius: 14, padding: "16px 24px", boxShadow: "0 8px 40px #00000044" },
+  processingBanner:  { display: "flex", alignItems: "center", gap: 10, color: "#a6adc8", fontSize: 13, padding: "10px 16px", background: "#181825", borderRadius: 8, marginBottom: 12, border: "1px solid #313244" },
+  processingDot:     { width: 8, height: 8, borderRadius: "50%", background: "#89b4fa", animation: "pulse 1.2s ease-in-out infinite", flexShrink: 0 },
 
   floatError: { position: "fixed", top: 20, left: "50%", transform: "translateX(-50%)", background: "#f38ba8", color: "#1e1e2e", padding: "10px 20px", borderRadius: 8, display: "flex", gap: 12, alignItems: "center", zIndex: 1000, fontSize: 14, boxShadow: "0 4px 20px #00000055", whiteSpace: "nowrap" as const },
   dismissBtn: { background: "transparent", border: "none", color: "#1e1e2e", cursor: "pointer", fontWeight: 700, fontSize: 16, padding: 0 },

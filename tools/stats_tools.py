@@ -116,6 +116,18 @@ def run_ttest(
     if len(control) < 2 or len(treatment) < 2:
         raise ValueError("Need at least 2 observations per group for t-test.")
 
+    # Skewness check before any transformation (use original data)
+    ctrl_skew = float(stats.skew(control))
+    trt_skew  = float(stats.skew(treatment))
+    if abs(ctrl_skew) > 2.0 or abs(trt_skew) > 2.0:
+        skewness_warning = (
+            f"Highly skewed distribution (control skew={ctrl_skew:+.1f}, "
+            f"treatment skew={trt_skew:+.1f}). "
+            "Consider winsorizing or using the Mann-Whitney U test."
+        )
+    else:
+        skewness_warning = None
+
     if winsorize_pct > 0.0:
         control   = _winsorize(control,   winsorize_pct)
         treatment = _winsorize(treatment, winsorize_pct)
@@ -149,6 +161,8 @@ def run_ttest(
         cohens_d=round(cohens_d, 4),
         n_control=int(n2),
         n_treatment=int(n1),
+        winsorized=winsorize_pct > 0.0,
+        skewness_warning=skewness_warning,
     )
 
 
@@ -157,6 +171,74 @@ def _winsorize(arr: np.ndarray, pct: float) -> np.ndarray:
     lo = np.percentile(arr, pct * 100)
     hi = np.percentile(arr, (1.0 - pct) * 100)
     return np.clip(arr, lo, hi)
+
+
+def _interaction_test(
+    df: pd.DataFrame,
+    metric_col: str,
+    variant_col: str,
+    segment_col: str,
+) -> float | None:
+    """
+    OLS F-test for the variant × segment interaction effect.
+
+    Fits: metric ~ intercept + variant + seg_dummies + variant*seg_dummies
+    Returns the p-value for the interaction terms, or None if not computable.
+
+    A small p-value means the treatment effect differs significantly across
+    segments — confirming real heterogeneity rather than sampling noise.
+    """
+    sub = df[[metric_col, variant_col, segment_col]].dropna()
+    if len(sub) < 10:
+        return None
+
+    y = sub[metric_col].values.astype(float)
+    variant_dummy = (sub[variant_col] == "treatment").astype(float).values
+
+    levels = sub[segment_col].unique()
+    K = len(levels)
+    if K < 2 or K > 50:
+        return None
+
+    seg_idx = pd.Categorical(sub[segment_col], categories=levels).codes.astype(float)
+
+    # K-1 segment dummies (drop first level to avoid collinearity)
+    n = len(y)
+    seg_dummies     = np.zeros((n, K - 1))
+    interact_dummies = np.zeros((n, K - 1))
+    for j in range(1, K):
+        seg_dummies[:, j - 1]      = (seg_idx == j).astype(float)
+        interact_dummies[:, j - 1] = seg_dummies[:, j - 1] * variant_dummy
+
+    # Full model: intercept + variant + segs + interactions
+    X_full = np.column_stack([np.ones(n), variant_dummy, seg_dummies, interact_dummies])
+    # Restricted model: intercept + variant + segs (no interactions)
+    X_restr = np.column_stack([np.ones(n), variant_dummy, seg_dummies])
+
+    try:
+        beta_f, _, _, _ = np.linalg.lstsq(X_full,  y, rcond=None)
+        beta_r, _, _, _ = np.linalg.lstsq(X_restr, y, rcond=None)
+    except np.linalg.LinAlgError:
+        return None
+
+    resid_f = y - X_full  @ beta_f
+    resid_r = y - X_restr @ beta_r
+
+    ss_full  = float(resid_f @ resid_f)
+    ss_restr = float(resid_r @ resid_r)
+
+    df_interact = K - 1          # number of interaction terms
+    df_resid    = n - X_full.shape[1]
+
+    if df_resid <= 0 or ss_full <= 0:
+        return None
+
+    F = ((ss_restr - ss_full) / df_interact) / (ss_full / df_resid)
+    if F < 0:
+        return None
+
+    p_value = float(1.0 - stats.f.cdf(F, df_interact, df_resid))
+    return round(p_value, 6)
 
 
 def run_hte(
@@ -252,12 +334,21 @@ def run_hte(
     # Sort: significant segments first, then by absolute effect size within each group.
     results.sort(key=lambda r: (not r.significant, -abs(r.effect_size)))
 
+    # Interaction F-test: confirms whether heterogeneity is real across segments.
+    # Run per segment column, take the smallest (most significant) p-value.
+    interaction_p: float | None = None
+    for seg_col in segment_cols:
+        p = _interaction_test(df, metric_col, variant_col, seg_col)
+        if p is not None and (interaction_p is None or p < interaction_p):
+            interaction_p = p
+
     top = results[0]
     return HteResult(
         top_segment=top.segment,
         effect_size=top.effect_size,
         segment_share=top.segment_share,
         all_segments=results,
+        interaction_p_value=interaction_p,
     )
 
 

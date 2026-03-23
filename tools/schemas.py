@@ -23,14 +23,16 @@ class CupedResult(BaseModel):
 
 
 class TtestResult(BaseModel):
-    t_stat:      float
-    p_value:     float
-    ci_lower:    float
-    ci_upper:    float
-    significant: bool
-    cohens_d:    float = 0.0   # pooled-std effect size; |d|<0.2 small, 0.2–0.5 medium, >0.5 large
-    n_control:   int   = 0
-    n_treatment: int   = 0
+    t_stat:           float
+    p_value:          float
+    ci_lower:         float
+    ci_upper:         float
+    significant:      bool
+    cohens_d:         float         = 0.0   # pooled-std effect size; |d|<0.2 small, 0.2–0.5 medium, >0.5 large
+    n_control:        int           = 0
+    n_treatment:      int           = 0
+    winsorized:       bool          = False  # True when outlier-clipping was applied
+    skewness_warning: Optional[str] = None   # set when |skew| > 2 in either arm
 
 
 class SegmentResult(BaseModel):
@@ -44,10 +46,11 @@ class SegmentResult(BaseModel):
 
 
 class HteResult(BaseModel):
-    top_segment:   str
-    effect_size:   float
-    segment_share: float
-    all_segments:  list[SegmentResult]
+    top_segment:        str
+    effect_size:        float
+    segment_share:      float
+    all_segments:       list[SegmentResult]
+    interaction_p_value: Optional[float] = None  # OLS interaction F-test p-value; None if not computable
 
 
 # ── decomposition_tools ───────────────────────────────────────────────────────

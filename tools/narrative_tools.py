@@ -55,20 +55,23 @@ def format_narrative(
         }
     """
     # Distinguish "test ran, not significant" from "test never ran".
-    ttest_ran   = bool(ttest_result)
-    sig         = ttest_result.get("significant", False)   if ttest_ran else None
-    p_value     = ttest_result.get("p_value", None)        if ttest_ran else None
-    cohens_d    = ttest_result.get("cohens_d",  None)      if ttest_ran else None
-    n_control   = ttest_result.get("n_control",  0)        if ttest_ran else 0
-    n_treatment = ttest_result.get("n_treatment", 0)       if ttest_ran else 0
-    ci_lower    = ttest_result.get("ci_lower",  None)      if ttest_ran else None
-    ci_upper    = ttest_result.get("ci_upper",  None)      if ttest_ran else None
+    ttest_ran        = bool(ttest_result)
+    sig              = ttest_result.get("significant", False)      if ttest_ran else None
+    p_value          = ttest_result.get("p_value", None)           if ttest_ran else None
+    cohens_d         = ttest_result.get("cohens_d",  None)         if ttest_ran else None
+    n_control        = ttest_result.get("n_control",  0)           if ttest_ran else 0
+    n_treatment      = ttest_result.get("n_treatment", 0)          if ttest_ran else 0
+    ci_lower         = ttest_result.get("ci_lower",  None)         if ttest_ran else None
+    ci_upper         = ttest_result.get("ci_upper",  None)         if ttest_ran else None
+    winsorized       = ttest_result.get("winsorized", False)        if ttest_ran else False
+    skewness_warning = ttest_result.get("skewness_warning", None)  if ttest_ran else None
     cuped_ran  = bool(cuped_result)
     cuped_ate  = cuped_result.get("cuped_ate", 0.0)       if cuped_ran else None
     var_red    = cuped_result.get("variance_reduction_pct", 0.0) if cuped_ran else None
-    top_seg    = hte_result.get("top_segment", "unknown")
-    seg_effect = hte_result.get("effect_size", 0.0)
-    seg_share  = hte_result.get("segment_share", 0.0)
+    top_seg         = hte_result.get("top_segment", "unknown")
+    seg_effect      = hte_result.get("effect_size", 0.0)
+    seg_share       = hte_result.get("segment_share", 0.0)
+    interaction_p   = hte_result.get("interaction_p_value", None)
 
     novelty_likely    = novelty_result.get("novelty_likely", False)
     effect_direction  = novelty_result.get("effect_direction", "unknown")
@@ -124,9 +127,10 @@ def format_narrative(
                else "")
         ) if cohens_d is not None else ""
         n_str = f" [n={n_control:,} ctrl / {n_treatment:,} trt]" if n_control and n_treatment else ""
+        wins_str = " _(outliers winsorized at 1%)_" if winsorized else ""
         cuped_line = (
             f"- **Experiment (CUPED):** ATE={cuped_ate:+.4f} "
-            f"(variance reduction {var_red:.1f}%){d_str}, {p_str} → {sig_str.upper()}.{n_str}"
+            f"(variance reduction {var_red:.1f}%){d_str}, {p_str} → {sig_str.upper()}.{n_str}{wins_str}"
         )
     else:
         cuped_line = "- **Experiment:** Analysis could not be computed. Required columns may be missing."
@@ -144,9 +148,19 @@ def format_narrative(
     ]
 
     # ── 3. Where it's concentrated ──────────────────────────────────────────────
+    # Interaction p-value: confirms whether HTE heterogeneity is real (not noise).
+    if interaction_p is not None:
+        interact_str = (
+            f" Interaction test p={interaction_p:.4f} — "
+            + ("heterogeneity is **statistically confirmed**." if interaction_p < 0.05
+               else "heterogeneity not yet statistically confirmed (may be sampling noise).")
+        )
+    else:
+        interact_str = ""
+
     concentration_lines = [
         f"- **Top segment (HTE):** {top_seg}: effect size {seg_effect:+.4f}, "
-        f"represents {seg_share:.1f}% of experiment users.",
+        f"represents {seg_share:.1f}% of experiment users.{interact_str}",
     ]
     if dropoff_step_data:
         concentration_lines.append(
@@ -194,6 +208,8 @@ def format_narrative(
     confidence_lines.append(f"- **Business impact:** {business_impact}")
 
     # ── 6. Recommendation ───────────────────────────────────────────────────────
+    p_display = f"p={p_value:.4f}" if p_value is not None else "significance unknown"
+
     if sig and any_breached:
         recommendation = (
             f"Roll back or pause the experiment. Significant harm detected "
@@ -204,8 +220,26 @@ def format_narrative(
             f"Investigate root cause in **{top_seg}** segment before shipping. "
             f"Significant {metric} impact confirmed with no guardrail breaches."
         )
+    elif not sig and powered is False:
+        # Underpowered: give a concrete "extend the experiment" message.
+        n_have = min(n_control, n_treatment) if (n_control and n_treatment) else 0
+        if n_have > 0 and mde_rel > 0:
+            # Rough scale-up factor: current MDE² / target-MDE² ≈ n ratio.
+            # Tell the PM how much bigger the experiment needs to be.
+            scale_factor = (mde_rel / 5.0) ** 2   # assumes target MDE = 5%
+            n_needed = int(n_have * max(scale_factor, 1.5))
+            shortfall = max(0, n_needed - n_have)
+            recommendation = (
+                f"Insufficient data — the experiment needs roughly {n_needed:,} users per arm "
+                f"to detect a ≥5% effect (currently {n_have:,}, shortfall ~{shortfall:,}). "
+                f"Extend the experiment before drawing conclusions ({p_display})."
+            )
+        else:
+            recommendation = (
+                f"Insufficient data. The experiment is underpowered for the observed effect "
+                f"({p_display}). Extend the runtime to reach adequate statistical power."
+            )
     else:
-        p_display = f"p={p_value:.4f}" if p_value is not None else "significance unknown"
         recommendation = (
             f"Collect more data. Effect in **{top_seg}** is directionally negative "
             f"but not yet reliable ({p_display}). Monitor guardrails closely."
@@ -238,6 +272,15 @@ def format_narrative(
                 f"- The 95% CI [{ci_lower:+.4f}, {ci_upper:+.4f}] is wide relative to the "
                 "estimated effect — the true effect could be substantially smaller or larger."
             )
+    # Data-driven: skewness warning (distribution assumption may be violated)
+    if skewness_warning:
+        caveats.append(f"- ⚠️ **Skewness:** {skewness_warning}")
+    # Data-driven: winsorization disclosure
+    if winsorized:
+        caveats.append(
+            "- Outliers were winsorized at the 1st/99th percentile before testing. "
+            "Results reflect the typical user, not extreme outliers."
+        )
     # Data-driven: small sample warning
     n_min = min(n_control, n_treatment) if n_control and n_treatment else 0
     if 0 < n_min < 100:
