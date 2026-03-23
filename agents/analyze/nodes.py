@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import uuid
@@ -28,6 +29,7 @@ from agents.analyze.prompts import (
     HISTORY_INJECTION_PREFIX,
     INSIGHTS_NARRATIVE_PROMPT,
     NARRATIVE_PROMPT,
+    POWER_ANALYSIS_NARRATIVE_PROMPT,
     SCHEMA_CONFIG_INFERENCE_PROMPT,
     SQL_CORRECTION_PROMPT,
     SQL_GENERATION_GENERAL_PROMPT,
@@ -54,7 +56,7 @@ from tools import (
     stats_tools,
 )
 from tools.db_tools import DBConnection
-from tools.schemas import SliceResult
+from tools.schemas import PowerAnalysisResult, SensitivityRow, SliceResult
 from tools.chart_tools import (
     compute_trust_indicators,
     generate_ab_charts,
@@ -939,19 +941,23 @@ def resolve_task_intent(state: AgentState) -> dict:
     # Auto-detect analysis_mode from LLM — only if not explicitly set by the caller.
     # "general" tasks shouldn't be forced through the full A/B experiment pipeline.
     detected_mode = result.get("analysis_mode", "ab_test")
-    if detected_mode not in ("ab_test", "general"):
+    if detected_mode not in ("ab_test", "general", "power_analysis"):
         detected_mode = "ab_test"
     # Prefer an explicitly passed mode (e.g. from API caller who knows their data),
     # but fall back to LLM detection when the state has no mode or has the default.
     current_mode = state.get("analysis_mode", "")
-    final_mode = current_mode if current_mode in ("ab_test", "general") else detected_mode
+    final_mode = current_mode if current_mode in ("ab_test", "general", "power_analysis") else detected_mode
+
+    # Extract MDE target for power analysis (default 5.0 if not stated in task)
+    mde_target_pct = float(result.get("mde_target_pct") or 5.0)
 
     return {
-        "metric_config":      updated_mc,
-        "metric":             updated_mc.primary_metric,
-        "covariate":          updated_mc.covariate,
-        "task_clarification": clarification,
-        "analysis_mode":      final_mode,
+        "metric_config":       updated_mc,
+        "metric":              updated_mc.primary_metric,
+        "covariate":           updated_mc.covariate,
+        "task_clarification":  clarification,
+        "analysis_mode":       final_mode,
+        "power_mde_target_pct": mde_target_pct,
     }
 
 
@@ -1584,6 +1590,115 @@ def compute_mde_node(state: AgentState) -> dict:
     }
 
 
+# ── Node 14b: run_power_analysis_node ─────────────────────────────────────────
+
+_SENSITIVITY_MDE_LEVELS = [1.0, 2.0, 3.0, 5.0, 7.0, 10.0, 15.0, 20.0]
+
+@observe(name="run_power_analysis")
+def run_power_analysis_node(state: AgentState) -> dict:
+    """
+    Compute required sample size and sensitivity table for experiment design.
+
+    Queries the DB for baseline metric stats (AVG, STDDEV, daily traffic),
+    then applies the inverted MDE formula across a range of effect sizes.
+    Returns a PowerAnalysisResult stored in state["power_analysis_result"].
+    """
+    mc          = state.get("metric_config") or load_metric_config()
+    metric      = state.get("metric") or mc.primary_metric
+    mde_target  = float(state.get("power_mde_target_pct") or 5.0)
+    alpha       = 0.05
+    power_level = 0.80
+
+    try:
+        conn = _db_conn(state)
+        # Query baseline stats from the historical events table.
+        # COALESCE(STDDEV(...), 0) avoids NULL when all values are identical.
+        stats_sql = f"""
+SELECT AVG(CAST({mc.metric_source_col} AS FLOAT))    AS baseline_mean,
+       COALESCE(STDDEV(CAST({mc.metric_source_col} AS FLOAT)), 0) AS baseline_std,
+       COUNT(DISTINCT {mc.user_id_col})               AS total_users,
+       COUNT(DISTINCT {mc.date_col})                  AS total_days
+FROM {mc.events_table}
+""".strip()
+        stats_df = conn.execute(stats_sql)
+    except Exception as exc:
+        logger.warning("run_power_analysis: DB stats query failed: %s", exc)
+        return {}
+
+    if stats_df is None or stats_df.empty:
+        logger.warning("run_power_analysis: stats query returned no rows")
+        return {}
+
+    row = stats_df.iloc[0]
+    baseline_mean = float(row.get("baseline_mean") or 0.0)
+    baseline_std  = float(row.get("baseline_std")  or 0.0)
+    total_users   = int(row.get("total_users")     or 0)
+    total_days    = int(row.get("total_days")      or 1)
+
+    if baseline_mean == 0 or baseline_std == 0:
+        logger.warning("run_power_analysis: degenerate baseline (mean=%.4f std=%.4f)", baseline_mean, baseline_std)
+        return {}
+
+    daily_traffic = total_users / max(total_days, 1)
+
+    # Compute sensitivity rows at each MDE level
+    sensitivity: list[SensitivityRow] = []
+    for mde_pct in _SENSITIVITY_MDE_LEVELS:
+        try:
+            n_per_arm, _ = mde_tools.required_sample_size(
+                baseline_mean=baseline_mean,
+                baseline_std=baseline_std,
+                mde_relative_pct=mde_pct,
+                alpha=alpha,
+                power=power_level,
+            )
+        except ValueError:
+            continue
+        total_n      = 2 * n_per_arm
+        runtime_days = max(1, int(math.ceil(total_n / max(daily_traffic, 1))))
+        sensitivity.append(SensitivityRow(
+            mde_pct=mde_pct,
+            n_per_arm=n_per_arm,
+            runtime_days=runtime_days,
+        ))
+
+    if not sensitivity:
+        return {}
+
+    # Primary target
+    try:
+        req_n, mde_abs = mde_tools.required_sample_size(
+            baseline_mean=baseline_mean,
+            baseline_std=baseline_std,
+            mde_relative_pct=mde_target,
+            alpha=alpha,
+            power=power_level,
+        )
+    except ValueError:
+        logger.warning("run_power_analysis: required_sample_size failed for mde_target=%.1f", mde_target)
+        return {}
+
+    total_n      = 2 * req_n
+    runtime_days = max(1, int(math.ceil(total_n / max(daily_traffic, 1))))
+
+    result = PowerAnalysisResult(
+        baseline_mean=round(baseline_mean, 6),
+        baseline_std=round(baseline_std, 6),
+        daily_traffic=round(daily_traffic, 1),
+        mde_target_pct=mde_target,
+        mde_target_abs=mde_abs,
+        required_n_per_arm=req_n,
+        required_total_n=total_n,
+        runtime_days=runtime_days,
+        alpha=alpha,
+        power=power_level,
+        guardrails_to_watch=mc.guardrail_metrics or [],
+        sensitivity=sensitivity,
+    )
+
+    return {"power_analysis_result": result}
+
+
 # ── Node 15: check_guardrails_node ────────────────────────────────────────────
 
 @observe(name="check_guardrails")
@@ -1682,14 +1797,23 @@ def generate_charts_node(state: AgentState) -> dict:
         if mode == "general":
             describe = state.get("describe_result")
             corr     = state.get("correlation_result")
+            qr       = state.get("query_result", pd.DataFrame())
+            # Use sum of total_records if present (aggregated query) so the
+            # trust indicator reflects the underlying row count, not the number
+            # of aggregated groups returned by the query.
+            if isinstance(qr, pd.DataFrame) and "total_records" in qr.columns:
+                n_underlying = int(qr["total_records"].sum())
+            elif describe:
+                n_underlying = describe.row_count
+            else:
+                n_underlying = len(qr)
             if describe and corr:
                 specs  = generate_general_charts(describe, corr)
                 charts = [s.model_dump() for s in specs]
-                ti     = compute_trust_indicators(describe, None, describe.row_count)
+                ti     = compute_trust_indicators(describe, None, n_underlying)
             else:
                 charts = []
-                n_rows = len(state.get("query_result", pd.DataFrame()))  # type: ignore[arg-type]
-                ti     = compute_trust_indicators(None, None, n_rows)
+                ti     = compute_trust_indicators(None, None, n_underlying)
         else:
             metric  = state.get("metric", "metric")
             ttest   = state.get("ttest_result")
@@ -1716,7 +1840,16 @@ def generate_charts_node(state: AgentState) -> dict:
 def analysis_gate(state: AgentState) -> dict:
     mode = state.get("analysis_mode", "ab_test")
 
-    if mode == "general":
+    if mode == "power_analysis":
+        pa = state.get("power_analysis_result")
+        payload = {
+            "gate":                   "analysis",
+            "analysis_mode":          "power_analysis",
+            "power_analysis_result":  _to_dict(pa),
+            "message":                "Review the power analysis. Approve or add notes.",
+        }
+
+    elif mode == "general":
         describe_res     = state.get("describe_result")
         correlation_res  = state.get("correlation_result")
         payload = {
@@ -1797,7 +1930,18 @@ def generate_narrative(state: AgentState) -> dict:
         tool_results["forecast_result"].pop("forecast_df", None)
     tool_results_json = json.dumps(tool_results, default=str)
 
-    if mode == "general":
+    if mode == "power_analysis":
+        pa = state.get("power_analysis_result")
+        power_result_json = json.dumps(_to_dict(pa), default=str) if pa else "{}"
+        task_prompt = POWER_ANALYSIS_NARRATIVE_PROMPT.format(
+            task=state.get("task", ""),
+            power_result_json=power_result_json,
+            analyst_notes_section=analyst_notes_section,
+        )
+        from tools.schemas import NarrativeResult
+        template_out = NarrativeResult(narrative_draft="", recommendation="")
+
+    elif mode == "general":
         task_prompt = INSIGHTS_NARRATIVE_PROMPT.format(
             task=state.get("task", ""),
             tool_results_json=tool_results_json,
