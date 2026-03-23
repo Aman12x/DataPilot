@@ -77,6 +77,53 @@ def compute_mde(
     )
 
 
+def required_sample_size(
+    baseline_mean: float,
+    baseline_std: float,
+    mde_relative_pct: float,
+    alpha: float = 0.05,
+    power: float = 0.80,
+) -> tuple[int, float]:
+    """
+    Compute the required sample size per arm for a two-sample t-test.
+
+    Inverted MDE formula:
+        n = 2 × ((z_α/2 + z_β) × σ / δ)²
+    where δ = |baseline_mean| × mde_relative_pct / 100.
+
+    Args:
+        baseline_mean:    Control group mean.
+        baseline_std:     Expected standard deviation (pooled).
+        mde_relative_pct: Target MDE as % of baseline (e.g. 5.0 for 5%).
+        alpha:            Two-tailed significance level (default 0.05).
+        power:            Desired statistical power (default 0.80).
+
+    Returns:
+        (n_per_arm, mde_absolute) — sample size per arm and the absolute MDE.
+
+    Raises:
+        ValueError if inputs are invalid.
+    """
+    if baseline_std <= 0:
+        raise ValueError("baseline_std must be > 0.")
+    if mde_relative_pct <= 0:
+        raise ValueError("mde_relative_pct must be > 0.")
+    if baseline_mean == 0:
+        raise ValueError("baseline_mean must be non-zero to express a relative MDE.")
+    if not (0 < alpha < 1):
+        raise ValueError("alpha must be in (0, 1).")
+    if not (0 < power < 1):
+        raise ValueError("power must be in (0, 1).")
+
+    z_alpha = stats.norm.ppf(1 - alpha / 2)   # e.g. 1.96 for alpha=0.05
+    z_beta  = stats.norm.ppf(power)            # e.g. 0.84 for power=0.80
+
+    mde_abs = abs(baseline_mean) * mde_relative_pct / 100
+    n = math.ceil(2 * ((z_alpha + z_beta) * baseline_std / mde_abs) ** 2)
+
+    return n, round(mde_abs, 6)
+
+
 def business_impact_statement(
     mde_relative_pct: float,
     metric: str,

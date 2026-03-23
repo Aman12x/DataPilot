@@ -13,7 +13,7 @@ import re
 from datetime import datetime
 from io import BytesIO
 
-from fpdf import FPDF
+from fpdf import FPDF, XPos, YPos
 
 _NAVY   = (15,  40,  80)
 _BLUE   = (30,  90, 180)
@@ -52,7 +52,7 @@ class _PDF(FPDF):
         self.set_xy(20, 3)
         self.set_font("Helvetica", "B", 10)
         self.set_text_color(*_WHITE)
-        self.cell(0, 8, "DataPilot - Analysis Report", ln=False)
+        self.cell(0, 8, "DataPilot - Analysis Report", new_x=XPos.RIGHT, new_y=YPos.TOP)
         self.set_xy(-50, 3)
         self.set_font("Helvetica", "", 8)
         self.cell(30, 8, datetime.now().strftime("%Y-%m-%d %H:%M"), align="R")
@@ -89,7 +89,7 @@ def _render_markdown(pdf: FPDF, md: str) -> None:
             pdf.ln(3)
             pdf.set_font("Helvetica", "B", 11)
             pdf.set_text_color(*_BLUE)
-            pdf.cell(0, 7, _clean(line[3:].strip()), ln=True)
+            pdf.cell(0, 7, _clean(line[3:].strip()), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
             y = pdf.get_y() - 1
             pdf.set_draw_color(*_BLUE)
             pdf.line(20, y, 190, y)
@@ -99,7 +99,7 @@ def _render_markdown(pdf: FPDF, md: str) -> None:
             pdf.ln(2)
             pdf.set_font("Helvetica", "B", 10)
             pdf.set_text_color(*_NAVY)
-            pdf.cell(0, 6, _clean(line[4:].strip()), ln=True)
+            pdf.cell(0, 6, _clean(line[4:].strip()), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
             pdf.set_text_color(*_DARK)
         elif re.match(r"^[-*•]|\s*[-*•]|^[✅⚠️]", line):
             text   = re.sub(r"^[\s\-\*•✅⚠️]+", "", line).strip()

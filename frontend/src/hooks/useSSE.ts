@@ -14,15 +14,37 @@ export interface TrustIndicators {
   confidence_reason: string;
 }
 
+export interface SensitivityRow {
+  mde_pct:      number;
+  n_per_arm:    number;
+  runtime_days: number;
+}
+
+export interface PowerAnalysisResult {
+  baseline_mean:       number;
+  baseline_std:        number;
+  daily_traffic:       number;
+  mde_target_pct:      number;
+  mde_target_abs:      number;
+  required_n_per_arm:  number;
+  required_total_n:    number;
+  runtime_days:        number;
+  alpha:               number;
+  power:               number;
+  guardrails_to_watch: string[];
+  sensitivity:         SensitivityRow[];
+}
+
 export interface DoneEvent {
   type: "done";
   state: {
-    narrative_draft:  string;
-    recommendation:   string;
-    run_id:           string;
-    charts:           ChartSpec[];
-    trust_indicators: TrustIndicators;
-    analysis_mode:    string;
+    narrative_draft:      string;
+    recommendation:       string;
+    run_id:               string;
+    charts:               ChartSpec[];
+    trust_indicators:     TrustIndicators;
+    analysis_mode:        string;
+    power_analysis_result?: PowerAnalysisResult;
   };
 }
 

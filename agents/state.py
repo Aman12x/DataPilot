@@ -23,6 +23,7 @@ from tools.schemas import (
     HteResult,
     MdeResult,
     NoveltyResult,
+    PowerAnalysisResult,
     SliceResult,
     TtestResult,
     TrustIndicators,
@@ -32,7 +33,7 @@ from tools.schemas import (
 class AgentState(TypedDict, total=False):
     # ── Input ─────────────────────────────────────────────────────────────────
     task: str                           # raw analyst/PM question
-    analysis_mode: str                  # 'ab_test' | 'general'
+    analysis_mode: str                  # 'ab_test' | 'general' | 'power_analysis'
     task_clarification: str             # analyst answer to the intent clarifying question (if any)
     relevant_history: list[dict]        # injected from memory store at run start
     db_backend: str                     # 'duckdb' | 'postgres'
@@ -110,6 +111,10 @@ class AgentState(TypedDict, total=False):
     # ── Visualisations ────────────────────────────────────────────────────────
     charts: list[dict]                  # list of ChartSpec dicts (serialised for SSE)
     trust_indicators: dict              # TrustIndicators dict (serialised for SSE)
+
+    # ── Power analysis (analysis_mode == 'power_analysis') ───────────────────
+    power_mde_target_pct:  float               # target MDE % from task (default 5.0)
+    power_analysis_result: PowerAnalysisResult
 
     # ── Memory ────────────────────────────────────────────────────────────────
     run_id: str

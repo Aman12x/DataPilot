@@ -133,7 +133,12 @@ def score_faithfulness(
 
     for num in narrative_nums:
         denom = abs(num) if abs(num) > 1e-9 else 1.0
-        if any(abs(num - dv) / denom <= tolerance for dv in df_vals):
+        # Also check num/100 to handle percentage-cited-as-fraction mismatch
+        # e.g. narrative says "77.4%" → num=77.4, but df stores 0.774
+        num_as_frac = num / 100.0
+        denom_frac = abs(num_as_frac) if abs(num_as_frac) > 1e-9 else 1.0
+        if any(abs(num - dv) / denom <= tolerance for dv in df_vals) or \
+           any(abs(num_as_frac - dv) / denom_frac <= tolerance for dv in df_vals):
             supported += 1
         else:
             unsupported.append(num)

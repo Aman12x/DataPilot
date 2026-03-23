@@ -33,7 +33,11 @@ router = APIRouter(tags=["upload"])
 _UPLOAD_DIR   = os.getenv("UPLOAD_DIR", "tmp_uploads")
 _MAX_BYTES    = 50 * 1024 * 1024  # 50 MB
 _ALLOWED_EXT  = {".csv", ".xlsx", ".xls"}
-_VARIANT_COLS = {"variant", "arm", "treatment", "group", "exp_group"}
+_VARIANT_COLS = {
+    "variant", "arm", "treatment", "group", "exp_group",
+    "treatment_group", "test_group", "experiment_group", "condition",
+    "study_arm", "cohort", "ab_group",
+}
 _USER_ID_COLS = {"user_id", "userid", "uid", "id", "patient_id", "customer_id", "shipment_id"}
 _DATE_KEYWORDS = ("date", "time", "day", "month", "timestamp", "ts", "dt")
 
@@ -76,6 +80,16 @@ def _infer_tables(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
                           → adds synthetic user_id='user_1', preserves the date column
     """
     variant_col = next((c for c in df.columns if c in _VARIANT_COLS), None)
+    # Fallback: detect by values — any object column with exactly 2 unique values
+    # where one contains "treatment", "test", or "exposed" (and the other "control"/"hold")
+    if variant_col is None:
+        _ctrl  = {"control", "ctrl", "holdout", "hold"}
+        _treat = {"treatment", "treated", "test", "exposed", "variant", "b"}
+        for c in df.select_dtypes("object").columns:
+            vals = {str(v).lower() for v in df[c].dropna().unique()}
+            if len(vals) == 2 and (vals & _treat) and (vals & _ctrl):
+                variant_col = c
+                break
 
     # Find user ID column by name (explicit match only — don't fall back to first col yet)
     uid_col = next((c for c in df.columns if c in _USER_ID_COLS), None)

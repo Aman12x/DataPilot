@@ -70,6 +70,7 @@ from agents.analyze.nodes import (
     resolve_task_intent,
     run_cuped_node,
     run_hte_node,
+    run_power_analysis_node,
     run_ttest_node,
     semantic_cache_gate,
 )
@@ -138,6 +139,17 @@ def _route_after_cache_gate(state: AgentState) -> str:
     if state.get("semantic_cache_accepted"):
         return "log_run"
     return "inject_history"
+
+
+def _route_after_infer_metric_config(state: AgentState) -> str:
+    """
+    After infer_metric_config:
+      - power_analysis mode → skip SQL/query, go straight to run_power_analysis
+      - everything else     → generate_sql (normal path)
+    """
+    if state.get("analysis_mode") == "power_analysis":
+        return "run_power_analysis"
+    return "generate_sql"
 
 
 def _route_after_execute_query(state: AgentState) -> str:
@@ -245,7 +257,13 @@ def build_graph(checkpointer=None) -> StateGraph:
     builder.add_edge("inject_history",       "load_schema")
     builder.add_edge("load_schema",          "resolve_task_intent")
     builder.add_edge("resolve_task_intent",  "infer_metric_config")
-    builder.add_edge("infer_metric_config",  "generate_sql")
+    builder.add_conditional_edges(
+        "infer_metric_config",
+        _route_after_infer_metric_config,
+        {"generate_sql": "generate_sql", "run_power_analysis": "run_power_analysis"},
+    )
+    builder.add_node("run_power_analysis", run_power_analysis_node)
+    builder.add_edge("run_power_analysis", "generate_charts")
     builder.add_edge("generate_sql",    "query_gate")
     builder.add_conditional_edges(
         "query_gate",

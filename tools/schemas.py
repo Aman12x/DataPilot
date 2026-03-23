@@ -160,6 +160,27 @@ class MdeResult(BaseModel):
     is_powered_for_observed_effect: Optional[bool]
 
 
+class SensitivityRow(BaseModel):
+    mde_pct:      float   # target MDE as % of baseline
+    n_per_arm:    int     # required sample size per arm
+    runtime_days: int     # estimated days to collect that many users
+
+
+class PowerAnalysisResult(BaseModel):
+    baseline_mean:       float
+    baseline_std:        float
+    daily_traffic:       float          # estimated unique users per day
+    mde_target_pct:      float          # primary MDE target the user asked about
+    mde_target_abs:      float          # absolute value of the primary MDE
+    required_n_per_arm:  int            # sample size at mde_target_pct
+    required_total_n:    int            # = 2 * required_n_per_arm
+    runtime_days:        int            # days to reach required_total_n at daily_traffic
+    alpha:               float
+    power:               float
+    guardrails_to_watch: list[str]      # guardrail metric names from metric config
+    sensitivity:         list[SensitivityRow]   # table across MDE levels
+
+
 # ── narrative_tools ───────────────────────────────────────────────────────────
 
 class NarrativeResult(BaseModel):

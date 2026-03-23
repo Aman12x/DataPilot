@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import client, { API_BASE, uploadFile, type UploadResult, logout } from "../api/client";
-import { useSSE, type DoneEvent, type TrustIndicators } from "../hooks/useSSE";
+import { useSSE, type DoneEvent, type TrustIndicators, type PowerAnalysisResult, type SensitivityRow } from "../hooks/useSSE";
 import { useTokenRefresh } from "../hooks/useTokenRefresh";
 import PipelineProgress from "../components/PipelineProgress";
 import Markdown from "../components/Markdown";
@@ -12,26 +12,9 @@ import QueryGate from "../components/gates/QueryGate";
 import AnalysisGate from "../components/gates/AnalysisGate";
 import GeneralAnalysisGate from "../components/gates/GeneralAnalysisGate";
 import NarrativeGate from "../components/gates/NarrativeGate";
-
-type Mode = "general" | "ab_test";
-interface PgCreds { host: string; port: string; dbname: string; user: string; password: string; }
-interface Sample { name: string; label: string; domain: string; icon: string; mode: string; suggested_task: string; }
-
-function stripMarkdown(md: string): string {
-  return md
-    .replace(/^#{1,3}\s+/gm, "")
-    .replace(/\*\*([^*]+)\*\*/g, "$1")
-    .replace(/\*([^*]+)\*/g, "$1")
-    .replace(/`([^`]+)`/g, "$1")
-    .replace(/^[-*]\s/gm, "• ")
-    .trim();
-}
-
-/** Remove SQL / code fences from narrative before rendering. */
-function sanitiseNarrative(md: string): string {
-  // Strip fenced code blocks (```sql ... ``` or ``` ... ```)
-  return md.replace(/```[\w]*\n[\s\S]*?```/g, "").replace(/\n{3,}/g, "\n\n").trim();
-}
+import { type Mode, type PgCreds, type Sample, MODE_META } from "../types/analysis";
+import { stripMarkdown, sanitiseNarrative } from "../utils/markdown";
+import { extractApiError } from "../utils/error";
 
 // ── ModeSelect — the two-button landing ───────────────────────────────────────
 
@@ -41,11 +24,12 @@ function ModeSelect({ onSelect, username, onHistory, onSignOut }: {
   onHistory: () => void;
   onSignOut: () => void;
 }) {
+  const [showAbSub, setShowAbSub] = useState(false);
+
   return (
     <div style={ms.page}>
       <div style={ms.orb1} /><div style={ms.orb2} />
 
-      {/* Top bar */}
       <div style={ms.topBar}>
         <span style={ms.logo}>✦ DataPilot</span>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -55,22 +39,17 @@ function ModeSelect({ onSelect, username, onHistory, onSignOut }: {
         </div>
       </div>
 
-      {/* Hero */}
       <div style={ms.hero} className="fade-in">
         <h1 style={ms.heroTitle}>What would you like to do?</h1>
         <p style={ms.heroSub}>Choose your analysis type to get started</p>
       </div>
 
-      {/* Mode cards */}
       <div style={ms.cards} className="slide-up">
 
-        {/* General / Explore card */}
         <button style={{ ...ms.card, ...ms.cardGeneral }} onClick={() => onSelect("general")}>
           <div style={ms.cardIcon}>💡</div>
           <div style={ms.cardTitle}>Explore & Understand</div>
-          <div style={ms.cardDesc}>
-            Find patterns, trends, and insights in any dataset
-          </div>
+          <div style={ms.cardDesc}>Find patterns, trends, and insights in any dataset</div>
           <ul style={ms.featureList}>
             <li style={ms.feature}><span style={{ color: "#cba6f7" }}>✓</span> Descriptive statistics</li>
             <li style={ms.feature}><span style={{ color: "#cba6f7" }}>✓</span> Correlation analysis</li>
@@ -81,23 +60,47 @@ function ModeSelect({ onSelect, username, onHistory, onSignOut }: {
           <div style={{ ...ms.cta, background: "#cba6f7", color: "#1e1e2e" }}>Start Exploring →</div>
         </button>
 
-        {/* AB Test card */}
-        <button style={{ ...ms.card, ...ms.cardAB }} onClick={() => onSelect("ab_test")}>
-          <div style={ms.cardIcon}>🧪</div>
-          <div style={ms.cardTitle}>A/B Testing</div>
-          <div style={ms.cardDesc}>
-            Measure causal effects and compare experiment variants
-          </div>
-          <ul style={ms.featureList}>
-            <li style={ms.feature}><span style={{ color: "#89b4fa" }}>✓</span> t-test &amp; CUPED</li>
-            <li style={ms.feature}><span style={{ color: "#89b4fa" }}>✓</span> Subgroup effects (HTE)</li>
-            <li style={ms.feature}><span style={{ color: "#89b4fa" }}>✓</span> Guardrails &amp; novelty check</li>
-            <li style={ms.feature}><span style={{ color: "#89b4fa" }}>✓</span> MDE &amp; power analysis</li>
-          </ul>
-          <div style={ms.useCases}>Product · Clinical trials · Marketing · Pricing</div>
-          <div style={{ ...ms.cta, background: "#89b4fa", color: "#1e1e2e" }}>Run Experiment →</div>
-        </button>
+        {!showAbSub ? (
+          <button style={{ ...ms.card, ...ms.cardAB }} onClick={() => setShowAbSub(true)}>
+            <div style={ms.cardIcon}>🧪</div>
+            <div style={ms.cardTitle}>A/B Testing</div>
+            <div style={ms.cardDesc}>Design experiments or analyse results from running tests</div>
+            <ul style={ms.featureList}>
+              <li style={ms.feature}><span style={{ color: "#89b4fa" }}>✓</span> Sample size &amp; power calculation</li>
+              <li style={ms.feature}><span style={{ color: "#89b4fa" }}>✓</span> t-test, CUPED &amp; HTE</li>
+              <li style={ms.feature}><span style={{ color: "#89b4fa" }}>✓</span> Guardrails &amp; novelty check</li>
+              <li style={ms.feature}><span style={{ color: "#89b4fa" }}>✓</span> Segment sensitivity analysis</li>
+            </ul>
+            <div style={ms.useCases}>Product · Clinical trials · Marketing · Pricing</div>
+            <div style={{ ...ms.cta, background: "#89b4fa", color: "#1e1e2e" }}>Select →</div>
+          </button>
+        ) : (
+          <div style={{ ...ms.card, ...ms.cardAB, cursor: "default" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+              <button style={ms.backSubBtn} onClick={() => setShowAbSub(false)}>← Back</button>
+              <span style={{ color: "#89b4fa", fontWeight: 700, fontSize: 15 }}>🧪 A/B Testing</span>
+            </div>
+            <p style={{ color: "#585b70", fontSize: 13, margin: "4px 0 16px" }}>Choose what you want to do:</p>
 
+            <button style={ms.subCard} onClick={() => onSelect("power_analysis")}>
+              <div style={{ fontSize: 20 }}>📐</div>
+              <div>
+                <div style={{ color: "#cdd6f4", fontWeight: 700, fontSize: 14 }}>Design Experiment</div>
+                <div style={{ color: "#585b70", fontSize: 12, marginTop: 2 }}>Sample size, runtime &amp; sensitivity table</div>
+              </div>
+              <span style={{ color: "#89b4fa", marginLeft: "auto", fontSize: 16 }}>→</span>
+            </button>
+
+            <button style={{ ...ms.subCard, marginTop: 8 }} onClick={() => onSelect("ab_test")}>
+              <div style={{ fontSize: 20 }}>📊</div>
+              <div>
+                <div style={{ color: "#cdd6f4", fontWeight: 700, fontSize: 14 }}>Interpret Results</div>
+                <div style={{ color: "#585b70", fontSize: 12, marginTop: 2 }}>Analyse a completed experiment end-to-end</div>
+              </div>
+              <span style={{ color: "#89b4fa", marginLeft: "auto", fontSize: 16 }}>→</span>
+            </button>
+          </div>
+        )}
       </div>
 
       <p style={ms.footer}>Not sure? Start with Explore — DataPilot will figure out the right analysis.</p>
@@ -129,26 +132,11 @@ const ms: Record<string, React.CSSProperties> = {
   useCases:   { color: "#45475a", fontSize: 11, borderTop: "1px solid #313244", paddingTop: 12, marginTop: 4 },
   cta:        { borderRadius: 8, padding: "10px 0", fontWeight: 700, fontSize: 14, textAlign: "center" as const, marginTop: 4 },
   footer:     { textAlign: "center", color: "#45475a", fontSize: 12, marginTop: 28, maxWidth: 500, margin: "28px auto 0" },
+  subCard:    { display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", background: "#181825", border: "1px solid #313244", borderRadius: 10, cursor: "pointer", textAlign: "left" as const, width: "100%", transition: "border-color 0.15s" },
+  backSubBtn: { background: "transparent", border: "none", color: "#45475a", fontSize: 12, cursor: "pointer", padding: 0 },
 };
 
 // ── TaskInput ──────────────────────────────────────────────────────────────────
-
-const MODE_META: Record<Mode, { heading: string; sub: string; placeholder: string; accent: string; badge: string }> = {
-  general: {
-    heading:     "What do you want to explore?",
-    sub:         "Describe what you're looking for — patterns, trends, correlations, anomalies.",
-    placeholder: "e.g. What are the main patterns in this data? Which customers are at risk? What's driving delays?",
-    accent:      "#cba6f7",
-    badge:       "💡 Explore & Understand",
-  },
-  ab_test: {
-    heading:     "Describe your experiment",
-    sub:         "Tell DataPilot about your A/B test — it will run the full statistical analysis.",
-    placeholder: "e.g. Did the new checkout flow increase revenue? Did Drug A improve recovery vs placebo? Which segments benefited most?",
-    accent:      "#89b4fa",
-    badge:       "🧪 A/B Testing",
-  },
-};
 
 function TaskInput({ mode, onSubmit, onBack, startError }: {
   mode: Mode;
@@ -185,9 +173,8 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
     setUploading(true); setUploadError(""); setUploadResult(null); setUploadFileName(file.name);
     try {
       setUploadResult(await uploadFile(file));
-    } catch (err: unknown) {
-      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setUploadError(detail ?? "Upload failed.");
+    } catch (err) {
+      setUploadError(extractApiError(err, "Upload failed."));
       setUploadFileName("");
     } finally { setUploading(false); }
   };
@@ -236,7 +223,6 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
         <h2 style={s.heading}>{meta.heading}</h2>
         <p style={s.sub}>{meta.sub}</p>
 
-        {/* Sample quick-start — filtered to this mode */}
         {samples.length > 0 && (
           <div style={s.samplesSection}>
             <div style={s.sectionLabel}>Try a sample dataset</div>
@@ -270,7 +256,6 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
           autoFocus
         />
 
-        {/* Data source */}
         <div style={s.section}>
           <div style={s.sectionLabel}>Data source</div>
           <div style={s.sourceRow}>
@@ -325,8 +310,7 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
               ] as const).map(({ k, label, placeholder, type }) => (
                 <div key={k} style={s.pgField}>
                   <label style={s.pgLabel}>{label}</label>
-                  <input style={s.pgInput} type={type} placeholder={placeholder}
-                    value={pg[k]} onChange={setP(k)} />
+                  <input style={s.pgInput} type={type} placeholder={placeholder} value={pg[k]} onChange={setP(k)} />
                 </div>
               ))}
             </div>
@@ -346,7 +330,9 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
         >
           {submitting
             ? <><span style={s.btnSpinner} /> Starting…</>
-            : mode === "general" ? "Explore Data →" : "Run Analysis →"}
+            : mode === "general" ? "Explore Data →"
+            : mode === "power_analysis" ? "Calculate Sample Size →"
+            : "Run Analysis →"}
         </button>
       </div>
     </div>
@@ -358,7 +344,7 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
 function GateBar({ task, mode, onStartOver }: { task: string; mode: string; onStartOver: () => void }) {
   const truncated = task.length > 90 ? task.slice(0, 90) + "…" : task;
   const accent = mode === "general" ? "#cba6f7" : "#89b4fa";
-  const label  = mode === "general" ? "💡 Explore" : "🧪 A/B Test";
+  const label  = mode === "general" ? "💡 Explore" : mode === "power_analysis" ? "📐 Design" : "🧪 A/B Test";
   return (
     <div style={gb.bar}>
       <div style={gb.inner}>
@@ -392,9 +378,7 @@ function TrustBanner({ trust }: { trust: TrustIndicators }) {
     <div style={{ ...s.trustBanner, background: cfg.bg, borderColor: cfg.border }} className="slide-up">
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <span style={{ color: cfg.color, fontWeight: 700, fontSize: 15 }}>{cfg.icon}</span>
-        <span style={{ color: cfg.color, fontWeight: 700, fontSize: 12, textTransform: "uppercase", letterSpacing: "0.06em" }}>
-          {cfg.label}
-        </span>
+        <span style={{ color: cfg.color, fontWeight: 700, fontSize: 12, textTransform: "uppercase", letterSpacing: "0.06em" }}>{cfg.label}</span>
         <span style={{ color: "#45475a", fontSize: 12 }}>·</span>
         <span style={{ color: "#585b70", fontSize: 12 }}>{trust.n_data_points.toLocaleString()} data points</span>
       </div>
@@ -411,13 +395,84 @@ function ChartsGrid({ charts }: { charts: ChartSpec[] }) {
     <div style={s.chartsSection} className="slide-up">
       <div style={s.chartsSectionLabel}>Data at a glance</div>
       <div style={s.chartsGrid} className="charts-grid">
-        {charts.map((spec, i) => (
-          <ChartCard key={i} spec={spec} />
-        ))}
+        {charts.map((spec, i) => <ChartCard key={i} spec={spec} />)}
       </div>
     </div>
   );
 }
+
+// ── PowerAnalysisSummary ────────────────────────────────────────────────────────
+
+function PowerAnalysisSummary({ pa }: { pa: PowerAnalysisResult }) {
+  return (
+    <div style={pa_s.card} className="slide-up">
+      <div style={pa_s.headline}>
+        <div style={pa_s.stat}>
+          <span style={pa_s.statNum}>{pa.required_n_per_arm.toLocaleString()}</span>
+          <span style={pa_s.statLabel}>users per arm</span>
+        </div>
+        <div style={pa_s.divider} />
+        <div style={pa_s.stat}>
+          <span style={pa_s.statNum}>{pa.required_total_n.toLocaleString()}</span>
+          <span style={pa_s.statLabel}>total users</span>
+        </div>
+        <div style={pa_s.divider} />
+        <div style={pa_s.stat}>
+          <span style={pa_s.statNum}>{pa.runtime_days}</span>
+          <span style={pa_s.statLabel}>days runtime</span>
+        </div>
+        <div style={pa_s.divider} />
+        <div style={pa_s.stat}>
+          <span style={pa_s.statNum}>{pa.mde_target_pct}%</span>
+          <span style={pa_s.statLabel}>target MDE</span>
+        </div>
+      </div>
+
+      {pa.sensitivity && pa.sensitivity.length > 0 && (
+        <div style={{ marginTop: 20 }}>
+          <div style={pa_s.tableLabel}>Sensitivity table</div>
+          <table style={pa_s.table}>
+            <thead>
+              <tr>
+                <th style={pa_s.th}>MDE (%)</th>
+                <th style={pa_s.th}>N per arm</th>
+                <th style={pa_s.th}>Runtime (days)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pa.sensitivity.map((row: SensitivityRow) => {
+                const isTarget = row.mde_pct === pa.mde_target_pct;
+                return (
+                  <tr key={row.mde_pct} style={isTarget ? pa_s.trHighlight : {}}>
+                    <td style={{ ...pa_s.td, color: isTarget ? "#89b4fa" : "#cdd6f4", fontWeight: isTarget ? 700 : 400 }}>
+                      {row.mde_pct}%{isTarget ? " ◀" : ""}
+                    </td>
+                    <td style={{ ...pa_s.td, color: isTarget ? "#89b4fa" : "#a6adc8" }}>{row.n_per_arm.toLocaleString()}</td>
+                    <td style={{ ...pa_s.td, color: isTarget ? "#89b4fa" : "#a6adc8" }}>{row.runtime_days}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const pa_s: Record<string, React.CSSProperties> = {
+  card:        { background: "#181825", border: "1px solid #313244", borderRadius: 10, padding: "20px 24px", marginBottom: 16 },
+  headline:    { display: "flex", gap: 0, alignItems: "stretch" },
+  stat:        { flex: 1, display: "flex", flexDirection: "column" as const, alignItems: "center", padding: "8px 0" },
+  statNum:     { color: "#89b4fa", fontSize: 26, fontWeight: 700, letterSpacing: "-0.5px" },
+  statLabel:   { color: "#585b70", fontSize: 11, marginTop: 4, textTransform: "uppercase" as const, letterSpacing: "0.06em" },
+  divider:     { width: 1, background: "#313244", margin: "4px 0" },
+  tableLabel:  { color: "#45475a", fontSize: 11, fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 10 },
+  table:       { width: "100%", borderCollapse: "collapse" as const },
+  th:          { color: "#585b70", fontSize: 11, fontWeight: 600, textTransform: "uppercase" as const, padding: "6px 10px", textAlign: "left" as const, borderBottom: "1px solid #313244" },
+  td:          { padding: "8px 10px", fontSize: 13, borderBottom: "1px solid #1e1e2e" },
+  trHighlight: { background: "#89b4fa0a" },
+};
 
 // ── FinishedView ───────────────────────────────────────────────────────────────
 
@@ -427,10 +482,7 @@ function splitNarrative(raw: string): { brief: string; details: string } {
   const clean = sanitiseNarrative(raw);
   const idx   = clean.indexOf(DETAILS_MARKER);
   if (idx === -1) return { brief: clean, details: "" };
-  return {
-    brief:   clean.slice(0, idx).trim(),
-    details: clean.slice(idx + DETAILS_MARKER.length).trim(),
-  };
+  return { brief: clean.slice(0, idx).trim(), details: clean.slice(idx + DETAILS_MARKER.length).trim() };
 }
 
 function FinishedView({ state, runId, onNewAnalysis }: { state: DoneEvent["state"]; runId: string; onNewAnalysis: () => void }) {
@@ -438,8 +490,9 @@ function FinishedView({ state, runId, onNewAnalysis }: { state: DoneEvent["state
   const [copied,      setCopied]      = useState(false);
   const [showDetails, setShowDetails] = useState(false);
 
+  const isPowerAnalysis = state.analysis_mode === "power_analysis";
   const { brief, details } = splitNarrative(state.narrative_draft);
-  const hasDetails = details.length > 0;
+  const hasDetails = details.length > 0 || (isPowerAnalysis && !!state.power_analysis_result);
   const hasCharts  = state.charts && state.charts.length > 0;
   const hasTrust   = state.trust_indicators && state.trust_indicators.confidence_level;
 
@@ -458,8 +511,6 @@ function FinishedView({ state, runId, onNewAnalysis }: { state: DoneEvent["state
   return (
     <div style={s.finPage} className="fade-in">
       <div style={s.finInner}>
-
-        {/* Header row */}
         <div style={s.finHeader}>
           <div style={s.finTitle}>
             <span style={{ color: "#a6e3a1", fontSize: 20 }}>✓</span>
@@ -481,17 +532,17 @@ function FinishedView({ state, runId, onNewAnalysis }: { state: DoneEvent["state
           </div>
         </div>
 
-        {/* Trust indicator */}
         {hasTrust && <TrustBanner trust={state.trust_indicators} />}
 
-        {/* Brief report — always visible */}
         <div style={s.narrativeCard} className="slide-up">
           <Markdown content={brief} />
         </div>
 
-        {/* Details section — charts + deep stats */}
         {showDetails && (
           <div className="fade-in">
+            {isPowerAnalysis && state.power_analysis_result && (
+              <PowerAnalysisSummary pa={state.power_analysis_result} />
+            )}
             {hasCharts && <ChartsGrid charts={state.charts} />}
             {details && (
               <div style={{ ...s.narrativeCard, marginTop: 14 }}>
@@ -500,7 +551,6 @@ function FinishedView({ state, runId, onNewAnalysis }: { state: DoneEvent["state
             )}
           </div>
         )}
-
       </div>
     </div>
   );
@@ -534,27 +584,20 @@ export default function Analysis() {
 
   useEffect(() => {
     const mode = (gate?.payload as Record<string, unknown> | undefined)?.analysis_mode;
-    if (typeof mode === "string" && (mode === "ab_test" || mode === "general")) {
+    if (typeof mode === "string" && (mode === "ab_test" || mode === "general" || mode === "power_analysis")) {
       setAnalysisMode(mode);
     }
   }, [gate]);
 
   const startOver = () => {
-    setRunId(null);
-    setSelectedMode(null);
-    setTaskText("");
-    setAnalysisMode("");
-    setLastGate(null);
-    setSubmitError("");
-    setStartError("");
-    setGate(null);
+    setRunId(null); setSelectedMode(null); setTaskText(""); setAnalysisMode("");
+    setLastGate(null); setSubmitError(""); setStartError(""); setGate(null);
   };
 
   const startRun = async (task: string, db_backend: string, pg?: PgCreds, uploadId?: string) => {
     setStartError("");
     try {
       const body: Record<string, unknown> = { task, db_backend };
-      // Pass the user's chosen mode so the backend doesn't need to auto-detect
       if (selectedMode) body.analysis_mode = selectedMode;
       if (uploadId) body.duckdb_path = uploadId;
       if (pg) { body.pg_host = pg.host; body.pg_port = parseInt(pg.port) || 5432; body.pg_dbname = pg.dbname; body.pg_user = pg.user; body.pg_password = pg.password; }
@@ -562,9 +605,9 @@ export default function Analysis() {
       setTaskText(task);
       setAnalysisMode(selectedMode ?? "");
       setRunId(data.run_id);
-    } catch (err: unknown) {
-      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setStartError(detail ?? "Failed to start analysis.");
+    } catch (err) {
+      const msg = extractApiError(err, "Failed to start analysis.");
+      setStartError(msg);
       throw err;
     }
   };
@@ -574,12 +617,11 @@ export default function Analysis() {
     setSubmitting(true); setSubmitError("");
     try {
       await client.post(`/runs/${runId}/resume`, { gate: gate.gate, value });
-      setLastGate(gate.gate);   // remember which gate we just approved
+      setLastGate(gate.gate);
       setGate(null);
       setReconnectTrigger(n => n + 1);
-    } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? "Failed to submit.";
-      setSubmitError(msg);
+    } catch (err) {
+      setSubmitError(extractApiError(err, "Failed to submit."));
     } finally { setSubmitting(false); }
   };
 
@@ -616,7 +658,6 @@ export default function Analysis() {
     );
   }
 
-  // Step 1 — Mode selection landing
   if (!selectedMode && !runId)
     return (
       <ModeSelect
@@ -627,18 +668,9 @@ export default function Analysis() {
       />
     );
 
-  // Step 2 — Task input
   if (selectedMode && !runId)
-    return (
-      <TaskInput
-        mode={selectedMode}
-        onSubmit={startRun}
-        onBack={() => setSelectedMode(null)}
-        startError={startError}
-      />
-    );
+    return <TaskInput mode={selectedMode} onSubmit={startRun} onBack={() => setSelectedMode(null)} startError={startError} />;
 
-  // Step 3+ — Active run (gates / progress / done)
   const errBanner = submitError ? (
     <div style={s.floatError} className="fade-in">
       ⚠ {submitError}
@@ -646,7 +678,7 @@ export default function Analysis() {
     </div>
   ) : null;
 
-  const payload = gate?.payload as Record<string, unknown> | undefined;
+  const payload    = gate?.payload as Record<string, unknown> | undefined;
   const activeMode = (analysisMode || selectedMode || "ab_test") as string;
 
   const renderGate = (el: React.ReactNode) => (
@@ -752,7 +784,7 @@ const s: Record<string, React.CSSProperties> = {
   btnSec:          { padding: "7px 16px", background: "#313244", color: "#cdd6f4", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13 },
   btnPri:          { padding: "7px 16px", background: "#89b4fa", color: "#1e1e2e", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13, fontWeight: 600 },
   btnDetails:      { padding: "7px 16px", background: "transparent", color: "#89b4fa", border: "1px solid #89b4fa44", borderRadius: 6, cursor: "pointer", fontSize: 13 },
-  btnDetailsActive: { padding: "7px 16px", background: "#89b4fa1a", color: "#89b4fa", border: "1px solid #89b4fa66", borderRadius: 6, cursor: "pointer", fontSize: 13 },
+  btnDetailsActive:{ padding: "7px 16px", background: "#89b4fa1a", color: "#89b4fa", border: "1px solid #89b4fa66", borderRadius: 6, cursor: "pointer", fontSize: 13 },
 
   trustBanner: { border: "1px solid", borderRadius: 10, padding: "12px 16px", marginBottom: 16, display: "flex", flexDirection: "column" as const, gap: 6 },
 

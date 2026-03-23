@@ -2063,16 +2063,31 @@ def _compute_quality_score(state: AgentState) -> float:
       60%  completeness  — did all expected tool nodes produce results?
       40%  eval_tools    — faithfulness + relevancy of the final narrative
     """
-    # ── Completeness ─────────────────────────────────────────────────────────
-    cuped = state.get("cuped_result")
-    checks = [
-        bool(cuped and cuped.variance_reduction_pct > 5),
-        bool(state.get("ttest_result")),
-        bool(state.get("hte_result") and state["hte_result"].top_segment),
-        bool(state.get("guardrail_result")),
-        bool(state.get("novelty_result")),
-        bool(state.get("forecast_result")),
-    ]
+    # ── Completeness (mode-aware) ─────────────────────────────────────────────
+    mode = state.get("analysis_mode", "general")
+    if mode == "ab_test":
+        cuped = state.get("cuped_result")
+        checks = [
+            bool(cuped and cuped.variance_reduction_pct > 5),
+            bool(state.get("ttest_result")),
+            bool(state.get("hte_result") and state["hte_result"].top_segment),
+            bool(state.get("guardrail_result")),
+            bool(state.get("novelty_result")),
+            bool(state.get("forecast_result")),
+        ]
+    elif mode == "power_analysis":
+        checks = [
+            bool(state.get("power_analysis_result")),
+            bool(state.get("narrative_draft")),
+        ]
+    else:  # general
+        checks = [
+            bool(state.get("describe_result")),
+            bool(state.get("correlation_result")),
+            bool(state.get("charts")),
+            bool(state.get("narrative_draft")),
+            bool(state.get("query_result") is not None),
+        ]
     completeness = sum(checks) / len(checks)
 
     # ── RAGAS signals (best-effort; degrade gracefully) ───────────────────────

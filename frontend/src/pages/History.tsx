@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import client, { API_BASE, logout } from "../api/client";
 import Markdown from "../components/Markdown";
+import Spinner from "../components/Spinner";
 
 interface Run {
   run_id:    string;
@@ -38,7 +39,7 @@ export default function History() {
   const toggleExpand = async (run: Run) => {
     if (expanded === run.run_id) { setExpanded(null); return; }
     setExpanded(run.run_id);
-    if (detail[run.run_id]) return;   // already fetched
+    if (detail[run.run_id]) return;
     setLoadingDetail(run.run_id);
     try {
       const { data } = await client.get(`/runs/${run.run_id}/detail`);
@@ -70,7 +71,6 @@ export default function History() {
       <div style={s.orb2} />
 
       <div style={s.inner}>
-        {/* Header */}
         <div style={s.header} className="fade-in">
           <div style={s.titleGroup}>
             <span style={s.logoIcon}>✦</span>
@@ -87,7 +87,7 @@ export default function History() {
 
         {loading && (
           <div style={s.emptyState} className="fade-in">
-            <div style={s.spinner} />
+            <Spinner variant="page" />
             <p style={s.emptyText}>Loading history…</p>
           </div>
         )}
@@ -101,7 +101,6 @@ export default function History() {
           </div>
         )}
 
-        {/* Run cards */}
         <div style={s.cardList}>
           {runs.map((r, idx) => {
             const isOpen = expanded === r.run_id;
@@ -113,7 +112,6 @@ export default function History() {
                 className="fade-in"
                 onClick={() => toggleExpand(r)}
               >
-                {/* Top row */}
                 <div style={s.cardTop}>
                   <span style={{
                     ...s.modeBadge,
@@ -134,10 +132,8 @@ export default function History() {
                   )}
                 </div>
 
-                {/* Task */}
                 <p style={s.task}>{r.task}</p>
 
-                {/* Meta */}
                 <div style={s.meta}>
                   <span style={s.metaItem}>
                     🕐 {new Date(r.timestamp).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
@@ -147,12 +143,11 @@ export default function History() {
                   <span style={{ ...s.metaItem, marginLeft: "auto" }}>{isOpen ? "▲ collapse" : "▼ view analysis"}</span>
                 </div>
 
-                {/* Expanded narrative */}
                 {isOpen && (
                   <div style={s.narrativeSection} className="fade-in" onClick={e => e.stopPropagation()}>
                     <div style={s.narrativeDivider} />
                     {loadingDetail === r.run_id ? (
-                      <div style={s.loadingRow}><span style={s.miniSpinner} /> Loading analysis…</div>
+                      <div style={s.loadingRow}><Spinner variant="inline" /> Loading analysis…</div>
                     ) : det ? (
                       <>
                         {det.recommendation && (
@@ -171,7 +166,7 @@ export default function History() {
                             disabled={downloading === r.run_id}
                           >
                             {downloading === r.run_id
-                              ? <><span style={s.miniSpinner} /> Loading…</>
+                              ? <><Spinner variant="inline" /> Loading…</>
                               : "↓ PDF Report"}
                           </button>
                         </div>
@@ -209,8 +204,6 @@ const s: Record<string, React.CSSProperties> = {
   emptyIcon:   { fontSize: 48, marginBottom: 8 },
   emptyText:   { color: "#cdd6f4", fontSize: 18, fontWeight: 600 },
   emptySub:    { color: "#585b70", fontSize: 14 },
-  spinner:     { width: 32, height: 32, border: "3px solid #313244", borderTop: "3px solid #89b4fa", borderRadius: "50%", animation: "spin 0.8s linear infinite" },
-  miniSpinner: { display: "inline-block", width: 10, height: 10, border: "2px solid #89b4fa44", borderTop: "2px solid #89b4fa", borderRadius: "50%", animation: "spin 0.7s linear infinite" },
 
   cardList:    { display: "flex", flexDirection: "column" as const, gap: 12 },
   card:        { background: "#1e1e2e", border: "1px solid #313244", borderRadius: 12, padding: "18px 20px", cursor: "pointer", transition: "border-color 0.2s, box-shadow 0.2s" },
@@ -228,7 +221,6 @@ const s: Record<string, React.CSSProperties> = {
   metricBadge: { background: "#313244", color: "#cba6f7", fontSize: 11, padding: "2px 8px", borderRadius: 4, fontWeight: 500 },
   runId:       { color: "#45475a", fontSize: 11, fontFamily: "monospace" },
 
-  // Expanded section
   narrativeSection: { marginTop: 0 },
   narrativeDivider: { height: 1, background: "#313244", margin: "16px 0" },
   loadingRow:       { color: "#585b70", fontSize: 13, display: "flex", alignItems: "center", gap: 8, padding: "8px 0" },
