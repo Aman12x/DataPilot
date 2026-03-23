@@ -438,6 +438,9 @@ Requirements:
 - Output only the SQL in a ```sql ... ``` block — no surrounding prose
 - **Never ask clarifying questions.** If the task is ambiguous, make a reasonable \
 assumption and write the SQL. State any assumption as a single SQL comment at the top.
+- **Never use UNPIVOT, PIVOT, or UNNEST to reshape columns into rows.** Keep original \
+column names as columns in the output — do not melt the dataframe into \
+(variable, value) or (metric, value) rows. This breaks downstream analysis.
 """
 
 
