@@ -381,56 +381,89 @@ Write a single SQL SELECT query that retrieves the data needed to answer the \
 task above. Use only tables and columns present in the schema. The query will \
 be executed against a {db_backend} database.
 
-This is a **general data analysis** request — not an A/B experiment. \
-You are free to:
-- Return aggregate or row-level data, whichever best suits the question
-- Use any grouping, ordering, or windowing that helps surface patterns
-- Join multiple tables if needed
+---
 
-### CRITICAL — Handle panel/longitudinal data based on task intent
+### STEP 1 — Identify the aggregation strategy
 
-**Before writing SQL**, check whether the schema has BOTH:
-1. A time column (date, month, week, season, timestamp, period, or similar), AND
-2. An entity-ID column (customer_id, user_id, player_id, patient_id, etc.)
-
-**If both are present**, choose the aggregation strategy based on what the task asks for:
+Check whether the schema has BOTH a time column (date, month, week, season, \
+timestamp, period) AND an entity-ID column (customer_id, user_id, carrier, etc.).
 
 **Case A — Task asks about trends or changes over time** \
-(keywords: "trend", "change", "over time", "by year/season/month", "growth", "evolution"):
-- `GROUP BY time_col` and aggregate numeric metrics with `AVG()` or `SUM()`
-- Include the time column in output so trends are visible
-- ORDER BY the time column ASC
+(keywords: "trend", "over time", "by month/season/year", "growth", "evolution"):
+- GROUP BY the time column, aggregate numeric metrics with AVG() or SUM()
+- Include the time column in SELECT, ORDER BY it ASC
 
-**Case B — Task asks about individual entity rankings or profiles** \
-(keywords: "top", "best", "worst", "ranking", "who", "which player/team"):
-- `GROUP BY entity_id, entity_name` (include name column alongside ID), \
-  aggregate numeric metrics with `AVG()` across all time periods
-- ORDER BY the primary metric DESC, LIMIT 20
-- Do **not** include the time column in output
+**Case B — Task asks for group/category breakdowns or rankings** \
+(keywords: "which carrier", "by segment", "breakdown", "compare groups", \
+"worst", "best", "ranking", "root cause", "what drives"):
+- GROUP BY every relevant categorical column the task mentions
+- If the task says "does it vary by X and Y" → include BOTH X and Y in GROUP BY
+- Always SELECT every column you GROUP BY
 
-**Case C — Task asks about group/category breakdowns** \
-(keywords: "by position", "by team", "by segment", "breakdown", "compare groups"):
-- `GROUP BY category_col`, aggregate numeric metrics with `AVG()`
-- Include all relevant category columns in GROUP BY
+**Case C — Task asks for individual entity profiles** \
+(keywords: "top N", "show me each", "list all"):
+- GROUP BY entity_id (and name column if present)
+- Aggregate numeric metrics with AVG() across all periods
+- ORDER BY primary metric DESC, LIMIT 20
 
-**Case D — Task asks for multiple of the above** \
-Priority order: **A > C > B**. For multi-objective tasks, write ONE query using the \
-highest-priority matching case:
-- If the task asks about time trends → Case A
-- If the task asks for group/category breakdowns → Case C (even if it also asks for top-N individuals)
-- Individual rankings (Case B) only if the task asks ONLY for a ranked list
-
-**Why Case C > Case B**: group breakdowns (e.g. "avg salary by department and level") \
-capture the full population and answer ranking questions implicitly — the highest-avg \
-group IS the top group. Individual rankings are an additional drill-down, not the primary answer.
-
-**Aggregation rules for numeric columns:**
-- Binary flags (churned, converted, 0/1): `MAX()` — did entity ever have this outcome?
-- Numeric metrics (points, revenue, scores): `AVG()` — average across periods
-- Categorical attributes (position, team, segment): include in `GROUP BY`
+Priority when task matches multiple cases: **A > B > C**
 
 **If only a time column and no entity ID**, return rows as-is ordered by time.
-**If neither time nor entity ID**, return rows as-is.
+**If neither**, return rows as-is.
+
+---
+
+### STEP 2 — Apply these rules for every metric column
+
+**Binary outcome columns (0/1 flags: churned, on_time_delivery, converted, etc.):**
+- "rate", "percentage", "how often", "what share" → `AVG(col)` — gives the rate directly (0.0–1.0)
+- "how many", "count of failures" → `SUM(col)` or `SUM(CASE WHEN col = 0 THEN 1 END)`
+- Always add `COUNT(*) AS total_records` alongside any rate or count so volume is visible
+- **Per-entity collapse** (one row per user/entity, not one row per group) → `MAX(col)` — did this entity ever have the outcome?
+  - Only use MAX() when you are collapsing to entity level first, then grouping. Never use MAX() when computing a group-level rate.
+
+**Continuous numeric columns (revenue, days, scores):**
+- Use `AVG()` for typical value, `SUM()` for totals, `PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY col)` for median
+
+**Categorical columns:** include in GROUP BY, never aggregate with AVG/SUM
+
+---
+
+### STEP 3 — Check for these anti-patterns before writing SQL
+
+**1. Never filter on the outcome metric you are measuring.**
+If the task asks "which carriers have the worst on-time rate", do NOT add \
+`WHERE on_time_delivery = 0`. That removes on-time records and makes every \
+rate 0%. Include ALL records; let AVG() compute the rate across the full population.
+Only add a WHERE filter if the task explicitly restricts to a subpopulation \
+("among churned customers", "for delayed shipments only").
+
+**2. Never report a count without a denominator.**
+If you write `COUNT(*) AS delayed_shipments`, also write \
+`SUM(total_shipments)` or include `AVG(outcome_flag)` so the rate is clear. \
+A count with no total is uninterpretable.
+
+**3. Always SELECT every column you GROUP BY.**
+Never group by a column that is absent from your SELECT list.
+
+**4. Rankings: match ORDER BY direction to the task.**
+- "worst", "lowest", "least reliable" → ORDER BY rate ASC
+- "best", "highest", "most" → ORDER BY rate DESC
+- Always include both the rate and COUNT(*) so the reader can judge sample size.
+
+**5. Never use UNPIVOT, PIVOT, or UNNEST to reshape columns into rows.**
+Keep original column names as columns. Do not melt the table into \
+(variable, value) pairs — this breaks downstream analysis.
+
+**6. Never write metadata commands.**
+Do not use DESCRIBE, SUMMARIZE, SHOW TABLES, SHOW COLUMNS, or PRAGMA \
+statements. Write a real SELECT query.
+
+**7. Never conflate a subpopulation with the full population.**
+Filtering to `churned = 1` to study churn drivers is fine, but state it as \
+a comment. Do not then imply the result represents all customers.
+
+---
 
 Requirements:
 - Return only the columns relevant to the task — avoid SELECT *
@@ -438,9 +471,6 @@ Requirements:
 - Output only the SQL in a ```sql ... ``` block — no surrounding prose
 - **Never ask clarifying questions.** If the task is ambiguous, make a reasonable \
 assumption and write the SQL. State any assumption as a single SQL comment at the top.
-- **Never use UNPIVOT, PIVOT, or UNNEST to reshape columns into rows.** Keep original \
-column names as columns in the output — do not melt the dataframe into \
-(variable, value) or (metric, value) rows. This breaks downstream analysis.
 """
 
 
