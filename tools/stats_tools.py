@@ -90,23 +90,22 @@ def run_ttest(
     control: pd.Series | np.ndarray,
     treatment: pd.Series | np.ndarray,
     alpha: float = 0.05,
+    winsorize_pct: float = 0.0,
 ) -> TtestResult:
     """
     Two-sample Welch's t-test (unequal variance).
 
     Args:
-        control:   Outcome values for control group.
-        treatment: Outcome values for treatment group.
-        alpha:     Significance threshold (default 0.05).
+        control:       Outcome values for control group.
+        treatment:     Outcome values for treatment group.
+        alpha:         Significance threshold (default 0.05).
+        winsorize_pct: If > 0, clip both arrays at this quantile on each tail before
+                       testing (e.g. 0.01 clips bottom/top 1%). Useful for revenue-
+                       style metrics dominated by a handful of outliers. Default 0 = off.
 
     Returns:
-        {
-            t_stat:      float,
-            p_value:     float,
-            ci_lower:    float,  # 95% CI on the difference (treatment - control)
-            ci_upper:    float,
-            significant: bool,
-        }
+        TtestResult with t_stat, p_value, ci_lower, ci_upper, significant,
+        cohens_d (pooled effect size), n_control, n_treatment.
     """
     control   = np.asarray(control, dtype=float)
     treatment = np.asarray(treatment, dtype=float)
@@ -116,6 +115,10 @@ def run_ttest(
 
     if len(control) < 2 or len(treatment) < 2:
         raise ValueError("Need at least 2 observations per group for t-test.")
+
+    if winsorize_pct > 0.0:
+        control   = _winsorize(control,   winsorize_pct)
+        treatment = _winsorize(treatment, winsorize_pct)
 
     t_stat, p_value = stats.ttest_ind(treatment, control, equal_var=False)
 
@@ -132,13 +135,28 @@ def run_ttest(
     ci_lower = mean_diff - t_crit * se_diff
     ci_upper = mean_diff + t_crit * se_diff
 
+    # Cohen's d: mean difference divided by the pooled standard deviation.
+    # Interpretation: |d| < 0.2 negligible, 0.2–0.5 small, 0.5–0.8 medium, > 0.8 large.
+    pooled_std = np.sqrt(((n1 - 1) * s1 + (n2 - 1) * s2) / (n1 + n2 - 2))
+    cohens_d   = float(mean_diff / pooled_std) if pooled_std > 1e-12 else 0.0
+
     return TtestResult(
         t_stat=round(float(t_stat), 4),
         p_value=round(float(p_value), 6),
         ci_lower=round(float(ci_lower), 6),
         ci_upper=round(float(ci_upper), 6),
         significant=bool(p_value < alpha),
+        cohens_d=round(cohens_d, 4),
+        n_control=int(n2),
+        n_treatment=int(n1),
     )
+
+
+def _winsorize(arr: np.ndarray, pct: float) -> np.ndarray:
+    """Clip array values below `pct`-th and above `(1-pct)`-th quantile."""
+    lo = np.percentile(arr, pct * 100)
+    hi = np.percentile(arr, (1.0 - pct) * 100)
+    return np.clip(arr, lo, hi)
 
 
 def run_hte(

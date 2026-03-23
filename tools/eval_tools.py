@@ -29,11 +29,13 @@ Usage (offline, per fixture):
 
 from __future__ import annotations
 
+import json
 import logging
 import math
+import os
 import re
 from dataclasses import dataclass, field
-from typing import Sequence
+from typing import Any, Sequence
 
 import pandas as pd
 
@@ -133,12 +135,15 @@ def score_faithfulness(
 
     for num in narrative_nums:
         denom = abs(num) if abs(num) > 1e-9 else 1.0
+        matched = any(abs(num - dv) / denom <= tolerance for dv in df_vals)
         # Also check num/100 to handle percentage-cited-as-fraction mismatch
         # e.g. narrative says "77.4%" → num=77.4, but df stores 0.774
-        num_as_frac = num / 100.0
-        denom_frac = abs(num_as_frac) if abs(num_as_frac) > 1e-9 else 1.0
-        if any(abs(num - dv) / denom <= tolerance for dv in df_vals) or \
-           any(abs(num_as_frac - dv) / denom_frac <= tolerance for dv in df_vals):
+        # Only apply this for numbers in (0, 100] — larger values can't be percentages.
+        if not matched and 0 < num <= 100:
+            num_as_frac = num / 100.0
+            denom_frac = abs(num_as_frac) if abs(num_as_frac) > 1e-9 else 1.0
+            matched = any(abs(num_as_frac - dv) / denom_frac <= tolerance for dv in df_vals)
+        if matched:
             supported += 1
         else:
             unsupported.append(num)
@@ -285,6 +290,153 @@ FIXTURE_GROUND_TRUTH: dict[str, list[str]] = {
         "treatment",       # experiment arm
     ],
 }
+
+
+# ─── Claim accuracy (deterministic, A/B only) ──────────────────────────────────
+
+_SIG_RE     = re.compile(r"\b(statistically\s+significant|significant(ly)?|p\s*<\s*0\.0[0-9]+)\b", re.IGNORECASE)
+_NOT_SIG_RE = re.compile(r"\b(not\s+significant|no\s+(statistically\s+)?significant|insignificant)\b", re.IGNORECASE)
+_LARGE_RE   = re.compile(r"\b(large|strong)\s+effect\b", re.IGNORECASE)
+
+
+def score_claim_accuracy(
+    narrative: str,
+    ttest_result: Any,
+    cuped_result: Any,
+    alpha: float = 0.05,
+) -> dict:
+    """
+    Deterministic check that A/B interpretation language matches the numbers.
+
+    Checks:
+      - "significant" language → p_value < alpha
+      - "not significant" language → p_value >= alpha
+      - "large/strong effect" language → abs(cohens_d) > 0.5 (skipped if field absent)
+
+    Returns: {"score": fraction_correct, "violations": [str, ...]}
+    """
+    violations: list[str] = []
+    checks_total = 0
+
+    if ttest_result is None:
+        return {"score": 1.0, "violations": []}
+
+    p_value = getattr(ttest_result, "p_value", None)
+    if p_value is None:
+        return {"score": 1.0, "violations": []}
+
+    # Check "significant" claims
+    if _SIG_RE.search(narrative):
+        checks_total += 1
+        if p_value >= alpha:
+            violations.append(
+                f"Narrative claims significance but p_value={p_value:.4f} >= alpha={alpha}"
+            )
+
+    # Check "not significant" claims
+    if _NOT_SIG_RE.search(narrative):
+        checks_total += 1
+        if p_value < alpha:
+            violations.append(
+                f"Narrative claims non-significance but p_value={p_value:.4f} < alpha={alpha}"
+            )
+
+    # Check "large/strong effect" claims
+    cohens_d = getattr(ttest_result, "cohens_d", None)
+    if cohens_d is None and cuped_result is not None:
+        cohens_d = getattr(cuped_result, "cohens_d", None)
+    if cohens_d is not None and _LARGE_RE.search(narrative):
+        checks_total += 1
+        if abs(cohens_d) <= 0.5:
+            violations.append(
+                f"Narrative claims large effect but abs(cohens_d)={abs(cohens_d):.4f} <= 0.5"
+            )
+
+    score = 1.0 - (len(violations) / checks_total) if checks_total > 0 else 1.0
+    return {"score": round(score, 4), "violations": violations}
+
+
+# ─── LLM judge (opt-in, Claude Haiku) ─────────────────────────────────────────
+
+_JUDGE_PROMPT = """\
+You are an expert data analyst evaluating a recommendation written by an AI analyst.
+
+TASK (the original question):
+{task}
+
+NARRATIVE (the analysis the recommendation is based on):
+{narrative}
+
+RECOMMENDATION:
+{recommendation}
+
+Score the recommendation on three dimensions (each 0.0 to 1.0):
+
+1. actionability: Is there a concrete, specific next step a stakeholder could act on?
+   - 0.0: no clear action suggested
+   - 0.5: vague direction ("investigate further", "monitor")
+   - 1.0: concrete step with clear owner or mechanism
+
+2. specificity: Does it cite specific data (numbers, segments, timeframes) rather than vague language?
+   - 0.0: entirely vague ("results were positive")
+   - 0.5: some specificity but missing key numbers from the narrative
+   - 1.0: references specific figures/segments from the narrative
+
+3. grounding: Does the recommendation logically follow from the narrative?
+   - 0.0: contradicts or ignores the narrative
+   - 0.5: weakly related
+   - 1.0: clearly derived from the narrative findings
+
+Respond ONLY with valid JSON matching this schema:
+{{"actionability": <float>, "specificity": <float>, "grounding": <float>, "reasoning": "<one sentence>"}}
+"""
+
+
+_LLM_JUDGE_TIMEOUT = int(os.getenv("LLM_JUDGE_TIMEOUT", "30"))  # seconds
+
+
+def score_recommendation(
+    recommendation: str,
+    narrative: str,
+    task: str,
+) -> dict:
+    """
+    Score a recommendation using Claude Haiku as a judge.
+
+    Opt-in via ENABLE_LLM_JUDGE=true env var (called from nodes.py).
+    Timeout controlled by LLM_JUDGE_TIMEOUT env var (default 30s).
+
+    Returns:
+        {"score": avg, "actionability": f, "specificity": f, "grounding": f, "reasoning": str}
+    """
+    import anthropic as _anthropic
+
+    client = _anthropic.Anthropic(timeout=_LLM_JUDGE_TIMEOUT)
+    prompt = _JUDGE_PROMPT.format(
+        task=task or "(not specified)",
+        narrative=narrative[:3000],     # cap to avoid huge tokens
+        recommendation=recommendation[:500],
+    )
+    msg = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=256,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    raw = msg.content[0].text.strip()
+    data = json.loads(raw)
+
+    actionability = float(data.get("actionability", 0.5))
+    specificity   = float(data.get("specificity",   0.5))
+    grounding     = float(data.get("grounding",     0.5))
+    score         = round((actionability + specificity + grounding) / 3, 4)
+
+    return {
+        "score":         score,
+        "actionability": actionability,
+        "specificity":   specificity,
+        "grounding":     grounding,
+        "reasoning":     data.get("reasoning", ""),
+    }
 
 
 def evaluate_fixture(

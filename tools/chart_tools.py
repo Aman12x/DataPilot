@@ -351,24 +351,48 @@ def compute_trust_indicators(
     Return a simple confidence signal for the finished-view trust banner.
     """
     if ttest is not None:
-        # A/B experiment — use statistical significance
-        if ttest.significant and ttest.p_value < 0.01:
+        # A/B experiment — combine p-value, effect size, CI width, and sample size.
+        cohens_d  = getattr(ttest, "cohens_d", 0.0)
+        n_min     = min(getattr(ttest, "n_control", 0), getattr(ttest, "n_treatment", 0))
+        ci_width  = ttest.ci_upper - ttest.ci_lower
+        mean_diff = (ttest.ci_lower + ttest.ci_upper) / 2.0
+        # Wide CI: uncertainty larger than 2× the effect size (not precise enough to act on)
+        ci_wide   = abs(ci_width) > 2.0 * abs(mean_diff) if abs(mean_diff) > 1e-9 else False
+
+        if ttest.significant and ttest.p_value < 0.01 and abs(cohens_d) >= 0.2 and not ci_wide:
             level  = "high"
             reason = (
-                f"p\u202f=\u202f{ttest.p_value:.3f} — effect is statistically significant "
-                f"with high confidence across {n_rows:,} observations."
+                f"p\u202f=\u202f{ttest.p_value:.3f}, Cohen's\u202fd\u202f=\u202f{cohens_d:+.2f} "
+                f"({'medium' if abs(cohens_d) < 0.5 else 'large'} effect) across "
+                f"{n_rows:,} observations — result is robust."
+            )
+        elif ttest.significant and abs(cohens_d) < 0.1:
+            level  = "medium"
+            reason = (
+                f"p\u202f=\u202f{ttest.p_value:.3f} — statistically significant but Cohen's\u202f"
+                f"d\u202f=\u202f{cohens_d:+.2f} is negligible. Validate practical significance "
+                f"before shipping."
+            )
+        elif ttest.significant and (ci_wide or n_min < 100):
+            level  = "medium"
+            reason = (
+                f"p\u202f=\u202f{ttest.p_value:.3f}, Cohen's\u202fd\u202f=\u202f{cohens_d:+.2f} "
+                f"— significant but {'CI is wide relative to the effect' if ci_wide else 'small sample'}. "
+                f"Consider a follow-up holdout before fully shipping."
             )
         elif ttest.significant:
             level  = "medium"
             reason = (
-                f"p\u202f=\u202f{ttest.p_value:.3f} — significant but borderline. "
+                f"p\u202f=\u202f{ttest.p_value:.3f}, Cohen's\u202fd\u202f=\u202f{cohens_d:+.2f} "
+                f"— significant but borderline p-value. "
                 f"Consider a follow-up holdout before fully shipping."
             )
         else:
             level  = "low"
             reason = (
-                f"p\u202f=\u202f{ttest.p_value:.3f} — not statistically significant. "
-                f"Avoid acting on this result; run the experiment longer or increase sample size."
+                f"p\u202f=\u202f{ttest.p_value:.3f}, Cohen's\u202fd\u202f=\u202f{cohens_d:+.2f} "
+                f"— not statistically significant. "
+                f"Run the experiment longer or increase sample size."
             )
     else:
         # General exploration — use row count as a proxy for reliability

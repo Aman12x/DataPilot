@@ -31,7 +31,7 @@ from ..deps import ALGORITHM, SECRET_KEY, get_current_user
 from ..run_manager import (
     check_rate_limit,
     cleanup_run,
-    get_run_owner,
+    get_cached_error,
     get_owner,
     read_result,
     resume_run,
@@ -120,8 +120,6 @@ def _user_from_token_param(token: str) -> dict[str, str]:
 
 async def _check_ownership(graph: Any, run_id: str, user_id: str) -> None:
     owner = await get_owner(run_id)
-    if owner is None:
-        owner = get_run_owner(run_id)
     if owner is not None and owner != user_id:
         raise HTTPException(status_code=403, detail="Not your run")
     if owner is None:
@@ -297,6 +295,13 @@ async def stream_run(
 
     async def event_generator():
         nonlocal effective_last_id
+
+        # Fast path for reconnects after a crash — no 30s hang
+        cached_err = await get_cached_error(run_id)
+        if cached_err:
+            yield {"data": json.dumps({"type": "error", "message": cached_err})}
+            return
+
         while True:
             if await request.is_disconnected():
                 break

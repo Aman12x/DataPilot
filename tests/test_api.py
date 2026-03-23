@@ -64,6 +64,12 @@ if not hasattr(sys.modules.get("langfuse.decorators", object()), "observe"):
     sys.modules["langfuse.decorators"] = _stub("langfuse.decorators", observe=lambda **kw: (lambda f: f))
 
 
+# ── Fake graph mode — controls _FakeGraph behaviour per test ─────────────────
+
+_fake_graph_mode: dict[str, str] = {"mode": "complete"}
+# modes: "complete" | "gate" | "crash"
+
+
 # ── Fake graph that never actually runs ──────────────────────────────────────
 
 class _FakeGraph:
@@ -71,12 +77,23 @@ class _FakeGraph:
     Simulates the LangGraph graph.
     - Known run IDs (added via _known_runs) return a fake state.
     - Unknown IDs raise an exception so 404 paths are exercised.
+    - Behaviour controlled by _fake_graph_mode["mode"]:
+        "complete" → invoke returns {}, get_state has no tasks (terminal)
+        "gate"     → invoke returns {}, get_state has an interrupt task
+        "crash"    → invoke raises RuntimeError
     """
-    _known_runs: set[str] = set()
+    def __init__(self):
+        self._known_runs:   set[str] = set()
+        self._gate_run_ids: set[str] = set()
 
     def invoke(self, state_or_cmd, config, **__):
         run_id = config.get("configurable", {}).get("thread_id", "")
+        mode = _fake_graph_mode["mode"]
+        if mode == "crash":
+            raise RuntimeError("simulated node failure")
         self._known_runs.add(run_id)
+        if mode == "gate":
+            self._gate_run_ids.add(run_id)
         return {}
 
     def get_state(self, config, **__):
@@ -85,7 +102,14 @@ class _FakeGraph:
             raise Exception("run not found")
         state = MagicMock()
         state.values = {"task": "test", "narrative_draft": "hello", "recommendation": "ship it"}
-        state.tasks  = []
+        if run_id in self._gate_run_ids:
+            interrupt_obj = MagicMock()
+            interrupt_obj.value = {"gate": "intent", "payload": {"question": "What analysis?"}}
+            task = MagicMock()
+            task.interrupts = [interrupt_obj]
+            state.tasks = [task]
+        else:
+            state.tasks = []
         return state
 
 
@@ -124,6 +148,13 @@ app.router.lifespan_context = _test_lifespan   # type: ignore[assignment]
 def client():
     with TestClient(app, raise_server_exceptions=True) as c:
         yield c
+
+
+@pytest.fixture
+def fake_mode():
+    """Set fake graph mode for a test and reset to 'complete' afterwards."""
+    yield _fake_graph_mode
+    _fake_graph_mode["mode"] = "complete"
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -440,3 +471,161 @@ class TestPdf:
         )
         assert pdf[:4] == b"%PDF"
         assert len(pdf) > 1000
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# SSE streaming
+# ════════════════════════════════════════════════════════════════════════════════
+
+def _sse_events(client, url: str) -> list[dict]:
+    """Stream an SSE endpoint and return all data payloads received."""
+    events: list[dict] = []
+    with client.stream("GET", url) as resp:
+        assert resp.status_code == 200
+        for raw in resp.iter_lines():
+            if raw.startswith("data: "):
+                event = json.loads(raw[6:])
+                events.append(event)
+                if event.get("type") in ("done", "error", "gate"):
+                    break  # terminal — generator returns anyway
+    return events
+
+
+class TestStreamRuns:
+    def test_stream_complete_run(self, client, fake_mode):
+        """SSE yields {'type':'done'} for a run that finishes normally."""
+        fake_mode["mode"] = "complete"
+        access, _, _ = _login(client)
+        hdrs = {"Authorization": f"Bearer {access}"}
+        run_id = client.post("/runs", json={"task": "analyse"}, headers=hdrs).json()["run_id"]
+
+        events = _sse_events(client, f"/runs/{run_id}/stream?token={access}")
+        assert any(e.get("type") == "done" for e in events)
+
+    def test_stream_gate_event(self, client, fake_mode):
+        """SSE yields {'type':'gate','gate':'intent'} when graph hits an interrupt."""
+        fake_mode["mode"] = "gate"
+        access, _, _ = _login(client)
+        hdrs = {"Authorization": f"Bearer {access}"}
+        run_id = client.post("/runs", json={"task": "analyse"}, headers=hdrs).json()["run_id"]
+
+        events = _sse_events(client, f"/runs/{run_id}/stream?token={access}")
+        gate_events = [e for e in events if e.get("type") == "gate"]
+        assert gate_events, f"Expected gate event, got: {events}"
+        assert gate_events[0]["gate"] == "intent"
+
+    def test_stream_graph_crash(self, client, fake_mode):
+        """SSE yields {'type':'error'} when graph raises an exception."""
+        fake_mode["mode"] = "crash"
+        access, _, _ = _login(client)
+        hdrs = {"Authorization": f"Bearer {access}"}
+        run_id = client.post("/runs", json={"task": "analyse"}, headers=hdrs).json()["run_id"]
+
+        events = _sse_events(client, f"/runs/{run_id}/stream?token={access}")
+        assert any(e.get("type") == "error" for e in events)
+
+    def test_stream_reconnect_after_crash(self, client, fake_mode):
+        """Second SSE stream to a crashed run returns error immediately (no 30s hang)."""
+        fake_mode["mode"] = "crash"
+        access, _, _ = _login(client)
+        hdrs = {"Authorization": f"Bearer {access}"}
+        run_id = client.post("/runs", json={"task": "analyse"}, headers=hdrs).json()["run_id"]
+
+        # First stream — consumes the error
+        _sse_events(client, f"/runs/{run_id}/stream?token={access}")
+
+        # Second stream — should get error immediately from cache, not hang 30s
+        events = _sse_events(client, f"/runs/{run_id}/stream?token={access}")
+        assert any(e.get("type") == "error" for e in events)
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# Resume endpoint
+# ════════════════════════════════════════════════════════════════════════════════
+
+class TestRunManagerRedisErrorCache:
+    """Unit tests for the Redis error-cache path in run_manager (no HTTP stack)."""
+
+    def test_store_and_get_error_via_redis(self):
+        """_store_error writes to Redis; get_cached_error decodes and returns it."""
+        import asyncio
+        from api import run_manager
+
+        msg    = "graph crashed in redis mode"
+        run_id = f"redis-err-{uuid.uuid4().hex[:8]}"
+
+        mock_redis          = AsyncMock()
+        mock_redis.set      = AsyncMock(return_value=True)
+        mock_redis.get      = AsyncMock(return_value=msg.encode())
+
+        original = run_manager._redis
+        try:
+            run_manager._redis = mock_redis
+            asyncio.run(run_manager._store_error(run_id, msg))
+            mock_redis.set.assert_awaited_once_with(
+                f"run:error:{run_id}", msg, ex=run_manager._ERROR_TTL
+            )
+            result = asyncio.run(run_manager.get_cached_error(run_id))
+            assert result == msg
+        finally:
+            run_manager._redis = original
+
+    def test_store_error_falls_back_to_memory_on_redis_failure(self):
+        """If Redis SET raises, error is still cached in memory."""
+        import asyncio
+        from api import run_manager
+
+        msg    = "redis is down"
+        run_id = f"redis-fail-{uuid.uuid4().hex[:8]}"
+
+        mock_redis     = AsyncMock()
+        mock_redis.set = AsyncMock(side_effect=ConnectionError("Redis unavailable"))
+        mock_redis.get = AsyncMock(return_value=None)  # Redis still unreachable on read
+
+        original = run_manager._redis
+        try:
+            run_manager._redis = mock_redis
+            asyncio.run(run_manager._store_error(run_id, msg))
+            # Redis read returns None (still down), but memory fallback has it
+            run_manager._redis = None
+            result = asyncio.run(run_manager.get_cached_error(run_id))
+            assert result == msg
+        finally:
+            run_manager._redis = original
+
+
+class TestResumeRuns:
+    def test_resume_gate(self, client, fake_mode):
+        """POST /runs/{id}/resume returns {'status':'ok'} after a gate."""
+        fake_mode["mode"] = "gate"
+        access, _, _ = _login(client)
+        hdrs = {"Authorization": f"Bearer {access}"}
+        run_id = client.post("/runs", json={"task": "analyse"}, headers=hdrs).json()["run_id"]
+
+        # Stream to receive (and trigger) the gate
+        events = _sse_events(client, f"/runs/{run_id}/stream?token={access}")
+        assert any(e.get("type") == "gate" for e in events)
+
+        # Resume the gate
+        r = client.post(
+            f"/runs/{run_id}/resume",
+            json={"gate": "intent", "value": {"approved": True}},
+            headers=hdrs,
+        )
+        assert r.status_code == 200
+        assert r.json() == {"status": "ok"}
+
+    def test_resume_wrong_owner(self, client, fake_mode):
+        """POST /runs/{id}/resume by a different user returns 403."""
+        fake_mode["mode"] = "gate"
+        access_a, _, _ = _login(client, "ResumeA")
+        hdrs_a = {"Authorization": f"Bearer {access_a}"}
+        run_id = client.post("/runs", json={"task": "analyse"}, headers=hdrs_a).json()["run_id"]
+
+        access_b, _, _ = _login(client, "ResumeB")
+        r = client.post(
+            f"/runs/{run_id}/resume",
+            json={"gate": "intent", "value": {}},
+            headers={"Authorization": f"Bearer {access_b}"},
+        )
+        assert r.status_code == 403

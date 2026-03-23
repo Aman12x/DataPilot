@@ -55,9 +55,14 @@ def format_narrative(
         }
     """
     # Distinguish "test ran, not significant" from "test never ran".
-    ttest_ran  = bool(ttest_result)
-    sig        = ttest_result.get("significant", False)   if ttest_ran else None
-    p_value    = ttest_result.get("p_value", None)        if ttest_ran else None
+    ttest_ran   = bool(ttest_result)
+    sig         = ttest_result.get("significant", False)   if ttest_ran else None
+    p_value     = ttest_result.get("p_value", None)        if ttest_ran else None
+    cohens_d    = ttest_result.get("cohens_d",  None)      if ttest_ran else None
+    n_control   = ttest_result.get("n_control",  0)        if ttest_ran else 0
+    n_treatment = ttest_result.get("n_treatment", 0)       if ttest_ran else 0
+    ci_lower    = ttest_result.get("ci_lower",  None)      if ttest_ran else None
+    ci_upper    = ttest_result.get("ci_upper",  None)      if ttest_ran else None
     cuped_ran  = bool(cuped_result)
     cuped_ate  = cuped_result.get("cuped_ate", 0.0)       if cuped_ran else None
     var_red    = cuped_result.get("variance_reduction_pct", 0.0) if cuped_ran else None
@@ -110,9 +115,18 @@ def format_narrative(
 
     # ── 2. What we found ────────────────────────────────────────────────────────
     if cuped_ate is not None and var_red is not None and p_value is not None:
+        d_str = (
+            f", Cohen's d={cohens_d:+.2f}"
+            + (" (negligible)" if cohens_d is not None and abs(cohens_d) < 0.1
+               else " (small)"    if cohens_d is not None and abs(cohens_d) < 0.2
+               else " (medium)"   if cohens_d is not None and abs(cohens_d) < 0.5
+               else " (large)"    if cohens_d is not None
+               else "")
+        ) if cohens_d is not None else ""
+        n_str = f" [n={n_control:,} ctrl / {n_treatment:,} trt]" if n_control and n_treatment else ""
         cuped_line = (
             f"- **Experiment (CUPED):** ATE={cuped_ate:+.4f} "
-            f"(variance reduction {var_red:.1f}%), {p_str} → {sig_str.upper()}."
+            f"(variance reduction {var_red:.1f}%){d_str}, {p_str} → {sig_str.upper()}.{n_str}"
         )
     else:
         cuped_line = "- **Experiment:** Analysis could not be computed. Required columns may be missing."
@@ -209,6 +223,28 @@ def format_narrative(
         caveats.append("- Experiment may be underpowered for the blended effect; segment-level estimates are more reliable.")
     if forecast_warning:
         caveats.append(f"- Forecast warning: {forecast_warning}")
+    # Data-driven: flag negligible effect size even when statistically significant
+    if sig and cohens_d is not None and abs(cohens_d) < 0.1:
+        caveats.append(
+            f"- Effect is statistically significant but Cohen's d={cohens_d:+.2f} is negligible. "
+            "Statistical significance does not imply practical importance at this scale."
+        )
+    # Data-driven: flag wide confidence intervals
+    if ci_lower is not None and ci_upper is not None:
+        ci_width  = ci_upper - ci_lower
+        mid       = (ci_lower + ci_upper) / 2.0
+        if abs(mid) > 1e-9 and ci_width > 2.0 * abs(mid):
+            caveats.append(
+                f"- The 95% CI [{ci_lower:+.4f}, {ci_upper:+.4f}] is wide relative to the "
+                "estimated effect — the true effect could be substantially smaller or larger."
+            )
+    # Data-driven: small sample warning
+    n_min = min(n_control, n_treatment) if n_control and n_treatment else 0
+    if 0 < n_min < 100:
+        caveats.append(
+            f"- Small sample: min({n_control:,} ctrl, {n_treatment:,} trt) = {n_min:,} users per arm. "
+            "Results may not be stable; validate with a holdout cohort."
+        )
 
     # ── Assemble markdown ────────────────────────────────────────────────────────
     analyst_section = (

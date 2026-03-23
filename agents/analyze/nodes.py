@@ -2104,6 +2104,33 @@ def _compute_quality_score(state: AgentState) -> float:
         except Exception as exc:
             logger.debug("_compute_quality_score: eval_tools failed — %s", exc)
 
+    # ── Claim accuracy (always-on for A/B, deterministic, zero cost) ─────────────
+    if mode == "ab_test" and narrative:
+        ttest  = state.get("ttest_result")
+        cuped  = state.get("cuped_result")
+        if ttest is not None:
+            try:
+                from tools.eval_tools import score_claim_accuracy
+                claim = score_claim_accuracy(narrative, ttest, cuped)
+                if claim["violations"]:
+                    logger.warning("Claim accuracy violations: %s", claim["violations"])
+                    ragas_score = min(ragas_score if ragas_score is not None else 1.0, 0.6)
+            except Exception as exc:
+                logger.debug("_compute_quality_score: claim_accuracy failed — %s", exc)
+
+    # ── LLM judge (opt-in via ENABLE_LLM_JUDGE=true) ─────────────────────────
+    if os.getenv("ENABLE_LLM_JUDGE") == "true" and narrative and task:
+        recommendation = state.get("recommendation") or ""
+        if recommendation:
+            try:
+                from tools.eval_tools import score_recommendation
+                rec = score_recommendation(recommendation, narrative, task)
+                ragas_score = 0.7 * (ragas_score or 0.0) + 0.3 * rec["score"]
+                logger.info("LLM judge score=%.3f actionability=%.2f specificity=%.2f grounding=%.2f",
+                            rec["score"], rec["actionability"], rec["specificity"], rec["grounding"])
+            except Exception as exc:
+                logger.debug("LLM judge failed: %s", exc)
+
     if ragas_score is not None:
         return round(0.6 * completeness + 0.4 * ragas_score, 4)
     return round(completeness, 4)

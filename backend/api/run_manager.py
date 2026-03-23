@@ -18,7 +18,7 @@ import json
 import logging
 import os
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from typing import Any
 
 from langgraph.types import Command
@@ -30,6 +30,8 @@ REDIS_URL = os.getenv("REDIS_URL", "")
 # ── In-memory fallback ────────────────────────────────────────────────────────
 _queues:     dict[str, asyncio.Queue] = {}
 _run_owners: dict[str, str]           = {}
+_run_errors: OrderedDict[str, str]    = OrderedDict()  # run_id → error (capped, survives cleanup)
+_RUN_ERRORS_MAX = 1000
 
 # ── Redis client (injected from lifespan) ─────────────────────────────────────
 _redis: Any = None
@@ -67,10 +69,6 @@ async def get_owner(run_id: str) -> str | None:
         return val.decode() if val else None
     return _run_owners.get(run_id)
 
-
-# Sync fallback used by ownership check in routes (before async path)
-def get_run_owner(run_id: str) -> str | None:
-    return _run_owners.get(run_id)
 
 
 # ── Result stream ─────────────────────────────────────────────────────────────
@@ -124,6 +122,21 @@ def cleanup_run(run_id: str) -> None:
     _run_owners.pop(run_id, None)
 
 
+def _cache_error(run_id: str, msg: str) -> None:
+    """Write to _run_errors, evicting oldest entry when cap is reached."""
+    _run_errors[run_id] = msg
+    while len(_run_errors) > _RUN_ERRORS_MAX:
+        _run_errors.popitem(last=False)  # evict oldest
+
+
+async def get_cached_error(run_id: str) -> str | None:
+    """Return a cached error for run_id from Redis (if available) or memory."""
+    if _redis:
+        val = await _redis.get(f"run:error:{run_id}")
+        return val.decode() if val else None
+    return _run_errors.get(run_id)
+
+
 # ── Rate limiting ─────────────────────────────────────────────────────────────
 
 async def check_rate_limit(user_id: str) -> None:
@@ -174,6 +187,19 @@ async def resume_run(graph: Any, run_id: str, resume_value: Any) -> None:
 
 
 _INVOKE_TIMEOUT = int(os.getenv("GRAPH_INVOKE_TIMEOUT", "600"))  # 10 min default
+_ERROR_TTL      = 6 * 60 * 60  # 6 h — same as stream TTL
+
+
+async def _store_error(run_id: str, msg: str) -> None:
+    """Persist error so reconnecting SSE clients get it immediately.
+    Falls back to in-memory cache if Redis write fails."""
+    if _redis:
+        try:
+            await _redis.set(f"run:error:{run_id}", msg, ex=_ERROR_TTL)
+            return
+        except Exception:
+            logger.warning("Redis error cache write failed for run %s — falling back to memory", run_id)
+    _cache_error(run_id, msg)
 
 
 async def _invoke(graph: Any, arg: Any, run_id: str) -> None:
@@ -185,8 +211,14 @@ async def _invoke(graph: Any, arg: Any, run_id: str) -> None:
         )
         await _publish_result(run_id, {"ok": True, "snap": snap})
     except asyncio.TimeoutError:
+        msg = f"Analysis timed out after {_INVOKE_TIMEOUT}s. Please try a simpler query."
         logger.error("Graph invoke timed out after %ds for run %s", _INVOKE_TIMEOUT, run_id)
-        await _publish_result(run_id, {"ok": False, "error": f"Analysis timed out after {_INVOKE_TIMEOUT}s. Please try a simpler query."})
+        await _publish_result(run_id, {"ok": False, "error": msg})
+        await _store_error(run_id, msg)
+        cleanup_run(run_id)
     except Exception as exc:
         logger.exception("Graph invoke failed for run %s", run_id)
-        await _publish_result(run_id, {"ok": False, "error": str(exc)})
+        msg = str(exc)
+        await _publish_result(run_id, {"ok": False, "error": msg})
+        await _store_error(run_id, msg)
+        cleanup_run(run_id)

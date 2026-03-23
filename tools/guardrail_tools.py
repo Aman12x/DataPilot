@@ -165,6 +165,17 @@ def check_guardrails(
             breached=breached,
         ))
 
+    # Bonferroni correction: running M independent tests at α=0.05 inflates the
+    # family-wise error rate. Divide alpha by M so the overall false-positive rate
+    # stays at alpha across all guardrail checks.
+    n_tests = len(guardrails)
+    if n_tests > 1:
+        corrected_alpha = alpha / n_tests
+        for g in guardrails:
+            if g.breached and g.p_value >= corrected_alpha:
+                # Was borderline-significant before correction — revoke breach flag.
+                g.breached = False
+
     breached_count = sum(1 for g in guardrails if g.breached)
 
     return GuardrailResult(
