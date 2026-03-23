@@ -286,6 +286,15 @@ Current default metric: {default_metric}
 
 ## analysis_mode rules
 
+Set analysis_mode to "power_analysis" if the task is asking about experiment DESIGN \
+(before running the experiment):
+  - How many users/participants/samples do I need?
+  - How long should I run this experiment?
+  - What effect size can I detect with N users?
+  - Sample size calculation, power calculation, runtime estimation
+  - "Is my experiment powered?", "what's the MDE for N users?"
+  Also extract mde_target_pct: the MDE % mentioned in the task. If not stated, default to 5.0.
+
 Set analysis_mode to "ab_test" if ALL of the following are true:
   - The task involves comparing two groups (treatment vs control, A vs B, \
     drug vs placebo, before vs after a specific intervention, etc.)
@@ -307,16 +316,80 @@ Set analysis_mode to "general" for everything else:
 - Return JSON only — no prose.
 
 Return a JSON object with these exact keys:
-  analysis_mode       — "ab_test" | "general"
+  analysis_mode       — "ab_test" | "general" | "power_analysis"
   primary_metric      — the metric column to analyze (string)
   metric_direction    — "higher_is_better" | "lower_is_better"
   covariate           — best pre-experiment covariate column, or empty string if general (string)
   guardrail_metrics   — list of secondary metric columns to watch (list of strings, may be empty)
+  mde_target_pct      — target MDE % for power_analysis mode (float, default 5.0, ignored for other modes)
   ambiguous           — true if the task doesn't specify which metric to use (boolean)
   clarifying_question — question to ask if ambiguous, otherwise null
   reasoning           — one sentence explaining the mode and metric choice (string)
 
 Task: {task}
+"""
+
+
+# ── POWER_ANALYSIS_NARRATIVE_PROMPT ───────────────────────────────────────────
+# Used by generate_narrative when analysis_mode == "power_analysis".
+# Parameterised: {task}, {power_result_json}, {analyst_notes_section}
+
+POWER_ANALYSIS_NARRATIVE_PROMPT = """\
+## Analyst task
+
+{task}
+
+## Power analysis results
+
+```json
+{power_result_json}
+```
+
+## Your task
+
+Write a concise experiment design brief that a product manager or clinical lead \
+can act on immediately. Lead with the headline number. No preamble.
+
+The report has two parts separated by the exact marker `<!-- details -->` on its own line.
+
+**Part 1 — Brief Report** (shown immediately to stakeholders):
+
+1. **Sample Size** - Open with the required sample size per arm and total. \
+   Format: "You need **N per arm** (**2N total**) to detect a **X%** lift in [metric]." \
+   Sentence 2: estimated runtime at current traffic levels.
+2. **What This Means** - 2-3 sentences. Translate numbers into business terms. \
+   E.g. how many days or weeks, whether this is achievable, what daily traffic this assumes.
+3. **Recommendation** - one sentence. Either "proceed with this design" or flag a blocker \
+   (e.g. traffic too low, MDE too ambitious). Name the specific action.
+
+Then output this exact line:
+
+<!-- details -->
+
+**Part 2 — Sensitivity Analysis** (shown only on request):
+
+4. **Sensitivity Table** - Render the full sensitivity table as markdown. \
+   Format: | MDE (%) | N per arm | Runtime (days) | \
+   Include all rows from the sensitivity data. Bold the target MDE row.
+5. **Statistical Assumptions** - bullet list: significance level (alpha), \
+   statistical power, metric baseline mean and std, daily traffic estimate. \
+   Plain language only — no test names or Greek letters.
+6. **Guardrails to Watch** - list each guardrail metric and what to monitor. \
+   If none are configured, write one sentence noting that guardrails should be defined.
+7. **Limitations** - at least 2 bullets: \
+   baseline estimates assume stable traffic and no seasonality; \
+   binary metrics require different variance assumptions than rates; \
+   CUPED variance reduction could reduce required N by up to 30%.
+
+Formatting rules:
+- No em dashes (-- or -). Use a period or restructure the sentence instead.
+- No SQL, no code blocks, no column names in backtick formatting.
+- Do not invent numbers. Every number must appear in the power analysis results above.
+- Bold the actual numbers. Do not bold adjectives.
+- Write in active voice. Short sentences.
+- Output only the markdown report. No preamble, no closing remarks.
+
+{analyst_notes_section}
 """
 
 
@@ -534,6 +607,18 @@ Formatting rules:
   Translate all of these into plain business language.
 - Write in active voice. Short sentences.
 - Output only the markdown report. No preamble, no closing remarks.
+
+NUMERICAL ACCURACY — violations here are critical errors:
+- When stating a difference or gap ("underperforms by X points", "X points higher"), \
+  you MUST verify the arithmetic: the stated gap must equal the larger value minus the \
+  smaller value. If 77.4% vs 77.0%, the gap is 0.4 points, not 12.
+- When using directional words ("underperforms", "worse", "lower"), the number you cite \
+  for that entity MUST actually be lower than the comparison value. If it is higher, \
+  the correct word is "outperforms" or "higher".
+- Every comparison sentence must state BOTH values explicitly: \
+  "[Entity]: [value] vs [comparison]: [comparison value] ([computed gap])."
+- Never blend a gap figure from one comparison with entity values from a different \
+  comparison. Each sentence must use numbers that all come from the same row or group.
 
 {analyst_notes_section}
 """
