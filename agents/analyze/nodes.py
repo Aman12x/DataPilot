@@ -56,7 +56,7 @@ from tools import (
     stats_tools,
 )
 from tools.db_tools import DBConnection
-from tools.schemas import PowerAnalysisResult, SensitivityRow, SliceResult
+from tools.schemas import PowerAnalysisResult, SensitivityRow, SliceResult, SrmResult
 from tools.chart_tools import (
     compute_trust_indicators,
     generate_ab_charts,
@@ -1508,6 +1508,52 @@ def run_ttest_node(state: AgentState) -> dict:
     return {"ttest_result": result}
 
 
+# ── Node 11b: check_srm_node ──────────────────────────────────────────────────
+
+@observe(name="check_srm")
+def check_srm_node(state: AgentState) -> dict:
+    """
+    Sample Ratio Mismatch check.
+
+    Runs a chi-squared goodness-of-fit test on the control/treatment split.
+    An SRM means the randomization mechanism is broken and all downstream
+    stats (t-test, CUPED, HTE) are potentially invalid.
+
+    Uses ttest_result.n_control / n_treatment to avoid re-counting the DataFrame.
+    Falls back to counting the DataFrame directly if ttest_result is absent.
+    """
+    ttest = state.get("ttest_result")
+    if ttest is not None:
+        n_ctrl = ttest.n_control
+        n_trt  = ttest.n_treatment
+    else:
+        df = _safe_df(state)
+        mc = state.get("metric_config") or load_metric_config()
+        metric = state.get("metric") or mc.primary_metric
+        if df is None or "variant" not in df.columns or metric not in df.columns:
+            return {}
+        grp = df.groupby("variant")[metric].count()
+        n_ctrl = int(grp.get("control",  0))
+        n_trt  = int(grp.get("treatment", 0))
+
+    if n_ctrl < 1 or n_trt < 1:
+        return {}
+
+    try:
+        result = stats_tools.check_srm(n_ctrl, n_trt)
+    except ValueError as exc:
+        logger.warning("check_srm: skipping — %s", exc)
+        return {}
+
+    if result.srm_detected:
+        logger.warning(
+            "SRM detected: n_control=%d, n_treatment=%d (ratio=%.3f, expected=0.500, p=%.6f)",
+            n_ctrl, n_trt, result.observed_ratio, result.p_value,
+        )
+
+    return {"srm_result": result}
+
+
 # ── Node 12: run_hte_node ─────────────────────────────────────────────────────
 
 @observe(name="run_hte")
@@ -1975,6 +2021,7 @@ def generate_narrative(state: AgentState) -> dict:
                 forecast_result=_to_dict(state.get("forecast_result")),
                 business_impact=state.get("business_impact") or "",
                 analyst_notes=analyst_notes,
+                srm_result=_to_dict(state.get("srm_result")),
             )
         except Exception as exc:
             logger.warning("narrative_tools.format_narrative failed: %s", exc)

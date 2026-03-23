@@ -70,11 +70,69 @@ def compute_mde(
     else:
         is_powered = None
 
+    # Post-hoc power requires sample sizes — only computable when n_* are supplied.
+    post_hoc_pwr: float | None = None
+    if observed_effect_abs is not None:
+        post_hoc_pwr = compute_post_hoc_power(
+            observed_effect_abs=observed_effect_abs,
+            n_control=n_control,
+            n_treatment=n_treatment,
+            baseline_std=baseline_std,
+            alpha=alpha,
+        )
+        if math.isnan(post_hoc_pwr):
+            post_hoc_pwr = None
+
     return MdeResult(
         mde_absolute=round(mde_absolute, 6),
         mde_relative_pct=round(mde_relative_pct, 2),
         is_powered_for_observed_effect=is_powered,
+        post_hoc_power=post_hoc_pwr,
     )
+
+
+def compute_post_hoc_power(
+    observed_effect_abs: float,
+    n_control: int,
+    n_treatment: int,
+    baseline_std: float,
+    alpha: float = 0.05,
+) -> float:
+    """
+    Post-hoc power: probability of detecting the *observed* effect given
+    the actual sample sizes.
+
+    Unlike is_powered_for_observed_effect (which just compares |ATE| ≥ MDE),
+    this computes the true non-centrality of the t-distribution and returns
+    a proper power estimate in [0, 1].
+
+    A value < 0.80 means the study was underpowered for the effect it observed;
+    even if the p-value was significant, replication risk is high.
+
+    Formula:
+        SE   = σ × sqrt(1/n₁ + 1/n₂)
+        NCP  = |δ| / SE               (non-centrality parameter)
+        df   = n₁ + n₂ − 2
+        t*   = t_{α/2, df}            (two-tailed critical value)
+        power = P(T > t* | NCP) + P(T < −t* | NCP)
+    """
+    if baseline_std <= 0 or n_control < 2 or n_treatment < 2:
+        return float("nan")
+
+    se  = baseline_std * math.sqrt(1.0 / n_control + 1.0 / n_treatment)
+    if se < 1e-12:
+        return float("nan")
+
+    ncp = abs(observed_effect_abs) / se
+    df  = n_control + n_treatment - 2
+    t_crit = stats.t.ppf(1.0 - alpha / 2.0, df=df)
+
+    # Power = P(T > t* | NCP) + P(T < −t* | NCP)  using non-central t
+    power = (
+        1.0 - stats.nct.cdf(t_crit, df=df, nc=ncp)
+        +     stats.nct.cdf(-t_crit, df=df, nc=ncp)
+    )
+    return round(float(power), 4)
 
 
 def required_sample_size(

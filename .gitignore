@@ -49,3 +49,6 @@ memory/graph.db
 tmp_uploads/
 frontend/node_modules/
 frontend/dist/
+
+# ── Local dev notes ───────────────────────────────────────────────────────────
+DEVLOG.md

@@ -160,10 +160,21 @@ class NoveltyResult(BaseModel):
 
 # ── mde_tools ─────────────────────────────────────────────────────────────────
 
+class SrmResult(BaseModel):
+    n_control:       int
+    n_treatment:     int
+    expected_ratio:  float          # expected fraction in control (e.g. 0.5)
+    observed_ratio:  float          # actual fraction in control
+    chi2:            float
+    p_value:         float
+    srm_detected:    bool           # True when p < alpha (default 0.001)
+
+
 class MdeResult(BaseModel):
     mde_absolute:                   float
     mde_relative_pct:               float
     is_powered_for_observed_effect: Optional[bool]
+    post_hoc_power:                 Optional[float] = None  # P(detect | true_effect = observed_effect)
 
 
 class SensitivityRow(BaseModel):

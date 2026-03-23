@@ -29,6 +29,7 @@ def format_narrative(
     forecast_result: dict[str, Any],
     business_impact: str,
     analyst_notes: str = "",
+    srm_result: dict[str, Any] | None = None,
 ) -> NarrativeResult:
     """
     Format all analysis results into a PM-ready markdown narrative.
@@ -98,6 +99,14 @@ def format_narrative(
     anomaly_dates     = anomaly_result.get("anomaly_dates", [])
     anomaly_dir       = anomaly_result.get("direction", "drop")
     anomaly_severity  = anomaly_result.get("severity", 0.0)
+
+    srm_detected      = (srm_result or {}).get("srm_detected", False)
+    srm_n_ctrl        = (srm_result or {}).get("n_control",  0)
+    srm_n_trt         = (srm_result or {}).get("n_treatment", 0)
+    srm_ratio         = (srm_result or {}).get("observed_ratio", 0.5)
+    srm_p             = (srm_result or {}).get("p_value", 1.0)
+
+    post_hoc_power    = mde_result.get("post_hoc_power")
 
     # ── 1. TL;DR ────────────────────────────────────────────────────────────────
     if sig is None:
@@ -184,7 +193,26 @@ def format_narrative(
     # ── 5. Confidence level ──────────────────────────────────────────────────────
     confidence_lines = []
 
-    if powered is True:
+    # SRM takes priority — if randomization is broken, everything else is suspect.
+    if srm_detected:
+        confidence_lines.append(
+            f"- ⛔ **SRM detected:** Control={srm_n_ctrl:,} / Treatment={srm_n_trt:,} "
+            f"(observed ratio={srm_ratio:.3f}, expected=0.500, p={srm_p:.6f}). "
+            "**Randomization may be broken — all statistical results below should be treated with extreme caution.**"
+        )
+
+    # Post-hoc power is more informative than the simple MDE comparison.
+    if post_hoc_power is not None:
+        pwr_pct = post_hoc_power * 100
+        pwr_icon = "✅" if post_hoc_power >= 0.80 else "⚠️"
+        confidence_lines.append(
+            f"- {pwr_icon} **Statistical power:** {pwr_pct:.0f}% post-hoc power "
+            f"(MDE={mde_rel:.1f}%)"
+            + (". Adequately powered." if post_hoc_power >= 0.80
+               else ". **Underpowered** — if the null is true this study would miss the effect ~"
+               f"{100 - pwr_pct:.0f}% of the time. Treat the result cautiously.")
+        )
+    elif powered is True:
         confidence_lines.append(f"- ✅ **MDE:** Experiment is powered for the observed effect (MDE={mde_rel:.1f}%).")
     elif powered is False:
         confidence_lines.append(
@@ -210,7 +238,13 @@ def format_narrative(
     # ── 6. Recommendation ───────────────────────────────────────────────────────
     p_display = f"p={p_value:.4f}" if p_value is not None else "significance unknown"
 
-    if sig and any_breached:
+    if srm_detected:
+        recommendation = (
+            f"**Stop: fix randomization first.** The experiment has a Sample Ratio Mismatch "
+            f"(control={srm_n_ctrl:,}, treatment={srm_n_trt:,}, p={srm_p:.6f}). "
+            "All statistical conclusions are unreliable until the assignment mechanism is corrected and the experiment is re-run."
+        )
+    elif sig and any_breached:
         recommendation = (
             f"Roll back or pause the experiment. Significant harm detected "
             f"in **{top_seg}** ({', '.join(g['metric'] for g in breached)} guardrails breached)."
@@ -289,13 +323,27 @@ def format_narrative(
             "Results may not be stable; validate with a holdout cohort."
         )
 
+    # Data-driven: SRM caveat (always add when detected, even if already in recommendation)
+    if srm_detected:
+        caveats.append(
+            f"- ⛔ **SRM:** control={srm_n_ctrl:,} vs treatment={srm_n_trt:,} "
+            f"(expected 50/50, p={srm_p:.6f}). "
+            "Investigate assignment logs, eligibility filters, and data pipeline before re-running."
+        )
+
     # ── Assemble markdown ────────────────────────────────────────────────────────
     analyst_section = (
         f"\n\n---\n\n**Analyst notes:** {analyst_notes}" if analyst_notes.strip() else ""
     )
 
+    srm_banner = (
+        f"\n> ⛔ **WARNING — Sample Ratio Mismatch detected** "
+        f"(control={srm_n_ctrl:,} / treatment={srm_n_trt:,}, p={srm_p:.6f}). "
+        "Randomization may be broken. Statistical conclusions below are unreliable.\n"
+    ) if srm_detected else ""
+
     narrative_draft = f"""\
-## TL;DR
+{srm_banner}## TL;DR
 
 {tldr}
 

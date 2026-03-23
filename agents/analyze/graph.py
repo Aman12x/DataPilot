@@ -68,6 +68,7 @@ from agents.analyze.nodes import (
     narrative_gate,
     query_gate,
     resolve_task_intent,
+    check_srm_node,
     run_cuped_node,
     run_hte_node,
     run_power_analysis_node,
@@ -220,6 +221,7 @@ def build_graph(checkpointer=None) -> StateGraph:
     # Experiment analysis
     builder.add_node("run_cuped",       run_cuped_node)
     builder.add_node("run_ttest",       run_ttest_node)
+    builder.add_node("check_srm",       check_srm_node)
     builder.add_node("run_hte",         run_hte_node)
     builder.add_node("detect_novelty",  detect_novelty_node)
     builder.add_node("compute_mde",     compute_mde_node)
@@ -294,7 +296,8 @@ def build_graph(checkpointer=None) -> StateGraph:
     # Experiment analysis
     builder.add_edge("forecast_baseline", "run_cuped")
     builder.add_edge("run_cuped",         "run_ttest")
-    builder.add_edge("run_ttest",         "run_hte")
+    builder.add_edge("run_ttest",         "check_srm")
+    builder.add_edge("check_srm",         "run_hte")
     builder.add_edge("run_hte",           "detect_novelty")
     builder.add_edge("detect_novelty",    "compute_mde")
 

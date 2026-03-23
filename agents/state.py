@@ -25,6 +25,7 @@ from tools.schemas import (
     NoveltyResult,
     PowerAnalysisResult,
     SliceResult,
+    SrmResult,
     TtestResult,
     TrustIndicators,
 )
@@ -77,6 +78,7 @@ class AgentState(TypedDict, total=False):
     covariate: str                      # for CUPED pre-experiment covariate
     cuped_result: CupedResult
     ttest_result: TtestResult
+    srm_result: SrmResult               # sample ratio mismatch check
     hte_result: HteResult
     novelty_result: NoveltyResult
     mde_result: MdeResult

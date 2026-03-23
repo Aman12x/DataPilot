@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-from tools.schemas import CupedResult, HteResult, SegmentResult, TtestResult
+from tools.schemas import CupedResult, HteResult, SegmentResult, SrmResult, TtestResult
 
 
 def run_cuped(
@@ -349,6 +349,57 @@ def run_hte(
         segment_share=top.segment_share,
         all_segments=results,
         interaction_p_value=interaction_p,
+    )
+
+
+def check_srm(
+    n_control: int,
+    n_treatment: int,
+    expected_ratio: float = 0.5,
+    alpha: float = 0.001,
+) -> SrmResult:
+    """
+    Sample Ratio Mismatch (SRM) detection via chi-squared goodness-of-fit.
+
+    Compares the observed control/treatment split against the expected ratio.
+    A significant result means the randomization mechanism is broken — all
+    downstream t-test, CUPED and HTE results are invalid.
+
+    Uses a strict alpha of 0.001 (not 0.05) to avoid false alarms from
+    minor imbalances that don't actually indicate a bug.
+
+    Args:
+        n_control:      Observed control group size.
+        n_treatment:    Observed treatment group size.
+        expected_ratio: Expected fraction of users in control (default 0.5).
+        alpha:          Significance threshold (default 0.001).
+
+    Returns:
+        SrmResult with chi2, p_value, srm_detected, observed_ratio.
+    """
+    if n_control < 1 or n_treatment < 1:
+        raise ValueError("Both group sizes must be at least 1.")
+    if not (0 < expected_ratio < 1):
+        raise ValueError("expected_ratio must be in (0, 1).")
+
+    total = n_control + n_treatment
+    expected_ctrl = total * expected_ratio
+    expected_trt  = total * (1.0 - expected_ratio)
+
+    chi2 = (
+        (n_control  - expected_ctrl) ** 2 / expected_ctrl
+        + (n_treatment - expected_trt)  ** 2 / expected_trt
+    )
+    p_value = float(1.0 - stats.chi2.cdf(chi2, df=1))
+
+    return SrmResult(
+        n_control=n_control,
+        n_treatment=n_treatment,
+        expected_ratio=expected_ratio,
+        observed_ratio=round(n_control / total, 4),
+        chi2=round(chi2, 4),
+        p_value=round(p_value, 6),
+        srm_detected=p_value < alpha,
     )
 
 
