@@ -297,6 +297,16 @@ FIXTURE_GROUND_TRUTH: dict[str, list[str]] = {
 _SIG_RE     = re.compile(r"\b(statistically\s+significant|significant(ly)?|p\s*<\s*0\.0[0-9]+)\b", re.IGNORECASE)
 _NOT_SIG_RE = re.compile(r"\b(not\s+significant|no\s+(statistically\s+)?significant|insignificant)\b", re.IGNORECASE)
 _LARGE_RE   = re.compile(r"\b(large|strong)\s+effect\b", re.IGNORECASE)
+_SMALL_RE   = re.compile(r"\b(small|negligible|minimal|tiny)\s+effect\b", re.IGNORECASE)
+# Direction patterns — look for treatment/experiment + direction verb within 60 chars
+_TREAT_DECR_RE = re.compile(
+    r"\b(treatment|experiment)\b.{0,30}\b(decreas|declin|drop|fell|worsen)",
+    re.IGNORECASE | re.DOTALL,
+)
+_TREAT_INCR_RE = re.compile(
+    r"\b(treatment|experiment)\b.{0,30}\b(increas|improv|rose|gain|grew|boost)",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def score_claim_accuracy(
@@ -351,6 +361,46 @@ def score_claim_accuracy(
             violations.append(
                 f"Narrative claims large effect but abs(cohens_d)={abs(cohens_d):.4f} <= 0.5"
             )
+
+    # NEW: CI consistency — significant=True but CI crosses zero
+    ci_lower   = getattr(ttest_result, "ci_lower", None)
+    ci_upper   = getattr(ttest_result, "ci_upper", None)
+    significant = getattr(ttest_result, "significant", None)
+    if significant is True and ci_lower is not None and ci_upper is not None:
+        checks_total += 1
+        if ci_lower < 0 < ci_upper:
+            violations.append(
+                f"Result marked significant=True but 95% CI [{ci_lower:.4f}, {ci_upper:.4f}] "
+                "crosses zero — the two are contradictory."
+            )
+
+    # NEW: Effect label consistency — "small/negligible" claim but |d| > 0.5
+    if cohens_d is not None and _SMALL_RE.search(narrative):
+        checks_total += 1
+        if abs(cohens_d) > 0.5:
+            violations.append(
+                f"Narrative claims small/negligible effect but abs(cohens_d)={abs(cohens_d):.4f} > 0.5"
+            )
+
+    # NEW: Direction consistency — cuped_ate sign must match treatment direction in narrative
+    cuped_ate: float | None = None
+    if cuped_result is not None:
+        cuped_ate = getattr(cuped_result, "cuped_ate", None)
+    if cuped_ate is not None and abs(cuped_ate) > 1e-6:
+        has_decrease = bool(_TREAT_DECR_RE.search(narrative))
+        has_increase = bool(_TREAT_INCR_RE.search(narrative))
+        if has_decrease or has_increase:
+            checks_total += 1
+            if cuped_ate > 0 and has_decrease and not has_increase:
+                violations.append(
+                    f"CUPED ATE={cuped_ate:+.6f} is positive but narrative describes "
+                    "treatment as decreasing the metric."
+                )
+            elif cuped_ate < 0 and has_increase and not has_decrease:
+                violations.append(
+                    f"CUPED ATE={cuped_ate:+.6f} is negative but narrative describes "
+                    "treatment as increasing the metric."
+                )
 
     score = 1.0 - (len(violations) / checks_total) if checks_total > 0 else 1.0
     return {"score": round(score, 4), "violations": violations}

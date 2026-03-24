@@ -102,6 +102,7 @@ class AgentState(TypedDict, total=False):
     # ── HITL gate 3: narrative sign-off ───────────────────────────────────────
     narrative_approved: bool
     final_narrative: str
+    narrative_revision_count: int       # auto-correction attempts; capped at 3
 
     # ── Analyst overrides (accumulated across all 3 HITL gates) ──────────────
     analyst_override: dict              # keys: sql_edited, analysis_notes, narrative_notes, recommendation_override

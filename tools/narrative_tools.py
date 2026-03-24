@@ -364,8 +364,21 @@ def format_narrative(
         "Randomization may be broken. Statistical conclusions below are unreliable.\n"
     ) if srm_detected else ""
 
+    power_banner = ""
+    if sig and post_hoc_power is not None and post_hoc_power < 0.50:
+        power_banner = (
+            f"> ⚠️ **Winner's curse risk:** Result is significant but post-hoc power is "
+            f"{post_hoc_power * 100:.0f}%. The observed effect is likely inflated. "
+            "Do not ship without a larger confirmatory experiment.\n\n"
+        )
+    elif sig is not None and not sig and powered is False:
+        power_banner = (
+            "> ⚠️ **Inconclusive, not negative:** Experiment was underpowered. "
+            "Extend the runtime before concluding no effect.\n\n"
+        )
+
     narrative_draft = f"""\
-{srm_banner}## TL;DR
+{srm_banner}{power_banner}## TL;DR
 
 {tldr}
 

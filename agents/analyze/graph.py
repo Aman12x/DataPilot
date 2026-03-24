@@ -155,7 +155,14 @@ def _route_after_infer_metric_config(state: AgentState) -> str:
 
 
 def _route_after_execute_query(state: AgentState) -> str:
-    """Route to the general analysis path or the A/B test path."""
+    """Route to the general analysis path or the A/B test path.
+
+    Hard-block on 0-row results: route back to query_gate so the analyst
+    sees the warning and must rewrite the SQL before any stats run.
+    """
+    warnings = state.get("sql_validation_warnings") or []
+    if any("0 rows" in w for w in warnings):
+        return "query_gate"
     if state.get("analysis_mode", "ab_test") == "general":
         return "describe_data"
     return "load_auxiliary_data"
@@ -282,7 +289,11 @@ def build_graph(checkpointer=None) -> StateGraph:
     builder.add_conditional_edges(
         "execute_query",
         _route_after_execute_query,
-        {"describe_data": "describe_data", "load_auxiliary_data": "load_auxiliary_data"},
+        {
+            "describe_data":       "describe_data",
+            "load_auxiliary_data": "load_auxiliary_data",
+            "query_gate":          "query_gate",
+        },
     )
 
     # General analysis path: describe → correlations → (shared) generate_charts → analysis_gate
@@ -307,9 +318,14 @@ def build_graph(checkpointer=None) -> StateGraph:
     builder.add_edge("check_guardrails", "compute_funnel")
 
     # Charts → HITL gate 2 → narrative
-    builder.add_edge("compute_funnel",    "generate_charts")
-    builder.add_edge("generate_charts",   "analysis_gate")
-    builder.add_edge("analysis_gate",  "generate_narrative")
+    # analysis_gate loops back to itself when analysis_approved=False (e.g. SRM not acknowledged)
+    builder.add_edge("compute_funnel",  "generate_charts")
+    builder.add_edge("generate_charts", "analysis_gate")
+    builder.add_conditional_edges(
+        "analysis_gate",
+        lambda s: "generate_narrative" if s.get("analysis_approved", True) else "analysis_gate",
+        {"generate_narrative": "generate_narrative", "analysis_gate": "analysis_gate"},
+    )
     builder.add_edge("generate_narrative", "narrative_gate")
 
     # Narrative revision loop / finish

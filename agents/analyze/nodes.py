@@ -302,6 +302,74 @@ def _safe_df(state: AgentState) -> pd.DataFrame | None:
     return df
 
 
+def _validate_query_content(
+    df: pd.DataFrame,
+    mc: "MetricConfig",
+    mode: str,
+) -> list[str]:
+    """
+    Content-level validation of query results.
+
+    Checks for semantically broken data that would silently produce wrong
+    reports: zero rows, too-few rows, missing arms, severe arm imbalance,
+    and metric values that look like percentages instead of rates.
+
+    Returns a list of warning strings (empty = all clear).
+    """
+    warnings: list[str] = []
+
+    if len(df) == 0:
+        warnings.append(
+            "Query returned 0 rows — cannot perform analysis on empty data."
+        )
+        return warnings  # further checks would error on empty df
+
+    if len(df) < 10:
+        warnings.append(
+            f"Query returned only {len(df)} rows — too few for reliable statistics "
+            "(minimum recommended: 10)."
+        )
+
+    if mode == "ab_test" and "variant" in df.columns:
+        variants = df["variant"].dropna().unique()
+        variant_lower = {str(v).lower() for v in variants}
+        has_ctrl = any("control" in v for v in variant_lower)
+        has_trt  = any("treatment" in v for v in variant_lower)
+
+        if not has_ctrl or not has_trt:
+            warnings.append(
+                f"Variant column contains only: {list(variants)}. "
+                "Expected both 'control' and 'treatment' arms — "
+                "assignment join may be broken."
+            )
+        else:
+            counts    = df["variant"].value_counts()
+            ctrl_name = next((v for v in counts.index if "control"   in str(v).lower()), None)
+            trt_name  = next((v for v in counts.index if "treatment" in str(v).lower()), None)
+            if ctrl_name and trt_name:
+                n_ctrl = int(counts[ctrl_name])
+                n_trt  = int(counts[trt_name])
+                total  = n_ctrl + n_trt
+                ratio  = min(n_ctrl, n_trt) / total if total > 0 else 0.5
+                if ratio < 0.30:
+                    warnings.append(
+                        f"Arm imbalance: control={n_ctrl:,}, treatment={n_trt:,} "
+                        f"(minority arm is {ratio:.1%} of total). "
+                        "Possible SRM — check assignment logs."
+                    )
+
+    if mode == "ab_test" and mc.primary_metric in df.columns:
+        col = df[mc.primary_metric].dropna()
+        if len(col) > 0 and (col > 1.0).mean() > 0.8:
+            warnings.append(
+                f"Metric '{mc.primary_metric}' has {(col > 1.0).mean():.0%} of values > 1.0 "
+                "— looks like a percentage (0–100) rather than a rate (0–1). "
+                "Verify the aggregation expression in the SQL."
+            )
+
+    return warnings
+
+
 def _validate_sql_references(sql: str, schema_context: str) -> dict[str, list[str]]:
     """
     Validate table names AND dotted column references (alias.col) in the SQL.
@@ -1231,7 +1299,17 @@ def execute_query(state: AgentState) -> dict:
                 except Exception as exc:
                     logger.warning("execute_query: aggregation fix failed (%s) — keeping original.", exc)
 
-    result: dict = {"query_result": df}
+    # ── Phase 4: Content validation ───────────────────────────────────────────
+    # Replace (not append) so stale warnings from a prior 0-row attempt don't
+    # persist after the analyst fixes the SQL and re-executes.
+    content_warnings = _validate_query_content(df, mc, state.get("analysis_mode", "ab_test"))
+    for w in content_warnings:
+        logger.warning("execute_query: content validation — %s", w)
+
+    result: dict = {
+        "query_result":            df,
+        "sql_validation_warnings": content_warnings,
+    }
     if current_sql != sql:
         result["generated_sql"] = current_sql
     return result
@@ -1916,7 +1994,8 @@ def generate_charts_node(state: AgentState) -> dict:
 
 @observe(name="analysis_gate")
 def analysis_gate(state: AgentState) -> dict:
-    mode = state.get("analysis_mode", "ab_test")
+    mode         = state.get("analysis_mode", "ab_test")
+    srm_detected = False   # overridden in ab_test branch below
 
     if mode == "power_analysis":
         pa = state.get("power_analysis_result")
@@ -1948,10 +2027,34 @@ def analysis_gate(state: AgentState) -> dict:
         forecast_res  = state.get("forecast_result")
         cuped_res     = state.get("cuped_result")
         ttest_res     = state.get("ttest_result")
+        srm_res       = state.get("srm_result")
         hte_res       = state.get("hte_result")
         novelty_res   = state.get("novelty_result")
         funnel_res    = state.get("funnel_result")
         mde_res       = state.get("mde_result")
+
+        srm_detected = srm_res.srm_detected if srm_res else False
+
+        verification_checklist = {
+            "n_control":            ttest_res.n_control       if ttest_res     else None,
+            "n_treatment":          ttest_res.n_treatment     if ttest_res     else None,
+            "srm_detected":         srm_res.srm_detected      if srm_res       else None,
+            "p_value":              ttest_res.p_value         if ttest_res     else None,
+            "significant":          ttest_res.significant     if ttest_res     else None,
+            "cohens_d":             ttest_res.cohens_d        if ttest_res     else None,
+            "cuped_ate":            cuped_res.cuped_ate       if cuped_res     else None,
+            "post_hoc_power":       mde_res.post_hoc_power    if mde_res       else None,
+            "any_guardrail_breach": guardrail_res.any_breached if guardrail_res else None,
+            "sql_warnings":         state.get("sql_validation_warnings") or [],
+        }
+
+        gate_message = (
+            "⛔ SAMPLE RATIO MISMATCH DETECTED — statistical results are unreliable. "
+            "You must set srm_acknowledged=true in your response to proceed, confirming "
+            "you understand the results cannot be trusted."
+            if srm_detected else
+            "Review the analysis results. Approve or add notes/overrides."
+        )
 
         payload = {
             "gate":                    "analysis",
@@ -1968,18 +2071,32 @@ def analysis_gate(state: AgentState) -> dict:
             "biggest_funnel_dropoff":  funnel_res.biggest_dropoff_step if funnel_res else None,
             "mde_powered":             mde_res.is_powered_for_observed_effect if mde_res else None,
             "business_impact":         state.get("business_impact"),
-            "message":                 "Review the analysis results. Approve or add notes/overrides.",
+            "verification_checklist":  verification_checklist,
+            "message":                 gate_message,
         }
 
     analyst_response = interrupt(payload)
 
-    notes = analyst_response.get("notes", "")
+    notes    = analyst_response.get("notes", "")
+    approved = analyst_response.get("approved", True)
     override = dict(state.get("analyst_override") or {})
     if notes.strip():
         override["analysis_notes"] = notes.strip()
 
+    # SRM gate: analyst must explicitly acknowledge before proceeding.
+    # `srm_detected` is set at function top (False) and overridden in ab_test branch.
+    if srm_detected and not analyst_response.get("srm_acknowledged"):
+        logger.warning(
+            "analysis_gate: SRM detected but not acknowledged — blocking approval."
+        )
+        return {
+            "analysis_approved": False,
+            "analyst_notes":     notes,
+            "analyst_override":  override,
+        }
+
     return {
-        "analysis_approved": analyst_response.get("approved", True),
+        "analysis_approved": approved,
         "analyst_notes":     notes,
         "analyst_override":  override,
     }
@@ -2096,12 +2213,60 @@ def generate_narrative(state: AgentState) -> dict:
 
 @observe(name="narrative_gate")
 def narrative_gate(state: AgentState) -> dict:
-    payload = {
+    # ── Pre-interrupt: auto-block factually wrong narratives (A/B only) ───────
+    # Capped at 3 attempts to avoid infinite loops. On exhaustion, fall through
+    # to the analyst interrupt with violations listed so they can fix manually.
+    _MAX_AUTO_REVISIONS = 3
+    claim_violations: list[str] = []
+    if state.get("analysis_mode", "ab_test") == "ab_test":
+        narrative = state.get("narrative_draft", "")
+        ttest     = state.get("ttest_result")
+        cuped     = state.get("cuped_result")
+        if narrative and ttest is not None:
+            try:
+                from tools.eval_tools import score_claim_accuracy
+                claim = score_claim_accuracy(narrative, ttest, cuped)
+                if claim["violations"]:
+                    revision_count = state.get("narrative_revision_count") or 0
+                    if revision_count < _MAX_AUTO_REVISIONS:
+                        violation_str = "; ".join(claim["violations"])
+                        logger.warning(
+                            "narrative_gate: auto-blocking (attempt %d/%d) — %s",
+                            revision_count + 1, _MAX_AUTO_REVISIONS, violation_str,
+                        )
+                        return {
+                            "narrative_approved":       False,
+                            "narrative_revision_count": revision_count + 1,
+                            "analyst_notes": (
+                                f"AUTO-CORRECTION: The narrative contains factual inconsistencies "
+                                f"that must be fixed before review: {violation_str}. "
+                                "Correct these claims to exactly match the statistical results."
+                            ),
+                        }
+                    else:
+                        # Exhausted — surface to analyst instead of looping further
+                        logger.warning(
+                            "narrative_gate: auto-correction cap reached (%d) — "
+                            "surfacing violations to analyst: %s",
+                            _MAX_AUTO_REVISIONS, claim["violations"],
+                        )
+                        claim_violations = claim["violations"]
+            except Exception as exc:
+                logger.debug("narrative_gate: claim accuracy check failed — %s", exc)
+
+    payload: dict = {
         "gate":             "narrative",
         "narrative_draft":  state.get("narrative_draft", ""),
         "recommendation":   state.get("recommendation", ""),
         "message":          "Review the narrative. Approve, or add notes to trigger a revision.",
     }
+    if claim_violations:
+        payload["claim_violations"] = claim_violations
+        payload["message"] = (
+            "⚠️ Auto-correction reached its limit. The following factual issues could not be "
+            "resolved automatically — please fix them manually before approving: "
+            + "; ".join(claim_violations)
+        )
     analyst_response = interrupt(payload)
 
     approved      = analyst_response.get("approved", True)
