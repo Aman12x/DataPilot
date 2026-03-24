@@ -1,0 +1,138 @@
+{
+  "_comment": "Ground-truth values computed directly from customer_transactions_10k.csv. All figures are exact to 2 dp unless noted. Use these to validate model narrative output.",
+
+  "dataset": {
+    "total_transactions": 10000,
+    "unique_customers": 1496,
+    "date_range_start": "2023-01-01",
+    "date_range_end": "2024-12-31"
+  },
+
+  "overall": {
+    "fraud_rate":               0.0135,
+    "fraud_count":              135,
+    "return_rate":              0.0439,
+    "return_count":             439,
+    "churn_rate":               0.2296,
+    "churn_count":              2296,
+    "total_gross_revenue":      4430996.49,
+    "total_net_revenue":        4464141.89,
+    "total_transaction_amount": 4476663.05,
+    "avg_transaction_amount":   447.67,
+    "median_transaction_amount": 190.66,
+    "total_discount_amount":    370961.00,
+    "avg_discount_pct":         0.085
+  },
+
+  "by_loyalty_tier": {
+    "Bronze":   { "txn_count": 4463, "avg_txn_value": 476.70, "total_revenue": 2127518.45, "return_rate": 0.0471, "fraud_rate": 0.0148, "churn_rate": 0.5145 },
+    "Silver":   { "txn_count": 3184, "avg_txn_value": 450.62, "total_revenue": 1434775.61, "return_rate": 0.0389, "fraud_rate": 0.0132, "churn_rate": 0.0 },
+    "Gold":     { "txn_count": 1648, "avg_txn_value": 398.87, "total_revenue": 657334.76,  "return_rate": 0.0443, "fraud_rate": 0.0140, "churn_rate": 0.0 },
+    "Platinum": { "txn_count":  705, "avg_txn_value": 364.59, "total_revenue": 257034.23,  "return_rate": 0.0454, "fraud_rate": 0.0057, "churn_rate": 0.0 }
+  },
+
+  "by_product_category": {
+    "Electronics":  { "txn_count": 1274, "avg_txn_value": 1384.84, "total_revenue": 1764282.09, "return_rate": 0.0942 },
+    "Home & Garden":{ "txn_count": 1253, "avg_txn_value":  755.00,  "total_revenue":  946021.00, "return_rate": 0.0319 },
+    "Sports":       { "txn_count": 1204, "avg_txn_value":  579.72,  "total_revenue":  697978.78, "return_rate": 0.0424 },
+    "Clothing":     { "txn_count": 1276, "avg_txn_value":  297.19,  "total_revenue":  379216.79, "return_rate": 0.0290 },
+    "Toys":         { "txn_count": 1261, "avg_txn_value":  237.13,  "total_revenue":  299021.98, "return_rate": 0.0436 },
+    "Beauty":       { "txn_count": 1251, "avg_txn_value":  139.94,  "total_revenue":  175061.48, "return_rate": 0.0360 },
+    "Groceries":    { "txn_count": 1250, "avg_txn_value":   89.19,  "total_revenue":  111493.64, "return_rate": 0.0432 },
+    "Books":        { "txn_count": 1231, "avg_txn_value":   84.15,  "total_revenue":  103587.29, "return_rate": 0.0301 }
+  },
+
+  "by_payment_method": {
+    "Google Pay":    { "txn_count":  723, "avg_txn_value": 486.52, "return_rate": 0.0443, "fraud_rate": 0.0083 },
+    "Gift Card":     { "txn_count":  274, "avg_txn_value": 473.01, "return_rate": 0.0511, "fraud_rate": 0.0657 },
+    "Bank Transfer": { "txn_count":  403, "avg_txn_value": 465.73, "return_rate": 0.0471, "fraud_rate": 0.0074 },
+    "Credit Card":   { "txn_count": 3600, "avg_txn_value": 449.72, "return_rate": 0.0467, "fraud_rate": 0.0111 },
+    "Debit Card":    { "txn_count": 2458, "avg_txn_value": 446.10, "return_rate": 0.0415, "fraud_rate": 0.0126 },
+    "PayPal":        { "txn_count": 1460, "avg_txn_value": 443.95, "return_rate": 0.0390, "fraud_rate": 0.0116 },
+    "Apple Pay":     { "txn_count":  993, "avg_txn_value": 413.69, "return_rate": 0.0453, "fraud_rate": 0.0131 },
+    "Crypto":        { "txn_count":   89, "avg_txn_value": 372.34, "return_rate": 0.0225, "fraud_rate": 0.0787 }
+  },
+
+  "by_device_type": {
+    "Desktop": { "txn_count": 3835, "avg_txn_value": 453.58, "return_rate": 0.0422, "fraud_rate": 0.0021 },
+    "Mobile":  { "txn_count": 5167, "avg_txn_value": 450.79, "return_rate": 0.0470, "fraud_rate": 0.0238 },
+    "Tablet":  { "txn_count":  998, "avg_txn_value": 408.77, "return_rate": 0.0341, "fraud_rate": 0.0040 }
+  },
+
+  "by_country_top5": {
+    "United States":  { "txn_count": 3971, "avg_txn_value": 453.60, "total_revenue": 1801233.25, "fraud_rate": 0.0131, "churn_rate": 0.2380 },
+    "Canada":         { "txn_count": 1107, "avg_txn_value": 433.76, "total_revenue":  480168.67, "fraud_rate": 0.0099, "churn_rate": 0.2520 },
+    "United Kingdom": { "txn_count":  962, "avg_txn_value": 459.92, "total_revenue":  442444.49, "fraud_rate": 0.0135, "churn_rate": 0.2640 },
+    "Germany":        { "txn_count":  641, "avg_txn_value": 466.22, "total_revenue":  298848.23, "fraud_rate": 0.0172, "churn_rate": 0.1903 },
+    "Australia":      { "txn_count":  664, "avg_txn_value": 437.70, "total_revenue":  290635.25, "fraud_rate": 0.0105, "churn_rate": 0.1958 }
+  },
+
+  "by_age_bucket": {
+    "18-25": { "txn_count": 1272, "avg_txn_value": 413.33, "return_rate": 0.0464, "fraud_rate": 0.0094, "churn_rate": 0.2351 },
+    "26-35": { "txn_count": 1661, "avg_txn_value": 413.09, "return_rate": 0.0403, "fraud_rate": 0.0120, "churn_rate": 0.2396 },
+    "36-50": { "txn_count": 2554, "avg_txn_value": 459.50, "return_rate": 0.0474, "fraud_rate": 0.0161, "churn_rate": 0.2118 },
+    "51-65": { "txn_count": 2853, "avg_txn_value": 456.69, "return_rate": 0.0449, "fraud_rate": 0.0154, "churn_rate": 0.2376 },
+    "66+":   { "txn_count": 1660, "avg_txn_value": 474.88, "return_rate": 0.0386, "fraud_rate": 0.0108, "churn_rate": 0.2289 }
+  },
+
+  "critical_comparisons": {
+    "_comment": "These are the specific gaps a narrative is likely to state. Arithmetic errors here are the most common model failure mode.",
+
+    "revenue_rank_order": ["Electronics", "Home & Garden", "Sports", "Clothing", "Toys", "Beauty", "Groceries", "Books"],
+
+    "electronics_vs_books_revenue_gap": 1660694.80,
+    "electronics_vs_books_revenue_ratio": 17.03,
+
+    "loyalty_avg_txn_rank_order": ["Bronze", "Silver", "Gold", "Platinum"],
+    "bronze_avg_txn_higher_than_platinum_by": 112.11,
+    "_note_bronze_platinum": "Bronze ($476.70) OUTPERFORMS Platinum ($364.59) on avg txn value — counterintuitive, model often gets direction wrong",
+
+    "mobile_fraud_rate": 0.0238,
+    "desktop_fraud_rate": 0.0021,
+    "mobile_vs_desktop_fraud_ratio": 11.4,
+    "_note_mobile_fraud": "Mobile fraud is 11.4x Desktop — model may say '10x' or understate",
+
+    "crypto_fraud_rate": 0.0787,
+    "credit_card_fraud_rate": 0.0111,
+    "crypto_vs_credit_card_fraud_ratio": 7.1,
+
+    "gift_card_fraud_rate": 0.0657,
+    "bank_transfer_fraud_rate": 0.0074,
+    "gift_card_vs_bank_transfer_fraud_ratio": 8.8,
+
+    "electronics_return_rate": 0.0942,
+    "clothing_return_rate": 0.0290,
+    "electronics_vs_clothing_return_gap_ppts": 6.52,
+
+    "age_36_50_avg_txn": 459.50,
+    "age_18_25_avg_txn": 413.33,
+    "age_36_50_vs_18_25_gap": 46.17,
+
+    "brazil_fraud_rate": 0.0239,
+    "brazil_vs_overall_fraud_ratio": 1.8,
+
+    "bronze_revenue_share_pct": 47.5,
+    "silver_revenue_share_pct": 32.1,
+
+    "us_canada_transaction_share_pct": 50.8
+  },
+
+  "common_question_answers": {
+    "which_category_highest_revenue": "Electronics",
+    "which_category_lowest_revenue": "Books",
+    "which_category_highest_return_rate": "Electronics",
+    "which_category_lowest_return_rate": "Clothing",
+    "which_payment_highest_fraud": "Crypto",
+    "which_payment_lowest_fraud": "Bank Transfer",
+    "which_device_highest_fraud": "Mobile",
+    "which_device_lowest_fraud": "Desktop",
+    "which_loyalty_tier_highest_avg_txn": "Bronze",
+    "which_loyalty_tier_lowest_avg_txn": "Platinum",
+    "which_loyalty_tier_only_churned": "Bronze",
+    "_note_churn": "Gold, Silver, Platinum all have churn_rate=0.0 in this dataset; Bronze churn_rate=0.5145",
+    "highest_revenue_country": "United States",
+    "highest_fraud_country": "Brazil",
+    "age_group_highest_avg_txn": "66+",
+    "age_group_lowest_avg_txn": "26-35"
+  }
+}

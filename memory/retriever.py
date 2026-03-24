@@ -52,8 +52,27 @@ def retrieve_relevant_history(
         List of run dicts (subset of fields useful for prompt injection):
         [{run_id, task, metric, top_segment, analyst_override, eval_score, timestamp}]
     """
+    path = path or _db_path()
     init_db(path)
-    all_runs = get_all_runs(path, user_id=user_id)
+    with _connect(path) as con:
+        if user_id:
+            rows = con.execute(
+                """SELECT run_id, task, metric, top_segment,
+                          analyst_override, eval_score, timestamp
+                   FROM   runs
+                   WHERE  user_id = ? AND audit_passed = 1
+                   ORDER  BY timestamp DESC LIMIT 50""",
+                (user_id,),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                """SELECT run_id, task, metric, top_segment,
+                          analyst_override, eval_score, timestamp
+                   FROM   runs
+                   WHERE  audit_passed = 1
+                   ORDER  BY timestamp DESC LIMIT 50""",
+            ).fetchall()
+    all_runs = [dict(r) for r in rows]
 
     if not all_runs:
         return []

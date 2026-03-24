@@ -2,6 +2,14 @@ import { useEffect, useRef, useState } from "react";
 import { API_BASE } from "../api/client";
 import type { ChartSpec } from "../components/ChartCard";
 
+export interface StepEvent {
+  type: "step";
+  node: string;
+  label: string;
+  detail?: string;
+  status: "completed";
+}
+
 export interface GateEvent {
   type: "gate";
   gate: string;
@@ -57,9 +65,10 @@ export interface DoneEvent {
  * (the new EventSource reads the latest token from localStorage).
  */
 export function useSSE(runId: string | null, reconnectTrigger: number = 0) {
-  const [gate, setGate] = useState<GateEvent | null>(null);
-  const [done, setDone] = useState<DoneEvent | null>(null);
+  const [gate,  setGate]  = useState<GateEvent | null>(null);
+  const [done,  setDone]  = useState<DoneEvent | null>(null);
   const [error, setError] = useState<string>("");
+  const [steps, setSteps] = useState<StepEvent[]>([]);
   // True once a gate event has been received on the *current* connection.
   // Suppresses the onerror that fires when server intentionally closes after a gate.
   const gateReceivedRef = useRef(false);
@@ -69,6 +78,7 @@ export function useSSE(runId: string | null, reconnectTrigger: number = 0) {
     setGate(null);
     setDone(null);
     setError("");
+    setSteps([]);
   }, [runId]);
 
   useEffect(() => {
@@ -92,6 +102,9 @@ export function useSSE(runId: string | null, reconnectTrigger: number = 0) {
       }
       if (typeof msg !== "object" || msg === null) return;
       const m = msg as Record<string, unknown>;
+      if (m.type === "step") {
+        setSteps(prev => [...prev, m as unknown as StepEvent]);
+      }
       if (m.type === "gate") {
         gateReceivedRef.current = true;
         setGate(m as unknown as GateEvent);
@@ -117,5 +130,5 @@ export function useSSE(runId: string | null, reconnectTrigger: number = 0) {
     return () => es.close();
   }, [runId, reconnectTrigger]);
 
-  return { gate, done, error, setGate, setDone, setError };
+  return { gate, done, error, steps, setGate, setDone, setError };
 }

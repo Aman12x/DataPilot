@@ -96,6 +96,18 @@ class _FakeGraph:
             self._gate_run_ids.add(run_id)
         return {}
 
+    def stream(self, state_or_cmd, config, **__):
+        """Delegate to invoke (same side-effects) and yield one synthetic chunk."""
+        run_id = config.get("configurable", {}).get("thread_id", "")
+        mode = _fake_graph_mode["mode"]
+        if mode == "crash":
+            raise RuntimeError("simulated node failure")
+        self._known_runs.add(run_id)
+        if mode == "gate":
+            self._gate_run_ids.add(run_id)
+        # Yield one step chunk so _stream_graph has something to iterate over
+        yield {"generate_narrative": {}}
+
     def get_state(self, config, **__):
         run_id = config.get("configurable", {}).get("thread_id", "")
         if run_id not in self._known_runs:

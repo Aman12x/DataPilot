@@ -80,7 +80,7 @@ Narrative generation:
 # ordered (timestamp DESC, top 3) so the same history produces the same string.
 
 HISTORY_INJECTION_PREFIX = """\
-## Relevant past analyses
+## Relevant past analyses (quality-audited)
 
 The following similar analyses were previously run. Where the analyst overrode \
 a default choice, prefer the analyst's preference unless there is a strong reason \
@@ -270,6 +270,67 @@ ANALYST_NOTES_BLOCK = """\
 ## Analyst notes
 
 {analyst_notes}
+"""
+
+
+# ── NARRATIVE_AUDIT_PROMPT ────────────────────────────────────────────────────
+# Second LLM call inside generate_narrative — runs immediately after the primary
+# narrative is generated. Parameterised: {narrative}, {tool_results_json}.
+
+NARRATIVE_AUDIT_PROMPT = """\
+## Ground-truth data
+
+```json
+{tool_results_json}
+```
+
+## Narrative to audit
+
+{narrative}
+
+## Audit rules
+
+Check each sentence against these rules. Flag only actual violations.
+
+CRITICAL — must fix before showing to stakeholders:
+1. ARITHMETIC: Every stated gap ("underperforms by N", "N points higher/lower") must equal
+   larger_value minus smaller_value from the data above. Flag if stated gap is wrong.
+2. DIRECTIONAL: Words like underperforms/worse/lower/higher/outperforms must match the actual
+   data direction. If A=77.4 and B=77.0, A outperforms B. Flag if direction contradicts data.
+3. INVENTED NUMBERS: Every specific number in the narrative must appear in the ground-truth
+   data above. Flag any number that cannot be traced there.
+
+MODERATE — auto-correctable presentation issues:
+4. SUBGROUP MISSING PARENT: Any finding naming a subgroup (e.g. "iOS users") must state the
+   parent segment value in the same sentence.
+   Required: "[Subgroup] ([parent segment]: [parent value]) generated [value]."
+   Flag any subgroup finding that omits the parent segment value.
+5. STATISTICAL JARGON: Flag any of: p-value, r-squared, coefficient, correlation,
+   statistical significance, regression, VIF, standard deviation.
+
+MINOR — style:
+6. EM DASH: Flag any em dash (—) or double hyphen (--).
+
+## Output
+
+Return ONLY a JSON object, no preamble, no trailing text.
+
+If no findings:
+{{"passed": true, "findings": [], "corrected_narrative": ""}}
+
+If findings exist:
+{{
+  "passed": false,
+  "findings": [
+    {{
+      "quote": "exact phrase copied from narrative",
+      "issue": "one sentence explaining the violation",
+      "severity": "critical",
+      "corrected_sentence": "replacement text (empty string if cannot safely correct)"
+    }}
+  ],
+  "corrected_narrative": "full narrative with all moderate+minor findings fixed; empty string if any critical findings exist"
+}}
 """
 
 
@@ -599,6 +660,9 @@ Then output this exact line:
 
 Formatting rules:
 - No em dashes (-- or -). Use a period or restructure the sentence instead.
+- Never headline a subgroup finding without stating the parent segment value in \
+  the same sentence. Format: "[Subgroup] ([parent segment]: [parent value]) \
+  generated [subgroup value]."
 - No SQL, no code blocks, no column names in backtick formatting anywhere.
 - Do not invent numbers. Every number must appear in the data summary above.
 - Bold the actual numbers and named segments. Do not bold adjectives.

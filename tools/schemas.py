@@ -7,7 +7,7 @@ Consumers access fields by attribute (result.cuped_ate) not by key (result["cupe
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field
@@ -206,6 +206,19 @@ class PowerAnalysisResult(BaseModel):
 class NarrativeResult(BaseModel):
     narrative_draft: str
     recommendation:  str
+
+
+class NarrativeFinding(BaseModel):
+    quote: str = ""
+    issue: str
+    severity: Literal["critical", "moderate", "minor"]
+    corrected_sentence: str = ""
+
+
+class NarrativeAuditResult(BaseModel):
+    passed: bool
+    findings: list[NarrativeFinding] = []
+    corrected_narrative: str = ""
 
 
 # ── describe_tools ────────────────────────────────────────────────────────────

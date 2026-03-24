@@ -160,6 +160,7 @@ class StartRunRequest(BaseModel):
     pg_dbname:     str = ""
     pg_user:       str = ""
     pg_password:   str = ""
+    parent_run_id: str = ""       # set for follow-up queries; injects parent narrative as context
 
     @field_validator("analysis_mode")
     @classmethod
@@ -255,21 +256,37 @@ async def create_run(
     if req.duckdb_path:
         resolved_duckdb_path = resolve_upload_path(req.duckdb_path, current_user["user_id"])
 
+    # Extract parent narrative for follow-up context injection
+    context_narrative = ""
+    if req.parent_run_id:
+        try:
+            parent_config = {"configurable": {"thread_id": req.parent_run_id}}
+            parent_state  = graph.get_state(parent_config)
+            parent_values = parent_state.values if hasattr(parent_state, "values") else {}
+            raw_narrative = (
+                parent_values.get("final_narrative")
+                or parent_values.get("narrative_draft", "")
+            )
+            context_narrative = raw_narrative[:2000] if raw_narrative else ""
+        except Exception:
+            logger.warning("Could not read parent run state for %s", req.parent_run_id)
+
     await start_run(
         graph,
         run_id,
         {
-            "task":          task,
-            "analysis_mode": req.analysis_mode,
-            "db_backend":    req.db_backend,
-            "duckdb_path":   resolved_duckdb_path,
-            "pg_host":       req.pg_host,
-            "pg_port":       req.pg_port,
-            "pg_dbname":     req.pg_dbname,
-            "pg_user":       req.pg_user,
-            "pg_password":   req.pg_password,
-            "user_id":       current_user["user_id"],
-            "run_id":        run_id,
+            "task":               task,
+            "analysis_mode":      req.analysis_mode,
+            "db_backend":         req.db_backend,
+            "duckdb_path":        resolved_duckdb_path,
+            "pg_host":            req.pg_host,
+            "pg_port":            req.pg_port,
+            "pg_dbname":          req.pg_dbname,
+            "pg_user":            req.pg_user,
+            "pg_password":        req.pg_password,
+            "user_id":            current_user["user_id"],
+            "run_id":             run_id,
+            "context_narrative":  context_narrative,
         },
         user_id=current_user["user_id"],
     )
@@ -339,6 +356,11 @@ async def stream_run(
 
             if "_stream_id" in item:
                 effective_last_id = item["_stream_id"]
+
+            # Forward Chain-of-Thought step events directly
+            if item.get("type") == "step":
+                yield {"data": json.dumps(item)}
+                continue
 
             if not item.get("ok"):
                 cleanup_run(run_id)

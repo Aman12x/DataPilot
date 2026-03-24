@@ -63,6 +63,10 @@ def init_db(path: str | None = None) -> None:
         ]:
             if col not in existing:
                 con.execute(f"ALTER TABLE runs ADD COLUMN {col} {defn}")
+        try:
+            con.execute("ALTER TABLE runs ADD COLUMN audit_passed INTEGER DEFAULT 0")
+        except Exception:
+            pass  # column already exists on upgraded databases
 
 
 def log_run(
@@ -85,6 +89,7 @@ def log_run(
     estimated_cost_usd: float = 0.0,
     task_embedding: bytes | None = None,
     notes: str = "",
+    audit_passed: bool = False,
 ) -> str:
     """
     Persist one run to the memory store.
@@ -105,14 +110,16 @@ def log_run(
                 run_id, timestamp, task, task_embedding, metric, covariate,
                 db_backend, analyst_override, top_segment, eval_score,
                 cache_read_tokens, cache_write_tokens, uncached_tokens,
-                semantic_cache_hits, estimated_cost_usd, notes, user_id, analysis_mode
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                semantic_cache_hits, estimated_cost_usd, notes, user_id, analysis_mode,
+                audit_passed
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id, ts, task, task_embedding, metric, covariate,
                 db_backend, override_json, top_segment, eval_score,
                 cache_read_tokens, cache_write_tokens, uncached_tokens,
                 semantic_cache_hits, estimated_cost_usd, notes, user_id, analysis_mode,
+                int(audit_passed),
             ),
         )
     return run_id

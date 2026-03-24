@@ -55,11 +55,12 @@ def test_get_all_runs_ordered_by_recency(tmp_path):
 # ── retriever.py ──────────────────────────────────────────────────────────────
 
 def test_retriever_returns_relevant_run(tmp_path):
-    """retrieve_relevant_history returns runs with keyword overlap."""
+    """retrieve_relevant_history returns runs with keyword overlap (audit_passed only)."""
     db = str(tmp_path / "test.db")
     log_run("DAU drop investigation android new users", path=db,
-            metric="dau_rate", top_segment="platform=android,user_segment=new")
-    log_run("revenue analysis Q4 unrelated", path=db, metric="revenue")
+            metric="dau_rate", top_segment="platform=android,user_segment=new",
+            audit_passed=True)
+    log_run("revenue analysis Q4 unrelated", path=db, metric="revenue", audit_passed=True)
 
     results = retrieve_relevant_history("why did DAU drop for android?", path=db)
     assert len(results) >= 1

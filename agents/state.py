@@ -22,6 +22,7 @@ from tools.schemas import (
     GuardrailResult,
     HteResult,
     MdeResult,
+    NarrativeAuditResult,
     NoveltyResult,
     PowerAnalysisResult,
     RegressionResult,
@@ -99,6 +100,8 @@ class AgentState(TypedDict, total=False):
     # ── Narrative phase ────────────────────────────────────────────────────────
     narrative_draft: str                # PM-ready markdown writeup
     recommendation: str                 # one-sentence action recommendation
+    audit_result:  NarrativeAuditResult # LLM audit result
+    audit_blocked: bool                 # True if critical findings exist
 
     # ── HITL gate 3: narrative sign-off ───────────────────────────────────────
     narrative_approved: bool
@@ -121,6 +124,9 @@ class AgentState(TypedDict, total=False):
     # ── Power analysis (analysis_mode == 'power_analysis') ───────────────────
     power_mde_target_pct:  float               # target MDE % from task (default 5.0)
     power_analysis_result: PowerAnalysisResult
+
+    # ── Follow-up / conversation context ─────────────────────────────────────
+    context_narrative: str              # narrative from parent run, injected for follow-up queries
 
     # ── Memory ────────────────────────────────────────────────────────────────
     run_id: str

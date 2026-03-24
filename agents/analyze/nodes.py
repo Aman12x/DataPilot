@@ -28,6 +28,7 @@ from agents.analyze.prompts import (
     ANALYST_NOTES_BLOCK,
     HISTORY_INJECTION_PREFIX,
     INSIGHTS_NARRATIVE_PROMPT,
+    NARRATIVE_AUDIT_PROMPT,
     NARRATIVE_PROMPT,
     POWER_ANALYSIS_NARRATIVE_PROMPT,
     SCHEMA_CONFIG_INFERENCE_PROMPT,
@@ -1109,6 +1110,14 @@ def generate_sql(state: AgentState) -> dict:
             sql_template=_canonical_experiment_sql(mc),
             few_shot_block=few_shot_block,
         )
+
+    context_narrative = state.get("context_narrative", "")
+    if context_narrative:
+        task_prompt = (
+            f"Previous analysis context (same database, different question):\n"
+            f"{context_narrative[:2000]}\n\n"
+        ) + task_prompt
+
     messages = _build_cached_messages(schema_context, history_text, task_prompt)
 
     with trace_generation("generate_sql", _fast_model(), task_prompt) as gen:
@@ -2281,13 +2290,22 @@ def generate_narrative(state: AgentState) -> dict:
     )
 
     # Collect all *_result fields for the LLM prompt
+    # Exclude audit_result — it's an internal quality check, not source data.
+    _EXCLUDE_FROM_TOOL_RESULTS = {"audit_result"}
     tool_results: dict = {}
     for k, v in state.items():
-        if k.endswith("_result") and v is not None:
+        if k.endswith("_result") and v is not None and k not in _EXCLUDE_FROM_TOOL_RESULTS:
             tool_results[k] = _to_dict(v)
     if "forecast_result" in tool_results:
         tool_results["forecast_result"].pop("forecast_df", None)
     tool_results_json = json.dumps(tool_results, default=str)
+
+    context_narrative = state.get("context_narrative", "")
+    context_narrative_section = (
+        f"\n\nPrevious analysis context (same database, follow-up question):\n"
+        f"{context_narrative[:2000]}"
+        if context_narrative else ""
+    )
 
     if mode == "power_analysis":
         pa = state.get("power_analysis_result")
@@ -2296,7 +2314,7 @@ def generate_narrative(state: AgentState) -> dict:
             task=state.get("task", ""),
             power_result_json=power_result_json,
             analyst_notes_section=analyst_notes_section,
-        )
+        ) + context_narrative_section
         from tools.schemas import NarrativeResult
         template_out = NarrativeResult(narrative_draft="", recommendation="")
 
@@ -2305,7 +2323,7 @@ def generate_narrative(state: AgentState) -> dict:
             task=state.get("task", ""),
             tool_results_json=tool_results_json,
             analyst_notes_section=analyst_notes_section,
-        )
+        ) + context_narrative_section
         # General analysis: no template draft — LLM works directly from stats
         from tools.schemas import NarrativeResult
         template_out = NarrativeResult(narrative_draft="", recommendation="")
@@ -2339,7 +2357,7 @@ def generate_narrative(state: AgentState) -> dict:
             tool_results_json=tool_results_json,
             draft_narrative=template_out.narrative_draft,
             analyst_notes_section=analyst_notes_section,
-        )
+        ) + context_narrative_section
 
     schema_context = state.get("schema_context", "")
     history_text   = _format_history(state.get("relevant_history", []))
@@ -2359,6 +2377,40 @@ def generate_narrative(state: AgentState) -> dict:
 
     polished_narrative = response.content[0].text
 
+    # ── Narrative audit ───────────────────────────────────────────────────────
+    from tools.schemas import NarrativeAuditResult, NarrativeFinding  # noqa: F401
+
+    audit_result:  Any = None
+    audit_blocked: bool = False
+    try:
+        audit_prompt = NARRATIVE_AUDIT_PROMPT.format(
+            narrative=polished_narrative,
+            tool_results_json=tool_results_json,
+        )
+        audit_resp = _anthropic_client().messages.create(
+            model=_fast_model(),
+            max_tokens=1024,
+            messages=[{"role": "user", "content": audit_prompt}],
+        )
+        raw = audit_resp.content[0].text.strip()
+        if raw.startswith("```"):
+            raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
+        audit_result = NarrativeAuditResult(**json.loads(raw))
+
+        critical = [f for f in audit_result.findings if f.severity == "critical"]
+        moderate = [f for f in audit_result.findings if f.severity == "moderate"]
+
+        if not critical:
+            if audit_result.corrected_narrative:
+                polished_narrative = audit_result.corrected_narrative
+                if moderate:
+                    issues = "; ".join(f.issue for f in moderate)
+                    polished_narrative += f"\n\n> **Auto-corrected:** {issues}"
+        else:
+            audit_blocked = True
+    except Exception as exc:
+        logger.warning("generate_narrative: audit failed — %s", exc)
+
     # Append this turn to conversation history for potential refinement
     new_history = list(state.get("conversation_history") or [])
     new_history.append({"role": "assistant", "content": polished_narrative})
@@ -2367,6 +2419,8 @@ def generate_narrative(state: AgentState) -> dict:
         "narrative_draft":      polished_narrative,
         "recommendation":       template_out.recommendation,
         "conversation_history": new_history,
+        "audit_result":         audit_result,
+        "audit_blocked":        audit_blocked,
         "cache_read_tokens":    (state.get("cache_read_tokens") or 0) + cost_info.get("cache_read_tokens", 0),
         "cache_write_tokens":   (state.get("cache_write_tokens") or 0) + cost_info.get("cache_write_tokens", 0),
         "estimated_cost_usd":   (state.get("estimated_cost_usd") or 0.0) + cost_info.get("estimated_cost_usd", 0.0),
@@ -2540,6 +2594,32 @@ def narrative_gate(state: AgentState) -> dict:
         except Exception as exc:
             logger.debug("narrative_gate: general claim accuracy check failed — %s", exc)
 
+    # ── LLM audit: critical findings ─────────────────────────────────────────
+    audit_result   = state.get("audit_result")
+    audit_findings: list[str] = []
+    if audit_result and hasattr(audit_result, "findings"):
+        critical = [f for f in (audit_result.findings or []) if f.severity == "critical"]
+        if critical:
+            revision_count = state.get("narrative_revision_count") or 0
+            if revision_count < _MAX_AUTO_REVISIONS:
+                issues_str = "; ".join(f.issue for f in critical)
+                logger.warning(
+                    "narrative_gate: audit critical block (attempt %d/%d) — %s",
+                    revision_count + 1, _MAX_AUTO_REVISIONS, issues_str,
+                )
+                return {
+                    "narrative_approved":       False,
+                    "narrative_revision_count": revision_count + 1,
+                    "analyst_notes": (
+                        f"AUDIT CRITICAL: {issues_str}. "
+                        "Rewrite to fix these before the report can be shown."
+                    ),
+                }
+            else:
+                audit_findings = [
+                    f'{f.issue} (quote: "{f.quote}")' for f in critical
+                ]
+
     payload: dict = {
         "gate":             "narrative",
         "narrative_draft":  state.get("narrative_draft", ""),
@@ -2552,6 +2632,12 @@ def narrative_gate(state: AgentState) -> dict:
             "⚠️ Auto-correction reached its limit. The following factual issues could not be "
             "resolved automatically — please fix them manually before approving: "
             + "; ".join(claim_violations)
+        )
+    elif audit_findings:
+        payload["audit_critical_findings"] = audit_findings
+        payload["message"] = (
+            "⚠️ AUDIT: Critical accuracy issues could not be auto-corrected. "
+            "Review and fix before approving: " + "; ".join(audit_findings)
         )
     analyst_response = interrupt(payload)
 
@@ -2692,6 +2778,9 @@ def log_run_node(state: AgentState) -> dict:
         estimated_cost_usd=state.get("estimated_cost_usd") or 0.0,
         semantic_cache_hits=1 if state.get("semantic_cache_hit") else 0,
         notes=state.get("analyst_notes") or "",
+        audit_passed=(
+            bool((ar := state.get("audit_result")) and hasattr(ar, "passed") and ar.passed)
+        ),
     )
 
     # In-band completeness scoring — fills eval_score when offline eval hasn't run yet

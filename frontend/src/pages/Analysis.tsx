@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import client, { API_BASE, uploadFile, type UploadResult, logout } from "../api/client";
-import { useSSE, type DoneEvent, type TrustIndicators, type PowerAnalysisResult, type SensitivityRow } from "../hooks/useSSE";
+import { useSSE, type DoneEvent, type StepEvent, type TrustIndicators, type PowerAnalysisResult, type SensitivityRow } from "../hooks/useSSE";
 import { useTokenRefresh } from "../hooks/useTokenRefresh";
 import PipelineProgress from "../components/PipelineProgress";
 import Markdown from "../components/Markdown";
 import ChartCard, { type ChartSpec } from "../components/ChartCard";
+import ChainOfThought from "../components/ChainOfThought";
 import IntentGate from "../components/gates/IntentGate";
 import SemanticCacheGate from "../components/gates/SemanticCacheGate";
 import QueryGate from "../components/gates/QueryGate";
@@ -485,10 +486,18 @@ function splitNarrative(raw: string): { brief: string; details: string } {
   return { brief: clean.slice(0, idx).trim(), details: clean.slice(idx + DETAILS_MARKER.length).trim() };
 }
 
-function FinishedView({ state, runId, onNewAnalysis }: { state: DoneEvent["state"]; runId: string; onNewAnalysis: () => void }) {
+function FinishedView({ state, runId, steps, onNewAnalysis, onFollowUp }: {
+  state: DoneEvent["state"];
+  runId: string;
+  steps: StepEvent[];
+  onNewAnalysis: () => void;
+  onFollowUp: (task: string) => void;
+}) {
   const navigate = useNavigate();
-  const [copied,      setCopied]      = useState(false);
-  const [showDetails, setShowDetails] = useState(false);
+  const [copied,       setCopied]      = useState(false);
+  const [showDetails,  setShowDetails] = useState(false);
+  const [followUp,     setFollowUp]    = useState("");
+  const [submitting,   setSubmitting]  = useState(false);
 
   const isPowerAnalysis = state.analysis_mode === "power_analysis";
   const { brief, details } = splitNarrative(state.narrative_draft);
@@ -529,6 +538,18 @@ function FinishedView({ state, runId, onNewAnalysis }: { state: DoneEvent["state
     navigator.clipboard.writeText(stripMarkdown(sanitiseNarrative(state.narrative_draft)));
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleFollowUp = async () => {
+    const q = followUp.trim();
+    if (!q || submitting) return;
+    setSubmitting(true);
+    try {
+      onFollowUp(q);
+      setFollowUp("");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -575,72 +596,83 @@ function FinishedView({ state, runId, onNewAnalysis }: { state: DoneEvent["state
             )}
           </div>
         )}
+
+        <ChainOfThought steps={steps} isRunning={false} />
+
+        {/* Follow-up input */}
+        <div style={s.followUpBox} className="slide-up">
+          <div style={s.followUpLabel}>Ask a follow-up question</div>
+          <div style={s.followUpRow}>
+            <textarea
+              style={s.followUpInput}
+              value={followUp}
+              onChange={e => setFollowUp(e.target.value)}
+              placeholder="e.g. Show me only Android users…"
+              rows={2}
+              onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleFollowUp(); } }}
+            />
+            <button
+              style={{ ...s.followUpBtn, opacity: followUp.trim() && !submitting ? 1 : 0.45 }}
+              onClick={handleFollowUp}
+              disabled={!followUp.trim() || submitting}
+            >
+              {submitting ? "…" : "→"}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );
 }
 
-// ── Main Analysis page ─────────────────────────────────────────────────────────
+// ── Exchange — one turn in the conversation thread ────────────────────────────
 
-export default function Analysis() {
-  const navigate = useNavigate();
+interface Exchange {
+  task:         string;
+  runId:        string;
+  parentRunId:  string;
+  result:       DoneEvent["state"] | null;
+  steps:        import("../hooks/useSSE").StepEvent[];
+  analysisMode: string;
+}
 
-  const [selectedMode,     setSelectedMode]     = useState<Mode | null>(null);
-  const [runId,            setRunId]            = useState<string | null>(null);
-  const [taskText,         setTaskText]         = useState("");
-  const [analysisMode,     setAnalysisMode]     = useState("");
+// ── ActiveRun — SSE-connected single exchange ─────────────────────────────────
+
+function ActiveRun({
+  exchange,
+  onDone,
+  onError,
+}: {
+  exchange:  Exchange;
+  onDone:    (state: DoneEvent["state"], steps: StepEvent[]) => void;
+  onError:   (msg: string) => void;
+}) {
   const [lastGate,         setLastGate]         = useState<string | null>(null);
   const [reconnectTrigger, setReconnectTrigger] = useState(0);
   const [submitting,       setSubmitting]       = useState(false);
   const [submitError,      setSubmitError]      = useState("");
-  const [startError,       setStartError]       = useState("");
-  const [username,         setUsername]         = useState("");
 
-  const { gate, done, error, setGate, setError } = useSSE(runId, reconnectTrigger);
+  const { gate, done, error, steps, setGate } = useSSE(exchange.runId, reconnectTrigger);
 
   useTokenRefresh(() => setReconnectTrigger(n => n + 1));
 
   useEffect(() => {
-    client.get<{ username: string }>("/auth/me")
-      .then(r => setUsername(r.data.username))
-      .catch(() => {});
-  }, []);
+    if (done) onDone(done.state, steps);
+  }, [done]);
 
   useEffect(() => {
-    const mode = (gate?.payload as Record<string, unknown> | undefined)?.analysis_mode;
-    if (typeof mode === "string" && (mode === "ab_test" || mode === "general" || mode === "power_analysis")) {
-      setAnalysisMode(mode);
-    }
-  }, [gate]);
+    if (error) onError(error);
+  }, [error]);
 
-  const startOver = () => {
-    setRunId(null); setSelectedMode(null); setTaskText(""); setAnalysisMode("");
-    setLastGate(null); setSubmitError(""); setStartError(""); setGate(null);
-  };
-
-  const startRun = async (task: string, db_backend: string, pg?: PgCreds, uploadId?: string) => {
-    setStartError("");
-    try {
-      const body: Record<string, unknown> = { task, db_backend };
-      if (selectedMode) body.analysis_mode = selectedMode;
-      if (uploadId) body.duckdb_path = uploadId;
-      if (pg) { body.pg_host = pg.host; body.pg_port = parseInt(pg.port) || 5432; body.pg_dbname = pg.dbname; body.pg_user = pg.user; body.pg_password = pg.password; }
-      const { data } = await client.post("/runs", body);
-      setTaskText(task);
-      setAnalysisMode(selectedMode ?? "");
-      setRunId(data.run_id);
-    } catch (err) {
-      const msg = extractApiError(err, "Failed to start analysis.");
-      setStartError(msg);
-      throw err;
-    }
-  };
+  const analysisMode = (
+    (gate?.payload as Record<string, unknown> | undefined)?.analysis_mode as string | undefined
+  ) || exchange.analysisMode || "ab_test";
 
   const resume = async (value: object) => {
-    if (!runId || !gate || submitting) return;
+    if (!gate || submitting) return;
     setSubmitting(true); setSubmitError("");
     try {
-      await client.post(`/runs/${runId}/resume`, { gate: gate.gate, value });
+      await client.post(`/runs/${exchange.runId}/resume`, { gate: gate.gate, value });
       setLastGate(gate.gate);
       setGate(null);
       setReconnectTrigger(n => n + 1);
@@ -649,52 +681,6 @@ export default function Analysis() {
     } finally { setSubmitting(false); }
   };
 
-  // ── Render ──────────────────────────────────────────────────────────────────
-
-  if (error) {
-    const isConnectionLost = error.startsWith("Connection lost");
-    return (
-      <div style={s.center}>
-        <div className="fade-in" style={{ textAlign: "center", maxWidth: 380 }}>
-          <div style={{ fontSize: 32, marginBottom: 12 }}>{isConnectionLost ? "📡" : "⚠️"}</div>
-          <p style={{ color: "#f38ba8", marginBottom: 8, fontSize: 15, fontWeight: 600 }}>
-            {isConnectionLost ? "Connection lost" : "Something went wrong"}
-          </p>
-          <p style={{ color: "#585b70", marginBottom: 20, fontSize: 13 }}>{error}</p>
-          <div style={{ display: "flex", gap: 10, justifyContent: "center" }}>
-            {isConnectionLost && runId && (
-              <button
-                style={{ ...s.runBtn, background: "#313244", color: "#cdd6f4", width: "auto", padding: "10px 24px" }}
-                onClick={() => { setError(""); setReconnectTrigger(n => n + 1); }}
-              >
-                ↻ Retry connection
-              </button>
-            )}
-            <button
-              style={{ ...s.runBtn, background: "transparent", border: "1px solid #45475a", color: "#a6adc8", width: "auto", padding: "10px 24px" }}
-              onClick={startOver}
-            >
-              Start Over
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (!selectedMode && !runId)
-    return (
-      <ModeSelect
-        onSelect={setSelectedMode}
-        username={username}
-        onHistory={() => navigate("/history")}
-        onSignOut={async () => { await logout(); navigate("/login"); }}
-      />
-    );
-
-  if (selectedMode && !runId)
-    return <TaskInput mode={selectedMode} onSubmit={startRun} onBack={() => setSelectedMode(null)} startError={startError} />;
-
   const errBanner = submitError ? (
     <div style={s.floatError} className="fade-in">
       ⚠ {submitError}
@@ -702,17 +688,16 @@ export default function Analysis() {
     </div>
   ) : null;
 
-  const payload    = gate?.payload as Record<string, unknown> | undefined;
-  const activeMode = (analysisMode || selectedMode || "ab_test") as string;
+  const payload = gate?.payload as Record<string, unknown> | undefined;
+
+  const isRunning = !done && !gate;
+  const processingLabel = submitting || (lastGate && !gate) ? "Processing your response…" : undefined;
 
   const renderGate = (el: React.ReactNode) => (
-    <div style={s.gatePage}>
-      <GateBar task={taskText} mode={activeMode} onStartOver={startOver} />
+    <>
       {errBanner}
-      <div style={s.gateScroll}>
-        <div style={s.gateContent}>{el}</div>
-      </div>
-    </div>
+      <div style={s.gateContent}>{el}</div>
+    </>
   );
 
   if (gate?.gate === "intent")
@@ -729,31 +714,198 @@ export default function Analysis() {
   if (gate?.gate === "narrative")
     return renderGate(<NarrativeGate payload={payload as Parameters<typeof NarrativeGate>[0]["payload"]} onSubmit={resume} submitting={submitting} />);
 
-  if (done) return <FinishedView state={done.state} runId={runId!} onNewAnalysis={startOver} />;
+  return (
+    <div style={s.center}>
+      <div style={{ width: "100%", maxWidth: 420 }} className="fade-in">
+        {processingLabel && (
+          <div style={s.processingBanner} className="fade-in">
+            <span style={s.processingDot} />
+            {processingLabel}
+          </div>
+        )}
+        <div style={s.progressCard}>
+          <PipelineProgress gate={gate?.gate ?? null} lastGate={lastGate} analysisMode={analysisMode} />
+        </div>
+        <ChainOfThought steps={steps} isRunning={isRunning} />
+      </div>
+    </div>
+  );
+}
 
-  // Between gates: show PipelineProgress with optional "processing" label
-  // when we've just submitted a gate and are waiting for the next SSE event.
-  const processingLabel = submitting || (lastGate && !gate)
-    ? "Processing your response…"
-    : undefined;
+// ── CollapsedExchange — past exchange shown as summary ────────────────────────
+
+function CollapsedExchange({ exchange, onExpand }: { exchange: Exchange; onExpand: () => void }) {
+  const rec = exchange.result?.recommendation ?? "";
+  const truncTask = exchange.task.length > 80 ? exchange.task.slice(0, 80) + "…" : exchange.task;
+  return (
+    <div style={s.collapsedExchange}>
+      <div style={s.collapsedLeft}>
+        <span style={{ color: "#45475a", fontSize: 12 }}>Q:</span>
+        <span style={{ color: "#a6adc8", fontSize: 13 }}>{truncTask}</span>
+      </div>
+      {rec && <span style={s.collapsedRec}>{rec.length > 80 ? rec.slice(0, 80) + "…" : rec}</span>}
+      <button style={s.expandBtn} onClick={onExpand}>Expand</button>
+    </div>
+  );
+}
+
+// ── Main Analysis page ─────────────────────────────────────────────────────────
+
+export default function Analysis() {
+  const navigate = useNavigate();
+
+  const [selectedMode, setSelectedMode] = useState<Mode | null>(null);
+  const [thread,       setThread]       = useState<Exchange[]>([]);
+  const [expanded,     setExpanded]     = useState<Set<number>>(new Set());
+  const [startError,   setStartError]   = useState("");
+  const [username,     setUsername]     = useState("");
+  const [runError,     setRunError]     = useState("");
+
+  useTokenRefresh(() => {});
+
+  useEffect(() => {
+    client.get<{ username: string }>("/auth/me")
+      .then(r => setUsername(r.data.username))
+      .catch(() => {});
+  }, []);
+
+  const startOver = () => {
+    setThread([]); setSelectedMode(null); setStartError(""); setRunError(""); setExpanded(new Set());
+  };
+
+  const startRun = async (task: string, db_backend: string, pg?: PgCreds, uploadId?: string, parentRunId = "") => {
+    setStartError("");
+    try {
+      const body: Record<string, unknown> = { task, db_backend };
+      if (selectedMode) body.analysis_mode = selectedMode;
+      if (uploadId) body.duckdb_path = uploadId;
+      if (parentRunId) body.parent_run_id = parentRunId;
+      if (pg) { body.pg_host = pg.host; body.pg_port = parseInt(pg.port) || 5432; body.pg_dbname = pg.dbname; body.pg_user = pg.user; body.pg_password = pg.password; }
+      const { data } = await client.post("/runs", body);
+      const newExchange: Exchange = {
+        task, runId: data.run_id, parentRunId,
+        result: null, steps: [], analysisMode: (selectedMode ?? ""),
+      };
+      setThread(prev => {
+        const next = [...prev, newExchange];
+        setExpanded(e => { const s2 = new Set(e); s2.add(next.length - 1); return s2; });
+        return next;
+      });
+    } catch (err) {
+      const msg = extractApiError(err, "Failed to start analysis.");
+      setStartError(msg);
+      throw err;
+    }
+  };
+
+  const handleExchangeDone = (idx: number) => (state: DoneEvent["state"], steps: StepEvent[]) => {
+    setThread(prev => prev.map((ex, i) => i === idx ? { ...ex, result: state, steps } : ex));
+  };
+
+  const handleExchangeError = (idx: number) => (msg: string) => {
+    setRunError(msg);
+  };
+
+  const handleFollowUp = async (task: string) => {
+    const lastDone = [...thread].reverse().find(ex => ex.result !== null);
+    const parentRunId = lastDone?.runId ?? "";
+    await startRun(task, "duckdb", undefined, undefined, parentRunId);
+  };
+
+  // ── Render ──────────────────────────────────────────────────────────────────
+
+  if (runError) {
+    const isConnectionLost = runError.startsWith("Connection lost");
+    return (
+      <div style={s.center}>
+        <div className="fade-in" style={{ textAlign: "center", maxWidth: 380 }}>
+          <div style={{ fontSize: 32, marginBottom: 12 }}>{isConnectionLost ? "📡" : "⚠️"}</div>
+          <p style={{ color: "#f38ba8", marginBottom: 8, fontSize: 15, fontWeight: 600 }}>
+            {isConnectionLost ? "Connection lost" : "Something went wrong"}
+          </p>
+          <p style={{ color: "#585b70", marginBottom: 20, fontSize: 13 }}>{runError}</p>
+          <button
+            style={{ ...s.runBtn, background: "transparent", border: "1px solid #45475a", color: "#a6adc8", width: "auto", padding: "10px 24px" }}
+            onClick={startOver}
+          >
+            Start Over
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!selectedMode && thread.length === 0)
+    return (
+      <ModeSelect
+        onSelect={setSelectedMode}
+        username={username}
+        onHistory={() => navigate("/history")}
+        onSignOut={async () => { await logout(); navigate("/login"); }}
+      />
+    );
+
+  if (selectedMode && thread.length === 0)
+    return <TaskInput mode={selectedMode} onSubmit={startRun} onBack={() => setSelectedMode(null)} startError={startError} />;
+
+  // Active run: show thread with last exchange running
+  const activeMode = (thread[0]?.analysisMode || selectedMode || "ab_test") as string;
+  const lastIdx = thread.length - 1;
+  const lastExchange = thread[lastIdx];
+  const isLastRunning = lastExchange && lastExchange.result === null;
 
   return (
     <div style={s.gatePage}>
-      <GateBar task={taskText} mode={activeMode} onStartOver={startOver} />
+      <GateBar task={lastExchange?.task ?? ""} mode={activeMode} onStartOver={startOver} />
       <div style={s.gateScroll}>
-        <div style={s.center}>
-          <div style={{ width: "100%", maxWidth: 420 }} className="fade-in">
-            {processingLabel && (
-              <div style={s.processingBanner} className="fade-in">
-                <span style={s.processingDot} />
-                {processingLabel}
-              </div>
-            )}
-            <div style={s.progressCard}>
-              <PipelineProgress gate={gate?.gate ?? null} lastGate={lastGate} analysisMode={analysisMode} />
+        {/* Past exchanges (all except last) */}
+        {thread.slice(0, -1).map((ex, i) => {
+          const isExpandedEx = expanded.has(i);
+          return (
+            <div key={ex.runId} style={s.pastExchange}>
+              {isExpandedEx ? (
+                <div>
+                  <div style={s.exchangeTaskRow}>
+                    <span style={s.exchangeQLabel}>Q:</span>
+                    <span style={s.exchangeTask}>{ex.task}</span>
+                    <button style={s.collapseBtn} onClick={() => setExpanded(prev => { const s2 = new Set(prev); s2.delete(i); return s2; })}>Collapse</button>
+                  </div>
+                  {ex.result && (
+                    <>
+                      <div style={{ ...s.narrativeCard, marginTop: 10 }}>
+                        <Markdown content={sanitiseNarrative(ex.result.narrative_draft).split("<!-- details -->")[0].trim()} />
+                      </div>
+                      <ChainOfThought steps={ex.steps} isRunning={false} />
+                    </>
+                  )}
+                </div>
+              ) : (
+                <CollapsedExchange exchange={ex} onExpand={() => setExpanded(prev => new Set([...prev, i]))} />
+              )}
             </div>
+          );
+        })}
+
+        {/* Current (last) exchange */}
+        {lastExchange && (
+          <div style={s.currentExchange}>
+            {lastExchange.result ? (
+              <FinishedView
+                state={lastExchange.result}
+                runId={lastExchange.runId}
+                steps={lastExchange.steps}
+                onNewAnalysis={startOver}
+                onFollowUp={handleFollowUp}
+              />
+            ) : (
+              <ActiveRun
+                exchange={lastExchange}
+                onDone={handleExchangeDone(lastIdx)}
+                onError={handleExchangeError(lastIdx)}
+              />
+            )}
           </div>
-        </div>
+        )}
       </div>
     </div>
   );
@@ -831,4 +983,22 @@ const s: Record<string, React.CSSProperties> = {
   chartsGrid:         { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 },
 
   narrativeCard: { background: "#1e1e2e", border: "1px solid #313244", borderRadius: 12, padding: "28px 32px", lineHeight: 1.7 },
+
+  followUpBox:   { marginTop: 20, padding: "16px 20px", background: "#181825", border: "1px solid #313244", borderRadius: 10 },
+  followUpLabel: { color: "#585b70", fontSize: 11, fontWeight: 600, textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 10 },
+  followUpRow:   { display: "flex", gap: 10, alignItems: "flex-end" },
+  followUpInput: { flex: 1, background: "#11111b", color: "#cdd6f4", border: "1px solid #313244", borderRadius: 8, padding: "10px 12px", fontSize: 13, resize: "none" as const, lineHeight: 1.5, fontFamily: "inherit" },
+  followUpBtn:   { padding: "10px 18px", background: "#89b4fa", color: "#1e1e2e", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 16, cursor: "pointer", flexShrink: 0, height: 42 },
+
+  pastExchange:      { borderBottom: "1px solid #181825", padding: "12px 20px" },
+  currentExchange:   { flex: 1 },
+  exchangeTaskRow:   { display: "flex", alignItems: "center", gap: 8 },
+  exchangeQLabel:    { color: "#45475a", fontSize: 12, flexShrink: 0 },
+  exchangeTask:      { color: "#a6adc8", fontSize: 13, flex: 1 },
+  collapseBtn:       { background: "transparent", border: "none", color: "#45475a", fontSize: 12, cursor: "pointer", flexShrink: 0 },
+
+  collapsedExchange: { display: "flex", alignItems: "center", gap: 12, padding: "10px 0" },
+  collapsedLeft:     { display: "flex", gap: 6, alignItems: "center", flex: 1, minWidth: 0 },
+  collapsedRec:      { color: "#585b70", fontSize: 12, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const },
+  expandBtn:         { background: "transparent", border: "1px solid #313244", color: "#585b70", fontSize: 12, borderRadius: 6, padding: "3px 10px", cursor: "pointer", flexShrink: 0 },
 };
