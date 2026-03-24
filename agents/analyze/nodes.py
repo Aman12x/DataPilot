@@ -1504,7 +1504,20 @@ def run_ttest_node(state: AgentState) -> dict:
     words = re.split(r"[_\-./]+", use_col.lower())
     winsorize_pct = 0.01 if any(w in _SKEWED_KEYWORDS for w in words) else 0.0
 
-    result = stats_tools.run_ttest(ctrl, trt, winsorize_pct=winsorize_pct)
+    # Infer one-sided test direction from MetricConfig when direction is known.
+    # higher_is_better → expect treatment > control → 'greater'
+    # lower_is_better  → expect treatment < control → 'less'
+    # Unknown / not set → safe default 'two-sided'
+    direction = getattr(mc, "metric_direction", None) or ""
+    if direction == "higher_is_better":
+        alternative = "greater"
+    elif direction == "lower_is_better":
+        alternative = "less"
+    else:
+        alternative = "two-sided"
+
+    result = stats_tools.run_ttest(ctrl, trt, winsorize_pct=winsorize_pct,
+                                   alternative=alternative)
     return {"ttest_result": result}
 
 
@@ -1584,12 +1597,20 @@ def detect_novelty_node(state: AgentState) -> dict:
     mc     = state.get("metric_config") or load_metric_config()
     metric = state.get("metric") or mc.primary_metric
 
+    from tools.schemas import NoveltyResult as _NoveltyResult
+
     if df is None:
         return {}
-    for col in [metric, "variant", "week"]:
-        if col not in df.columns:
-            logger.warning("detect_novelty: column '%s' missing, skipping.", col)
-            return {}
+
+    # Return a typed skip result so the narrative knows why this section is absent.
+    missing = [col for col in [metric, "variant", "week"] if col not in df.columns]
+    if missing:
+        reason = f"Required column(s) missing: {', '.join(missing)}"
+        logger.warning("detect_novelty: %s — skipping.", reason)
+        return {"novelty_result": _NoveltyResult(
+            week1_ate=0.0, week2_ate=0.0, effect_direction="unknown",
+            novelty_likely=False, skipped=True, skip_reason=reason,
+        )}
 
     try:
         result = novelty_tools.detect_novelty_effect(
@@ -1597,7 +1618,10 @@ def detect_novelty_node(state: AgentState) -> dict:
         )
     except ValueError as exc:
         logger.warning("detect_novelty: skipping — %s", exc)
-        return {}
+        return {"novelty_result": _NoveltyResult(
+            week1_ate=0.0, week2_ate=0.0, effect_direction="unknown",
+            novelty_likely=False, skipped=True, skip_reason=str(exc),
+        )}
     return {"novelty_result": result}
 
 

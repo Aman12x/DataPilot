@@ -64,8 +64,9 @@ def format_narrative(
     n_treatment      = ttest_result.get("n_treatment", 0)          if ttest_ran else 0
     ci_lower         = ttest_result.get("ci_lower",  None)         if ttest_ran else None
     ci_upper         = ttest_result.get("ci_upper",  None)         if ttest_ran else None
-    winsorized       = ttest_result.get("winsorized", False)        if ttest_ran else False
-    skewness_warning = ttest_result.get("skewness_warning", None)  if ttest_ran else None
+    winsorized       = ttest_result.get("winsorized", False)         if ttest_ran else False
+    skewness_warning = ttest_result.get("skewness_warning", None)   if ttest_ran else None
+    alternative      = ttest_result.get("alternative", "two-sided") if ttest_ran else "two-sided"
     cuped_ran  = bool(cuped_result)
     cuped_ate  = cuped_result.get("cuped_ate", 0.0)       if cuped_ran else None
     var_red    = cuped_result.get("variance_reduction_pct", 0.0) if cuped_ran else None
@@ -74,10 +75,12 @@ def format_narrative(
     seg_share       = hte_result.get("segment_share", 0.0)
     interaction_p   = hte_result.get("interaction_p_value", None)
 
+    novelty_skipped   = novelty_result.get("skipped", False)
     novelty_likely    = novelty_result.get("novelty_likely", False)
     effect_direction  = novelty_result.get("effect_direction", "unknown")
     week1_ate         = novelty_result.get("week1_ate", 0.0)
     week2_ate         = novelty_result.get("week2_ate", 0.0)
+    novelty_skip_reason = novelty_result.get("skip_reason")
 
     powered           = mde_result.get("is_powered_for_observed_effect")
     mde_rel           = mde_result.get("mde_relative_pct", 0.0)
@@ -92,8 +95,11 @@ def format_narrative(
     )
 
     forecast_outside  = forecast_result.get("outside_ci", False)
-    forecast_method   = forecast_result.get("method", "rolling_mean")
+    _forecast_raw_method = forecast_result.get("method", "rolling_mean")
     forecast_warning  = forecast_result.get("warning")
+    # Human-readable method name
+    forecast_method   = "Prophet" if _forecast_raw_method == "prophet" else "7-day rolling mean"
+    forecast_is_rolling = _forecast_raw_method != "prophet"
 
     dominant_comp     = decomposition_result.get("dominant_change_component", "unknown")
     anomaly_dates     = anomaly_result.get("anomaly_dates", [])
@@ -137,9 +143,10 @@ def format_narrative(
         ) if cohens_d is not None else ""
         n_str = f" [n={n_control:,} ctrl / {n_treatment:,} trt]" if n_control and n_treatment else ""
         wins_str = " _(outliers winsorized at 1%)_" if winsorized else ""
+        alt_str  = f" _{alternative} test_" if alternative != "two-sided" else ""
         cuped_line = (
             f"- **Experiment (CUPED):** ATE={cuped_ate:+.4f} "
-            f"(variance reduction {var_red:.1f}%){d_str}, {p_str} → {sig_str.upper()}.{n_str}{wins_str}"
+            f"(variance reduction {var_red:.1f}%){d_str}, {p_str} → {sig_str.upper()}.{n_str}{wins_str}{alt_str}"
         )
     else:
         cuped_line = "- **Experiment:** Analysis could not be computed. Required columns may be missing."
@@ -222,16 +229,31 @@ def format_narrative(
     else:
         confidence_lines.append(f"- **MDE:** {mde_rel:.1f}% (observed effect comparison not available).")
 
-    confidence_lines.append(
-        f"- {'✅' if not novelty_likely else '⚠️'} **Novelty effect:** "
-        f"Effect is **{effect_direction}** (week1 ATE={week1_ate:+.4f}, week2={week2_ate:+.4f}). "
-        f"{'Novelty decay likely.' if novelty_likely else 'Novelty ruled out.'}"
-    )
+    if novelty_skipped:
+        confidence_lines.append(
+            f"- ℹ️ **Novelty effect:** Not evaluated"
+            + (f" ({novelty_skip_reason})." if novelty_skip_reason else ".")
+        )
+    else:
+        confidence_lines.append(
+            f"- {'✅' if not novelty_likely else '⚠️'} **Novelty effect:** "
+            f"Effect is **{effect_direction}** (week1 ATE={week1_ate:+.4f}, week2={week2_ate:+.4f}). "
+            f"{'Novelty decay likely.' if novelty_likely else 'Novelty ruled out.'}"
+        )
 
     if forecast_outside:
-        confidence_lines.append("- ✅ **Forecast:** Drop confirmed outside pre-experiment confidence interval.")
+        confidence_lines.append(
+            f"- ✅ **Forecast ({forecast_method}):** Drop confirmed outside pre-experiment confidence interval."
+            + (" ⚠ Rolling mean is not seasonality-aware — verify against a longer baseline." if forecast_is_rolling else "")
+        )
     else:
-        confidence_lines.append("- ⚠️ **Forecast:** Drop within forecast CI. Could be natural variance.")
+        confidence_lines.append(
+            f"- ⚠️ **Forecast ({forecast_method}):** Drop within CI. Could be natural variance."
+            + (" Rolling mean CI widens with higher baseline variance — consider this a weak signal." if forecast_is_rolling else "")
+        )
+
+    if forecast_is_rolling and forecast_warning:
+        confidence_lines.append(f"- ⚠️ **Forecast note:** {forecast_warning}")
 
     confidence_lines.append(f"- **Business impact:** {business_impact}")
 

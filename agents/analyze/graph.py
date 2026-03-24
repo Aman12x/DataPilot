@@ -109,13 +109,14 @@ def _default_checkpointer() -> MemorySaver:
 def _route_after_cache_check(state: AgentState) -> str:
     """
     After check_semantic_cache:
-      - Hard hit (similarity > hard threshold) → interrupt analyst at semantic_cache_gate
-      - Soft hit (similarity > soft threshold) → also interrupt (analyst sees cached result)
-      - Miss                                   → continue normally from inject_history
+      - Hard hit (similarity >= hard threshold, default 0.92) → interrupt analyst
+      - Soft hit / miss                                       → inject history and run fresh
+    Only truly near-duplicate questions (≥0.92 similarity) interrupt the analyst.
+    Soft hits no longer cause a gate — they were annoying friction for different
+    questions that happened to share keywords.
     """
     similarity = state.get("semantic_cache_similarity", 0.0)
-    soft = float(os.getenv("SEMANTIC_CACHE_SOFT_THRESHOLD", "0.80"))
-    if state.get("semantic_cache_hit") and similarity > soft:
+    if state.get("semantic_cache_hit") and similarity >= _HARD_HIT_THRESHOLD:
         return "semantic_cache_gate"
     return "inject_history"
 
@@ -325,8 +326,8 @@ def build_graph(checkpointer=None) -> StateGraph:
 
 
 # ── Module-level default instance ─────────────────────────────────────────────
-# Used by ui/app.py: `from agents.analyze.graph import graph`
-# Each Streamlit session creates its own thread_id config, so one compiled
-# graph object is safe to share across sessions.
+# Used by backend/api/main.py: `from agents.analyze.graph import build_graph`
+# Each API request creates its own thread_id config, so one compiled
+# graph object is safe to share across requests.
 
 graph = build_graph(_default_checkpointer())

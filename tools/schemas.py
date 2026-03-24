@@ -33,6 +33,7 @@ class TtestResult(BaseModel):
     n_treatment:      int           = 0
     winsorized:       bool          = False  # True when outlier-clipping was applied
     skewness_warning: Optional[str] = None   # set when |skew| > 2 in either arm
+    alternative:      str           = "two-sided"  # 'two-sided' | 'greater' | 'less'
 
 
 class SegmentResult(BaseModel):
@@ -154,8 +155,10 @@ class GuardrailResult(BaseModel):
 class NoveltyResult(BaseModel):
     week1_ate:        float
     week2_ate:        float
-    effect_direction: str   # 'decaying' | 'growing' | 'stable'
+    effect_direction: str            # 'decaying' | 'growing' | 'stable' | 'unknown'
     novelty_likely:   bool
+    skipped:          bool           = False  # True when the check could not run
+    skip_reason:      Optional[str]  = None   # human-readable reason for skipping
 
 
 # ── mde_tools ─────────────────────────────────────────────────────────────────

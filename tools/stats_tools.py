@@ -91,6 +91,7 @@ def run_ttest(
     treatment: pd.Series | np.ndarray,
     alpha: float = 0.05,
     winsorize_pct: float = 0.0,
+    alternative: str = "two-sided",
 ) -> TtestResult:
     """
     Two-sample Welch's t-test (unequal variance).
@@ -102,11 +103,16 @@ def run_ttest(
         winsorize_pct: If > 0, clip both arrays at this quantile on each tail before
                        testing (e.g. 0.01 clips bottom/top 1%). Useful for revenue-
                        style metrics dominated by a handful of outliers. Default 0 = off.
+        alternative:   'two-sided' (default), 'greater' (treatment > control),
+                       or 'less' (treatment < control). One-sided tests are
+                       appropriate when the direction of benefit is known in advance.
 
     Returns:
         TtestResult with t_stat, p_value, ci_lower, ci_upper, significant,
-        cohens_d (pooled effect size), n_control, n_treatment.
+        cohens_d (pooled effect size), n_control, n_treatment, alternative.
     """
+    if alternative not in ("two-sided", "greater", "less"):
+        raise ValueError("alternative must be 'two-sided', 'greater', or 'less'.")
     control   = np.asarray(control, dtype=float)
     treatment = np.asarray(treatment, dtype=float)
 
@@ -132,9 +138,11 @@ def run_ttest(
         control   = _winsorize(control,   winsorize_pct)
         treatment = _winsorize(treatment, winsorize_pct)
 
-    t_stat, p_value = stats.ttest_ind(treatment, control, equal_var=False)
+    t_stat, p_value = stats.ttest_ind(treatment, control, equal_var=False,
+                                       alternative=alternative)
 
-    # 95% CI on the mean difference using Welch-Satterthwaite degrees of freedom
+    # CI on the mean difference using Welch-Satterthwaite degrees of freedom.
+    # For one-sided tests use α (not α/2) so the CI bound aligns with the test.
     mean_diff = treatment.mean() - control.mean()
     se_diff   = np.sqrt(treatment.var(ddof=1) / len(treatment) +
                         control.var(ddof=1)  / len(control))
@@ -142,7 +150,9 @@ def run_ttest(
     n1, n2   = len(treatment), len(control)
     s1, s2   = treatment.var(ddof=1), control.var(ddof=1)
     df_welch = (s1/n1 + s2/n2)**2 / ((s1/n1)**2/(n1-1) + (s2/n2)**2/(n2-1))
-    t_crit   = stats.t.ppf(1 - alpha / 2, df=df_welch)
+    # One-sided: use α; two-sided: use α/2
+    tail_alpha = alpha if alternative != "two-sided" else alpha / 2
+    t_crit     = stats.t.ppf(1 - tail_alpha, df=df_welch)
 
     ci_lower = mean_diff - t_crit * se_diff
     ci_upper = mean_diff + t_crit * se_diff
@@ -163,6 +173,7 @@ def run_ttest(
         n_treatment=int(n1),
         winsorized=winsorize_pct > 0.0,
         skewness_warning=skewness_warning,
+        alternative=alternative,
     )
 
 
