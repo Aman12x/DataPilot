@@ -28,6 +28,7 @@ from tools.eval_tools import (
     EvalResult,
     FIXTURE_GROUND_TRUTH,
     _extract_narrative_numbers,
+    check_magnitude_claims,
     evaluate_fixture,
     evaluate_run,
     score_faithfulness,
@@ -446,3 +447,147 @@ class TestScoreRelevancy:
         result_off = evaluate_run(task, off_topic, hr_df)
         assert result_on.relevancy > result_off.relevancy, \
             "On-topic narrative should have higher relevancy than off-topic"
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 6. check_magnitude_claims
+# ═════════════════════════════════════════════════════════════════════════════
+
+class TestCheckMagnitudeClaims:
+
+    # ── "more than double" ────────────────────────────────────────────────────
+
+    def test_more_than_double_wrong_ratio_flagged(self):
+        """The exact bug: $322,996 is NOT more than double $248,410 (ratio=1.30)."""
+        narrative = (
+            "The Bronze segment produces $322,996 — more than double the next-largest "
+            "segment (Silver at $248,410)."
+        )
+        result = check_magnitude_claims(narrative)
+        assert len(result["violations"]) == 1
+        assert "more than double" in result["violations"][0].lower()
+        assert "1.3" in result["violations"][0]
+
+    def test_more_than_double_correct_ratio_passes(self):
+        """$500,000 vs $200,000 = 2.5x — genuinely more than double."""
+        narrative = "Segment A generates $500,000 — more than double Segment B at $200,000."
+        result = check_magnitude_claims(narrative)
+        assert result["violations"] == []
+
+    def test_more_than_double_exactly_two_flagged(self):
+        """Exactly 2.0x is NOT 'more than double'."""
+        narrative = "Revenue of $400,000 is more than double the $200,000 from last year."
+        result = check_magnitude_claims(narrative)
+        assert len(result["violations"]) == 1
+
+    # ── "double" / "twice" ────────────────────────────────────────────────────
+
+    def test_double_correct_passes(self):
+        """$400 is double $200 — within 25% of 2.0x."""
+        narrative = "Q2 revenue of $400,000 is double Q1 revenue of $200,000."
+        result = check_magnitude_claims(narrative)
+        assert result["violations"] == []
+
+    def test_double_wrong_ratio_flagged(self):
+        """$300 is 1.5x $200, not double."""
+        narrative = "Sales of $300,000 are double the prior period at $200,000."
+        result = check_magnitude_claims(narrative)
+        assert len(result["violations"]) == 1
+
+    def test_twice_correct_passes(self):
+        narrative = "The treatment group converted at 10.0%, twice the control rate of 5.0%."
+        result = check_magnitude_claims(narrative)
+        assert result["violations"] == []
+
+    def test_twice_wrong_flagged(self):
+        narrative = "Conversion was 8.0%, twice the baseline of 5.0%."
+        result = check_magnitude_claims(narrative)
+        assert len(result["violations"]) == 1
+
+    # ── "triple" / "three times" ──────────────────────────────────────────────
+
+    def test_triple_correct_passes(self):
+        narrative = "Churn of $900 is triple the $300 seen in the prior cohort."
+        result = check_magnitude_claims(narrative)
+        assert result["violations"] == []
+
+    def test_triple_wrong_flagged(self):
+        """$500 is 1.67x $300, not triple."""
+        narrative = "Churn of $500 is triple the $300 seen in the prior cohort."
+        result = check_magnitude_claims(narrative)
+        assert len(result["violations"]) == 1
+
+    # ── "N times" ─────────────────────────────────────────────────────────────
+
+    def test_n_times_correct_passes(self):
+        """$1,000 is 5 times $200 — within 25%."""
+        narrative = "Electronics revenue of $1,000 is 5 times the $200 from Books."
+        result = check_magnitude_claims(narrative)
+        assert result["violations"] == []
+
+    def test_n_times_wrong_flagged(self):
+        """$500 is 2.5x $200, not 5 times."""
+        narrative = "Electronics revenue of $500 is 5 times the $200 from Books."
+        result = check_magnitude_claims(narrative)
+        assert len(result["violations"]) == 1
+
+    def test_n_times_small_multiplier_ignored(self):
+        """'1 times' is noise — should not trigger a check."""
+        narrative = "The result was 1 times better than expected at $200 vs $180."
+        result = check_magnitude_claims(narrative)
+        assert result["violations"] == []
+
+    # ── No magnitude language ─────────────────────────────────────────────────
+
+    def test_no_magnitude_language_passes(self):
+        narrative = (
+            "Revenue was $322,996 in Q1 and $248,410 in Q2. "
+            "The gap reflects a shift in product mix."
+        )
+        result = check_magnitude_claims(narrative)
+        assert result["violations"] == []
+
+    def test_empty_narrative_passes(self):
+        assert check_magnitude_claims("")["violations"] == []
+
+    # ── Integration with score_general_claim_accuracy ─────────────────────────
+
+    def test_integrated_into_general_claim_accuracy(self):
+        """score_general_claim_accuracy must surface magnitude violations."""
+        from tools.eval_tools import score_general_claim_accuracy
+        narrative = (
+            "Bronze generates $322,996 — more than double Silver at $248,410."
+        )
+        result = score_general_claim_accuracy(narrative)
+        assert len(result["violations"]) >= 1
+        assert any("more than double" in v.lower() for v in result["violations"])
+
+    def test_integrated_into_ab_claim_accuracy(self):
+        """score_claim_accuracy (A/B) must also surface magnitude violations."""
+        from tools.eval_tools import score_claim_accuracy
+        from tools.schemas import TtestResult
+        tr = TtestResult(
+            t_stat=2.0, p_value=0.03, ci_lower=0.01, ci_upper=0.05,
+            significant=True, cohens_d=0.3, n_control=500, n_treatment=500,
+        )
+        narrative = (
+            "The treatment group generated $322,996 — more than double the control at $248,410."
+        )
+        result = score_claim_accuracy(narrative, tr, None)
+        assert any("more than double" in v.lower() for v in result["violations"])
+
+    def test_correct_ratio_in_ab_narrative_passes(self):
+        """A valid 'double' claim in A/B narrative should not be flagged."""
+        from tools.eval_tools import score_claim_accuracy
+        from tools.schemas import TtestResult
+        tr = TtestResult(
+            t_stat=3.0, p_value=0.001, ci_lower=0.05, ci_upper=0.15,
+            significant=True, cohens_d=0.6, n_control=500, n_treatment=500,
+        )
+        narrative = (
+            "Treatment revenue of $400,000 is double the control at $200,000. "
+            "The result is statistically significant."
+        )
+        result = score_claim_accuracy(narrative, tr, None)
+        mag_violations = [v for v in result["violations"] if "double" in v.lower()]
+        assert mag_violations == []

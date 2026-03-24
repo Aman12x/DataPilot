@@ -402,6 +402,11 @@ def score_claim_accuracy(
                     "treatment as increasing the metric."
                 )
 
+    # Magnitude claims (double, triple, N times) — applies to any narrative
+    mag = check_magnitude_claims(narrative)
+    violations.extend(mag["violations"])
+    checks_total += len(mag["violations"]) + (1 if mag["violations"] else 0)
+
     score = 1.0 - (len(violations) / checks_total) if checks_total > 0 else 1.0
     return {"score": round(score, 4), "violations": violations}
 
@@ -484,6 +489,140 @@ def score_safety_constraints(
     return {"score": round(score, 4), "violations": violations}
 
 
+# ─── Magnitude claim checker (general + A/B) ───────────────────────────────────
+
+# Inline numbers — dollar amounts, plain integers, decimals (not years)
+_INLINE_NUM_RE = re.compile(
+    r"\$\s*(\d[\d,]*(?:\.\d+)?)"   # $1,234.56
+    r"|(\d[\d,]*(?:\.\d+)?)\s*%"   # 32.7%
+    r"|\b(\d[\d,]*(?:\.\d+)?)\b",  # bare number
+    re.VERBOSE,
+)
+_YEAR_RE = re.compile(r"\b(19|20)\d{2}\b")
+
+# (pattern, operator, expected_ratio)
+# operator: "gt" = ratio must be > expected; "approx" = within 20%
+# Ordered longest-match first so "more than double" is checked before plain "double"
+_MAGNITUDE_PATTERNS: list[tuple[re.Pattern, str, float]] = [
+    (re.compile(r"\bmore\s+than\s+double\b|\bmore\s+than\s+twice\b",         re.IGNORECASE), "gt",     2.0),
+    (re.compile(r"\bmore\s+than\s+triple\b|\bmore\s+than\s+three\s+times\b", re.IGNORECASE), "gt",     3.0),
+    (re.compile(r"\bdouble\b|\btwice\b",                                      re.IGNORECASE), "approx", 2.0),
+    (re.compile(r"\btriple\b|\bthree\s+times\b",                              re.IGNORECASE), "approx", 3.0),
+]
+_NTIMES_RE = re.compile(r"\b(\d+(?:\.\d+)?)\s+times\b", re.IGNORECASE)
+
+
+def _extract_nearby_numbers(text: str, match_start: int, window: int = 200) -> list[float]:
+    """Return distinct numeric values within `window` chars of `match_start`."""
+    lo = max(0, match_start - window)
+    hi = min(len(text), match_start + window)
+    snippet = text[lo:hi]
+    nums: list[float] = []
+    for m in _INLINE_NUM_RE.finditer(snippet):
+        raw = (m.group(1) or m.group(2) or m.group(3) or "").replace(",", "")
+        if not raw:
+            continue
+        if _YEAR_RE.search(m.group(0)):
+            continue
+        try:
+            v = float(raw)
+        except ValueError:
+            continue
+        if v <= 5 and "." not in raw:
+            continue
+        nums.append(v)
+    # deduplicate while preserving order
+    seen: set[float] = set()
+    out: list[float] = []
+    for n in nums:
+        if n not in seen:
+            seen.add(n)
+            out.append(n)
+    return out
+
+
+def check_magnitude_claims(narrative: str) -> dict:
+    """
+    Scan the narrative for magnitude language ("double", "more than double",
+    "triple", "N times") and verify the actual ratio of nearby numbers matches
+    the claim within a 25% tolerance.
+
+    Returns: {"violations": [str, ...]}
+
+    Example violation:
+      'Narrative says "more than double" but ratio of nearby numbers is 1.30x
+       ($322,996 vs $248,410) — "more than double" requires ratio > 2.0.'
+    """
+    violations: list[str] = []
+    # Track char spans already consumed by a longer/higher-priority pattern
+    # so "more than double" doesn't also fire the plain "double" sub-pattern.
+    consumed_spans: list[tuple[int, int]] = []
+
+    def _already_consumed(start: int, end: int) -> bool:
+        return any(cs <= start and end <= ce for cs, ce in consumed_spans)
+
+    # Fixed-ratio patterns (double, triple, etc.)
+    for pattern, operator, expected in _MAGNITUDE_PATTERNS:
+        for m in pattern.finditer(narrative):
+            if _already_consumed(m.start(), m.end()):
+                continue
+            consumed_spans.append((m.start(), m.end()))
+
+            nums = _extract_nearby_numbers(narrative, m.start())
+            if len(nums) < 2:
+                continue
+            larger  = max(nums[:6])   # cap search to 6 nearest values
+            smaller = min(n for n in nums[:6] if n > 0)
+            if smaller == 0 or larger == smaller:
+                continue
+            actual_ratio = larger / smaller
+            phrase = m.group(0)
+
+            if operator == "gt":
+                if actual_ratio <= expected:
+                    violations.append(
+                        f'"{phrase}" requires ratio > {expected:.1f}x '
+                        f"but nearby numbers give {actual_ratio:.2f}x "
+                        f"({larger:,.2f} vs {smaller:,.2f})."
+                    )
+            else:  # approx — within 15%
+                if abs(actual_ratio - expected) / expected > 0.15:
+                    violations.append(
+                        f'"{phrase}" implies ~{expected:.1f}x '
+                        f"but nearby numbers give {actual_ratio:.2f}x "
+                        f"({larger:,.2f} vs {smaller:,.2f})."
+                    )
+
+    # "N times" pattern — extract N from the text itself
+    for m in _NTIMES_RE.finditer(narrative):
+        try:
+            claimed = float(m.group(1))
+        except ValueError:
+            continue
+        if claimed < 1.5:
+            continue  # "1 times" is noise
+        nums = _extract_nearby_numbers(narrative, m.start())
+        if len(nums) < 2:
+            continue
+        # exclude the claimed multiplier itself from the value pool
+        candidates = [n for n in nums[:6] if abs(n - claimed) / (claimed + 1e-9) > 0.1]
+        if len(candidates) < 2:
+            continue
+        larger  = max(candidates)
+        smaller = min(c for c in candidates if c > 0)
+        if smaller == 0:
+            continue
+        actual_ratio = larger / smaller
+        if abs(actual_ratio - claimed) / claimed > 0.25:
+            violations.append(
+                f'"{m.group(0)}" claims {claimed:.1f}x '
+                f"but nearby numbers give {actual_ratio:.2f}x "
+                f"({larger:,.2f} vs {smaller:,.2f})."
+            )
+
+    return {"violations": violations}
+
+
 # ─── General-mode claim accuracy ───────────────────────────────────────────────
 
 _STRONG_CORR_RE = re.compile(
@@ -524,15 +663,22 @@ def score_general_claim_accuracy(
     violations: list[str] = []
     checks_total = 0
 
+    # Magnitude claims run regardless of whether correlation data is available
+    mag = check_magnitude_claims(narrative)
+    violations.extend(mag["violations"])
+    checks_total += len(mag["violations"]) + (1 if mag["violations"] else 0)
+
     if correlation_result is None:
-        return {"score": 1.0, "violations": []}
+        score = 1.0 - (len(violations) / checks_total) if checks_total > 0 else 1.0
+        return {"score": round(score, 4), "violations": violations}
 
     pairs = getattr(correlation_result, "pairs", None) or []
     rs = [getattr(p, "correlation", None) for p in pairs]
     rs = [r for r in rs if r is not None]
 
     if not rs:
-        return {"score": 1.0, "violations": []}
+        score = 1.0 - (len(violations) / checks_total) if checks_total > 0 else 1.0
+        return {"score": round(score, 4), "violations": violations}
 
     max_abs_r = max(abs(r) for r in rs)
     max_r     = max(rs)
