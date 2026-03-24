@@ -367,6 +367,37 @@ def _validate_query_content(
                 "Verify the aggregation expression in the SQL."
             )
 
+    # ── JOIN fan-out detection ─────────────────────────────────────────────────
+    # A fan-out occurs when a JOIN produces more rows than the entity table has
+    # entities, usually from a missing GROUP BY or a 1-to-many JOIN key.
+    # For A/B: rows should be ≤ n_users × n_variants × n_weeks (3× buffer).
+    # For general: any entity column with duplicates is suspicious.
+    _ENTITY_COLS_LOWER = {"user_id", "customer_id", "patient_id", "userid",
+                          "uid", "entity_id", "shipment_id"}
+    entity_col = next(
+        (c for c in df.columns if c.lower() in _ENTITY_COLS_LOWER), None
+    )
+    if entity_col:
+        n_rows    = len(df)
+        n_unique  = df[entity_col].nunique()
+        if mode == "ab_test" and "variant" in df.columns:
+            n_variants = max(df["variant"].nunique(), 1)
+            n_weeks    = max(df["week"].nunique(), 1) if "week" in df.columns else 1
+            expected   = n_unique * n_variants * n_weeks
+            if expected > 0 and n_rows > expected * 3:
+                warnings.append(
+                    f"JOIN fan-out: {n_rows:,} rows but {n_unique:,} unique {entity_col}s "
+                    f"× {n_variants} variant(s) × {n_weeks} week(s) = {expected:,} expected "
+                    f"({n_rows / expected:.1f}× over). Missing GROUP BY or duplicate JOIN key."
+                )
+        elif mode == "general" and df[entity_col].duplicated().any():
+            ratio = round(n_rows / max(n_unique, 1), 1)
+            if ratio > 5:
+                warnings.append(
+                    f"JOIN fan-out: {n_rows:,} rows but only {n_unique:,} unique {entity_col}s "
+                    f"({ratio}× ratio). Missing GROUP BY — results are likely double-counted."
+                )
+
     return warnings
 
 
@@ -2095,11 +2126,14 @@ def analysis_gate(state: AgentState) -> dict:
             "analyst_override":  override,
         }
 
-    return {
+    result: dict = {
         "analysis_approved": approved,
         "analyst_notes":     notes,
         "analyst_override":  override,
     }
+    if srm_detected and analyst_response.get("srm_acknowledged"):
+        result["srm_acknowledged"] = True
+    return result
 
 
 # ── Node 18: generate_narrative ───────────────────────────────────────────────
@@ -2209,6 +2243,92 @@ def generate_narrative(state: AgentState) -> dict:
     }
 
 
+def _build_audit_log(state: AgentState) -> str:
+    """
+    Build a structured markdown audit block appended to every approved narrative.
+
+    Records all gate decisions, warnings, and overrides so the report is
+    self-documenting — reviewers can see exactly what was known and approved.
+    """
+    from datetime import datetime, timezone
+
+    mode     = state.get("analysis_mode", "ab_test")
+    now      = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    user     = state.get("user_id") or "unknown"
+    override = state.get("analyst_override") or {}
+
+    lines: list[str] = [
+        "---",
+        "",
+        "**Analysis audit log**",
+        f"- **Run ID:** `{state.get('run_id') or 'n/a'}`",
+        f"- **Mode:** {mode}",
+        f"- **Approved by:** {user} at {now}",
+    ]
+
+    # ── SQL gate ──────────────────────────────────────────────────────────────
+    sql_warnings = state.get("sql_validation_warnings") or []
+    is_postgres  = state.get("db_backend", "duckdb") == "postgres"
+    if is_postgres or sql_warnings:
+        edit_note = " (analyst edited SQL)" if override.get("sql_edited") else ""
+        lines.append(f"- **SQL gate:** human-reviewed{edit_note}")
+    else:
+        lines.append("- **SQL gate:** auto-approved (no warnings)")
+    for w in sql_warnings:
+        lines.append(f"  - ⚠️ {w}")
+
+    if mode == "ab_test":
+        # ── SRM ───────────────────────────────────────────────────────────────
+        srm          = state.get("srm_result")
+        srm_detected = srm.srm_detected if srm else False
+        srm_ack      = state.get("srm_acknowledged", False)
+        if srm_detected:
+            ack_str = "analyst acknowledged and proceeded" if srm_ack else "acknowledgment status unknown"
+            lines.append(f"- **SRM:** ⛔ detected — {ack_str}")
+        else:
+            lines.append("- **SRM:** ✅ not detected")
+
+        # ── Guardrails ────────────────────────────────────────────────────────
+        gr = state.get("guardrail_result")
+        if gr and gr.any_breached:
+            breached_names = [g.metric for g in gr.guardrails if g.breached]
+            lines.append(f"- **Guardrails:** ⚠️ breached — {', '.join(breached_names)}")
+        elif gr:
+            lines.append("- **Guardrails:** ✅ all clear")
+
+        # ── Power / winner's curse ────────────────────────────────────────────
+        mde   = state.get("mde_result")
+        ttest = state.get("ttest_result")
+        if mde and mde.post_hoc_power is not None:
+            pwr = mde.post_hoc_power
+            sig = ttest.significant if ttest else False
+            if sig and pwr < 0.50:
+                lines.append(
+                    f"- **Winner's curse:** ⚠️ present (post-hoc power={pwr*100:.0f}%)"
+                    " — analyst approved despite inflation risk"
+                )
+            else:
+                pwr_icon = "✅" if pwr >= 0.80 else "⚠️"
+                lines.append(f"- **Post-hoc power:** {pwr_icon} {pwr*100:.0f}%")
+
+        # ── Auto-corrections ──────────────────────────────────────────────────
+        rev = state.get("narrative_revision_count") or 0
+        if rev > 0:
+            lines.append(f"- **Auto-corrections:** {rev} attempt(s) before approval")
+        else:
+            lines.append("- **Auto-corrections:** none required")
+
+    # ── Analyst notes (any gate) ─────────────────────────────────────────────
+    if override.get("analysis_notes"):
+        lines.append(f"- **Analyst notes (analysis gate):** {override['analysis_notes']}")
+    if override.get("narrative_notes"):
+        lines.append(f"- **Analyst notes (narrative gate):** {override['narrative_notes']}")
+    if override.get("recommendation_override"):
+        lines.append(f"- **Recommendation overridden by analyst**")
+
+    return "\n".join(lines)
+
+
 # ── Node 19: narrative_gate (HITL interrupt 3) ────────────────────────────────
 
 @observe(name="narrative_gate")
@@ -2315,9 +2435,11 @@ def narrative_gate(state: AgentState) -> dict:
         override["recommendation_override"] = rec_override.strip()
 
     if approved:
+        audit_log     = _build_audit_log(state)
+        final         = state.get("narrative_draft", "") + "\n\n" + audit_log
         return {
             "narrative_approved": True,
-            "final_narrative":    state.get("narrative_draft", ""),
+            "final_narrative":    final,
             "analyst_notes":      analyst_notes,
             "analyst_override":   override,
         }
