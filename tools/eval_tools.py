@@ -406,6 +406,172 @@ def score_claim_accuracy(
     return {"score": round(score, 4), "violations": violations}
 
 
+# ─── Safety constraint checks (A/B only) ──────────────────────────────────────
+
+_SHIP_RE = re.compile(
+    r"\b(ship|deploy|launch|proceed|roll.?out|release|move\s+forward)\b",
+    re.IGNORECASE,
+)
+_STOP_RE = re.compile(
+    r"\b(stop|pause|rollback|roll\s*back|investigate|fix\s+randomiz|halt|revert|do\s+not\s+ship)\b",
+    re.IGNORECASE,
+)
+_GUARDRAIL_MENTION_RE = re.compile(
+    r"\b(guardrail|breached|breach|harm|regression|degraded|pause|rollback)\b",
+    re.IGNORECASE,
+)
+_CONFIRMATORY_RE = re.compile(
+    r"\b(confirmatory|larger\s+experiment|replicate|re-?run|validate|extend\s+the\s+experiment)\b",
+    re.IGNORECASE,
+)
+
+
+def score_safety_constraints(
+    narrative: str,
+    srm_result: Any = None,
+    guardrail_result: Any = None,
+    mde_result: Any = None,
+    ttest_result: Any = None,
+) -> dict:
+    """
+    Check that the narrative recommendation is consistent with safety conditions.
+
+    A narrative that says 'ship' when any of these are true is factually wrong:
+      - SRM detected (randomization broken — all results unreliable)
+      - Guardrail breached + significant (active harm detected)
+      - Winner's curse (significant but post-hoc power < 50%)
+
+    Returns: {"score": fraction_correct, "violations": [str, ...]}
+    """
+    violations: list[str] = []
+    checks_total = 0
+
+    has_ship = bool(_SHIP_RE.search(narrative))
+    has_stop = bool(_STOP_RE.search(narrative))
+
+    # SRM: any shipping language is wrong regardless of other caveats
+    srm_detected = getattr(srm_result, "srm_detected", False) if srm_result else False
+    if srm_detected:
+        checks_total += 1
+        if has_ship and not has_stop:
+            violations.append(
+                "SRM detected but narrative recommends shipping/proceeding without "
+                "flagging the broken randomization."
+            )
+
+    # Guardrail breach + significant: ship without stop/investigate/guardrail mention
+    any_breached = getattr(guardrail_result, "any_breached", False) if guardrail_result else False
+    significant  = getattr(ttest_result, "significant", False)     if ttest_result else False
+    if any_breached and significant:
+        checks_total += 1
+        if has_ship and not has_stop and not _GUARDRAIL_MENTION_RE.search(narrative):
+            violations.append(
+                "Guardrail metric breached and result is significant, but narrative "
+                "recommends shipping without mentioning rollback or the guardrail breach."
+            )
+
+    # Winner's curse: significant + low post-hoc power → must require confirmatory experiment
+    post_hoc_power = getattr(mde_result, "post_hoc_power", None) if mde_result else None
+    if significant and post_hoc_power is not None and post_hoc_power < 0.50:
+        checks_total += 1
+        if has_ship and not _CONFIRMATORY_RE.search(narrative):
+            violations.append(
+                f"Post-hoc power={post_hoc_power:.0%} (winner's curse risk) but narrative "
+                "recommends shipping without requiring a confirmatory experiment."
+            )
+
+    score = 1.0 - (len(violations) / checks_total) if checks_total > 0 else 1.0
+    return {"score": round(score, 4), "violations": violations}
+
+
+# ─── General-mode claim accuracy ───────────────────────────────────────────────
+
+_STRONG_CORR_RE = re.compile(
+    r"\b(strong|high|significant)\s+(positive\s+|negative\s+|linear\s+)?correlation\b",
+    re.IGNORECASE,
+)
+_NO_CORR_RE = re.compile(
+    r"\b(no|weak|little|minimal|negligible)\s+(significant\s+)?(correlation|relationship|association)\b",
+    re.IGNORECASE,
+)
+_POS_CORR_RE = re.compile(
+    r"\bpositive\s+(correlation|relationship|association)\b",
+    re.IGNORECASE,
+)
+_NEG_CORR_RE = re.compile(
+    r"\b(negative|inverse)\s+(correlation|relationship|association)\b",
+    re.IGNORECASE,
+)
+
+
+def score_general_claim_accuracy(
+    narrative: str,
+    describe_result: Any = None,
+    correlation_result: Any = None,
+) -> dict:
+    """
+    Deterministic claim accuracy for general analysis mode.
+
+    Checks correlation-strength and direction claims against the actual
+    CorrelationResult pairs:
+      - "strong correlation"      → max |r| >= 0.5
+      - "no/weak correlation"     → all |r| < 0.3
+      - "positive correlation"    → at least one r > 0
+      - "negative correlation"    → at least one r < 0
+
+    Returns: {"score": fraction_correct, "violations": [str, ...]}
+    """
+    violations: list[str] = []
+    checks_total = 0
+
+    if correlation_result is None:
+        return {"score": 1.0, "violations": []}
+
+    pairs = getattr(correlation_result, "pairs", None) or []
+    rs = [getattr(p, "correlation", None) for p in pairs]
+    rs = [r for r in rs if r is not None]
+
+    if not rs:
+        return {"score": 1.0, "violations": []}
+
+    max_abs_r = max(abs(r) for r in rs)
+    max_r     = max(rs)
+    min_r     = min(rs)
+
+    if _STRONG_CORR_RE.search(narrative):
+        checks_total += 1
+        if max_abs_r < 0.5:
+            violations.append(
+                f"Narrative claims strong correlation but max |r|={max_abs_r:.3f} < 0.5."
+            )
+
+    if _NO_CORR_RE.search(narrative):
+        checks_total += 1
+        if max_abs_r >= 0.3:
+            violations.append(
+                f"Narrative claims no/weak correlation but max |r|={max_abs_r:.3f} >= 0.3."
+            )
+
+    if _POS_CORR_RE.search(narrative):
+        checks_total += 1
+        if max_r <= 0:
+            violations.append(
+                f"Narrative claims a positive correlation but the highest r={max_r:.3f} — "
+                "no positive correlations found in the data."
+            )
+
+    if _NEG_CORR_RE.search(narrative):
+        checks_total += 1
+        if min_r >= 0:
+            violations.append(
+                f"Narrative claims a negative correlation but the lowest r={min_r:.3f} — "
+                "no negative correlations found in the data."
+            )
+
+    score = 1.0 - (len(violations) / checks_total) if checks_total > 0 else 1.0
+    return {"score": round(score, 4), "violations": violations}
+
+
 # ─── LLM judge (opt-in, Claude Haiku) ─────────────────────────────────────────
 
 _JUDGE_PROMPT = """\

@@ -2213,23 +2213,31 @@ def generate_narrative(state: AgentState) -> dict:
 
 @observe(name="narrative_gate")
 def narrative_gate(state: AgentState) -> dict:
-    # ── Pre-interrupt: auto-block factually wrong narratives (A/B only) ───────
+    # ── Pre-interrupt: auto-block factually wrong narratives ─────────────────
     # Capped at 3 attempts to avoid infinite loops. On exhaustion, fall through
     # to the analyst interrupt with violations listed so they can fix manually.
     _MAX_AUTO_REVISIONS = 3
     claim_violations: list[str] = []
-    if state.get("analysis_mode", "ab_test") == "ab_test":
-        narrative = state.get("narrative_draft", "")
+    mode = state.get("analysis_mode", "ab_test")
+    narrative = state.get("narrative_draft", "")
+
+    if mode == "ab_test" and narrative:
         ttest     = state.get("ttest_result")
         cuped     = state.get("cuped_result")
-        if narrative and ttest is not None:
+        srm       = state.get("srm_result")
+        guardrail = state.get("guardrail_result")
+        mde       = state.get("mde_result")
+        if ttest is not None:
             try:
-                from tools.eval_tools import score_claim_accuracy
-                claim = score_claim_accuracy(narrative, ttest, cuped)
-                if claim["violations"]:
+                from tools.eval_tools import score_claim_accuracy, score_safety_constraints
+                all_violations = (
+                    score_claim_accuracy(narrative, ttest, cuped)["violations"]
+                    + score_safety_constraints(narrative, srm, guardrail, mde, ttest)["violations"]
+                )
+                if all_violations:
                     revision_count = state.get("narrative_revision_count") or 0
                     if revision_count < _MAX_AUTO_REVISIONS:
-                        violation_str = "; ".join(claim["violations"])
+                        violation_str = "; ".join(all_violations)
                         logger.warning(
                             "narrative_gate: auto-blocking (attempt %d/%d) — %s",
                             revision_count + 1, _MAX_AUTO_REVISIONS, violation_str,
@@ -2244,15 +2252,43 @@ def narrative_gate(state: AgentState) -> dict:
                             ),
                         }
                     else:
-                        # Exhausted — surface to analyst instead of looping further
                         logger.warning(
                             "narrative_gate: auto-correction cap reached (%d) — "
                             "surfacing violations to analyst: %s",
-                            _MAX_AUTO_REVISIONS, claim["violations"],
+                            _MAX_AUTO_REVISIONS, all_violations,
                         )
-                        claim_violations = claim["violations"]
+                        claim_violations = all_violations
             except Exception as exc:
                 logger.debug("narrative_gate: claim accuracy check failed — %s", exc)
+
+    elif mode == "general" and narrative:
+        try:
+            from tools.eval_tools import score_general_claim_accuracy
+            general = score_general_claim_accuracy(
+                narrative,
+                describe_result=state.get("describe_result"),
+                correlation_result=state.get("correlation_result"),
+            )
+            if general["violations"]:
+                revision_count = state.get("narrative_revision_count") or 0
+                if revision_count < _MAX_AUTO_REVISIONS:
+                    violation_str = "; ".join(general["violations"])
+                    logger.warning(
+                        "narrative_gate: general-mode auto-blocking (attempt %d/%d) — %s",
+                        revision_count + 1, _MAX_AUTO_REVISIONS, violation_str,
+                    )
+                    return {
+                        "narrative_approved":       False,
+                        "narrative_revision_count": revision_count + 1,
+                        "analyst_notes": (
+                            f"AUTO-CORRECTION: The narrative makes claims that contradict the "
+                            f"data: {violation_str}. Correct these before review."
+                        ),
+                    }
+                else:
+                    claim_violations = general["violations"]
+        except Exception as exc:
+            logger.debug("narrative_gate: general claim accuracy check failed — %s", exc)
 
     payload: dict = {
         "gate":             "narrative",
