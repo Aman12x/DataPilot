@@ -54,6 +54,7 @@ from agents.analyze.nodes import (
     describe_data_node,
     detect_anomaly_node,
     detect_novelty_node,
+    detect_timeseries_node,
     execute_query,
     find_correlations_node,
     forecast_baseline_node,
@@ -72,6 +73,7 @@ from agents.analyze.nodes import (
     run_cuped_node,
     run_hte_node,
     run_power_analysis_node,
+    run_regression_node,
     run_ttest_node,
     semantic_cache_gate,
 )
@@ -284,6 +286,8 @@ def build_graph(checkpointer=None) -> StateGraph:
     # General-analysis nodes
     builder.add_node("describe_data",      describe_data_node)
     builder.add_node("find_correlations",  find_correlations_node)
+    builder.add_node("run_regression",     run_regression_node)
+    builder.add_node("detect_timeseries",  detect_timeseries_node)
 
     # Route after execute_query: general → describe_data, ab_test → load_auxiliary_data
     builder.add_conditional_edges(
@@ -296,9 +300,11 @@ def build_graph(checkpointer=None) -> StateGraph:
         },
     )
 
-    # General analysis path: describe → correlations → (shared) generate_charts → analysis_gate
+    # General analysis path: describe → correlations → regression → timeseries → generate_charts
     builder.add_edge("describe_data",     "find_correlations")
-    builder.add_edge("find_correlations", "generate_charts")
+    builder.add_edge("find_correlations", "run_regression")
+    builder.add_edge("run_regression",    "detect_timeseries")
+    builder.add_edge("detect_timeseries", "generate_charts")
 
     # Pre-experiment context (sequential for initial build; can be parallelised later)
     builder.add_edge("load_auxiliary_data",  "decompose_metric")

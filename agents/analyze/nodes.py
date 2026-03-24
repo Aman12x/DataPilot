@@ -53,6 +53,7 @@ from tools import (
     mde_tools,
     narrative_tools,
     novelty_tools,
+    regression_tools,
     stats_tools,
 )
 from tools.db_tools import DBConnection
@@ -1967,6 +1968,135 @@ def find_correlations_node(state: AgentState) -> dict:
         return {"correlation_result": result}
     except Exception as exc:
         logger.warning("find_correlations: failed (%s), skipping.", exc)
+        return {}
+
+
+# ── Node 16c-2: run_regression_node ───────────────────────────────────────────
+
+@observe(name="run_regression")
+def run_regression_node(state: AgentState) -> dict:
+    """OLS regression — identifies predictors of a target column.
+
+    Skipped gracefully when:
+      - No query_result available
+      - Fewer than 10 rows (insufficient for regression)
+      - No usable numeric features (pure categorical dataset)
+    """
+    df = _safe_df(state)
+    if df is None:
+        logger.warning("run_regression: no query_result, skipping.")
+        return {}
+    if len(df) < 10:
+        logger.warning("run_regression: only %d rows, skipping.", len(df))
+        return {}
+    try:
+        result = regression_tools.run_regression(
+            df, task_hint=state.get("task", "")
+        )
+        logger.info(
+            "run_regression: target=%s n=%d R²=%.4f",
+            result.target, result.n_obs, result.r_squared,
+        )
+        return {"regression_result": result}
+    except ValueError as exc:
+        logger.warning("run_regression: skipped (%s).", exc)
+        return {}
+    except Exception as exc:
+        logger.warning("run_regression: failed (%s), skipping.", exc)
+        return {}
+
+
+# ── Node 16c-3: detect_timeseries_node ────────────────────────────────────────
+
+_TS_COL_PATTERNS = re.compile(
+    r"\b(date|month|week|year|day|quarter|period|time|dt|timestamp)\b",
+    re.IGNORECASE,
+)
+
+
+@observe(name="detect_timeseries")
+def detect_timeseries_node(state: AgentState) -> dict:
+    """Run anomaly detection + forecasting when a time column is detected.
+
+    Reuses the existing anomaly_tools and forecast_tools (already tested for A/B
+    pre-experiment context). For general mode we run them opportunistically when
+    we detect a time/date column — results are injected into state so the narrative
+    LLM can reference trends, anomalies, and forecasts.
+
+    Skipped when:
+      - No time-like column found
+      - Fewer than 6 rows after grouping (not enough history)
+    """
+    df = _safe_df(state)
+    if df is None:
+        return {}
+
+    # Detect a time-like column
+    time_col: str | None = None
+    for col in df.columns:
+        if _TS_COL_PATTERNS.search(col):
+            time_col = col
+            break
+
+    if time_col is None:
+        logger.info("detect_timeseries: no time column found, skipping.")
+        return {}
+
+    # Build a daily_df-style frame: sort by time column, pick first numeric
+    numeric_cols = df.select_dtypes(include="number").columns.tolist()
+    # Exclude columns that look like IDs
+    _ID_PAT = re.compile(r"\b(id|_id|uuid)\b", re.IGNORECASE)
+    metric_cols = [c for c in numeric_cols if not _ID_PAT.search(c)]
+    if not metric_cols:
+        logger.info("detect_timeseries: no suitable metric column, skipping.")
+        return {}
+
+    # Use the highest-variance numeric column as the metric
+    metric_col = str(df[metric_cols].var().idxmax())
+
+    try:
+        ts_df = (
+            df[[time_col, metric_col]]
+            .dropna()
+            .rename(columns={time_col: "date", metric_col: metric_col})
+            .sort_values("date")
+        )
+        ts_df["date"] = pd.to_datetime(ts_df["date"], errors="coerce")
+        ts_df = ts_df.dropna(subset=["date"])
+
+        if len(ts_df) < 6:
+            logger.info("detect_timeseries: only %d time points, skipping.", len(ts_df))
+            return {}
+
+        # Group to daily-ish if granular (avoid per-row noise)
+        ts_df = ts_df.groupby("date")[metric_col].mean().reset_index()
+        ts_df.columns = ["date", metric_col]
+
+        result: dict = {}
+
+        # Anomaly detection
+        try:
+            anomaly = anomaly_tools.detect_anomaly(ts_df, metric_col=metric_col)
+            result["anomaly_result"] = anomaly
+        except Exception as exc:
+            logger.warning("detect_timeseries/anomaly: %s", exc)
+
+        # Forecasting
+        try:
+            forecast = forecast_tools.forecast_baseline(ts_df, metric_col=metric_col)
+            result["forecast_result"] = forecast
+        except Exception as exc:
+            logger.warning("detect_timeseries/forecast: %s", exc)
+
+        if result:
+            logger.info(
+                "detect_timeseries: time_col=%s metric=%s rows=%d results=%s",
+                time_col, metric_col, len(ts_df), list(result.keys()),
+            )
+        return result
+
+    except Exception as exc:
+        logger.warning("detect_timeseries: failed (%s), skipping.", exc)
         return {}
 
 

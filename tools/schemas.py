@@ -246,6 +246,31 @@ class CorrelationResult(BaseModel):
     pairs: list[CorrelationPair]  # top N by |r|, descending
 
 
+# ── regression_tools ──────────────────────────────────────────────────────────
+
+class RegressionCoef(BaseModel):
+    feature:     str
+    coefficient: float          # unstandardised OLS coefficient
+    std_err:     float
+    t_stat:      float
+    p_value:     float
+    ci_lower:    float          # 95% confidence interval lower bound
+    ci_upper:    float
+    significant: bool           # p < 0.05
+
+
+class RegressionResult(BaseModel):
+    target:        str                      # dependent variable name
+    n_obs:         int                      # rows used in the fit
+    n_features:    int                      # number of predictors (after encoding)
+    r_squared:     float                    # in-sample R²
+    adj_r_squared: float                    # adjusted R²
+    f_stat:        Optional[float] = None   # overall F-statistic
+    f_pvalue:      Optional[float] = None   # F-test p-value
+    coefficients:  list[RegressionCoef]     # sorted by |t_stat| descending
+    vif_warnings:  list[str] = []           # features with VIF > 10
+
+
 # ── chart_tools ───────────────────────────────────────────────────────────────
 
 class ChartSpec(BaseModel):

@@ -603,8 +603,11 @@ Formatting rules:
 - Do not invent numbers. Every number must appear in the data summary above.
 - Bold the actual numbers and named segments. Do not bold adjectives.
 - Never write "statistically significant", "p-value", "coefficient", \
-  "correlation", "r-squared", "standard deviation", or "regression". \
-  Translate all of these into plain business language.
+  "correlation", "r-squared", "standard deviation", "regression", or "VIF". \
+  Translate all statistical concepts into plain business language. \
+  "regression_result" → describe which factors most strongly predict the outcome. \
+  "anomaly_result" → describe when the metric behaved unusually. \
+  "forecast_result" → describe what the trend suggests going forward.
 - Write in active voice. Short sentences.
 - Output only the markdown report. No preamble, no closing remarks.
 

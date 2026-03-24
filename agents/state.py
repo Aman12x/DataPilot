@@ -24,6 +24,7 @@ from tools.schemas import (
     MdeResult,
     NoveltyResult,
     PowerAnalysisResult,
+    RegressionResult,
     SliceResult,
     SrmResult,
     TtestResult,
@@ -111,6 +112,7 @@ class AgentState(TypedDict, total=False):
     # ── General analysis (analysis_mode == 'general') ─────────────────────────
     describe_result:     DescribeResult
     correlation_result:  CorrelationResult
+    regression_result:   RegressionResult
 
     # ── Visualisations ────────────────────────────────────────────────────────
     charts: list[dict]                  # list of ChartSpec dicts (serialised for SSE)
