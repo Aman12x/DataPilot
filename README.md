@@ -4,7 +4,7 @@
 
 Ask a question in plain English. DataPilot generates SQL, runs rigorous statistical analysis, and produces an evidence-based report — pausing for your review at every decision point before moving forward.
 
-**Eval:** 11/11 DAU experiment · 11/11 cross-domain generalisability · 349 tests passing
+**Eval:** 11/11 DAU experiment · 11/11 cross-domain generalisability · 444 tests passing
 
 ---
 
@@ -59,8 +59,10 @@ Ask a question in plain English. DataPilot generates SQL, runs rigorous statisti
   │                      │                                        │                           │
   │  • describe          │                                        │  • metric decomposition   │
   │  • correlations      │                                        │  • anomaly detection      │
-  │  • trend analysis    │                                        │  • forecast (Prophet)     │
-  │  • top/bottom rows   │                                        │  • CUPED variance reduction│
+  │  • OLS regression    │                                        │  • forecast (Prophet)     │
+  │  • time series       │                                        │  • CUPED variance reduction│
+  │  • anomaly/forecast  │                                        │                           │
+  │  • top/bottom rows   │                                        │                           │
   └──────────┬───────────┘                                        │  • t-test (p-value, CI)   │
              │                                                     │  • HTE subgroup analysis  │
              │                                                     │  • novelty effect check   │
@@ -127,7 +129,7 @@ Same pipeline — treatment/control comparison with covariate adjustment, subgro
 **SaaS / Retention**
 > *"What factors most strongly predict churn? Which plans and cohorts churn fastest?"*
 
-General analysis mode: correlation matrix, describe by segment, trend over time, top contributing rows.
+General analysis mode: OLS regression identifies strongest churn predictors (tenure, support tickets, plan tier), correlation matrix, time series anomaly detection on MRR, top contributing rows.
 
 **Ecommerce**
 > *"Is the new recommendation widget increasing basket size? Is it hurting conversion for mobile users?"*
@@ -142,7 +144,12 @@ General mode: segment breakdown, trend decomposition, anomaly detection, correla
 **HR / People analytics**
 > *"Is there a pay gap by department or level? How does it change after controlling for tenure?"*
 
-General mode: describe by group, correlation analysis, top/bottom rows by metric.
+General mode: OLS regression with department/level one-hot encoding, VIF check for multicollinearity, correlation analysis, top/bottom rows by salary.
+
+**Clinical research (general mode)**
+> *"Which patient factors best predict length of stay? Flag any anomalies in readmission trends."*
+
+OLS regression on los_days with diagnosis, BMI, and systolic BP as predictors; time series anomaly detection on readmission_30d if a date column is present.
 
 ---
 
@@ -158,10 +165,10 @@ General mode: describe by group, correlation analysis, top/bottom rows by metric
 | Auth | JWT HS256 + bcrypt + refresh token revocation |
 | Semantic cache | MiniLM (all-MiniLM-L6-v2) + SQLite |
 | Run state | Redis Streams (multi-pod) · asyncio.Queue (local) |
-| Stats | scipy · numpy · Prophet |
+| Stats | scipy · numpy · scikit-learn · Prophet |
 | Eval | RAGAS-inspired (faithfulness + relevancy + key findings) |
 | Observability | Sentry · structured logging |
-| Tests | pytest · 349 tests |
+| Tests | pytest · 444 tests |
 
 ---
 
@@ -241,6 +248,20 @@ Two services from the same repo:
 Add a Railway volume at `/app/memory` on the backend service — persists graph checkpoints and auth DB across deploys.
 
 Optional: `REDIS_URL` (multi-pod run state), `SENTRY_DSN` (error tracking), `RESEND_API_KEY` (password reset emails).
+
+---
+
+## Trust and robustness
+
+Five layers prevent wrong reports from reaching stakeholders.
+
+| Layer | What it catches |
+|-------|----------------|
+| **SQL content validation** | 0-row results, missing experiment arms, severe arm imbalance (< 30:70), JOIN fan-out (row explosion from bad joins), metric values that look like percentages not rates |
+| **Claim accuracy blocking** | Narrative says "significant" but CI crosses zero; "large effect" but Cohen's d < 0.5; stated direction contradicts the sign of the ATE — auto-corrected before the analyst sees it |
+| **Safety constraint checks** | Blocks "ship" language when SRM is detected, a guardrail is breached, or winner's curse risk is present (significant result but post-hoc power < 50%) |
+| **Winner's curse banner** | Prepended to TL;DR (not buried in caveats) when the experiment is underpowered or the observed effect is likely inflated |
+| **Audit log** | Every approved report appends a structured record: run ID, analyst decisions at each gate, SRM acknowledgment, auto-correction count, SQL warnings |
 
 ---
 
