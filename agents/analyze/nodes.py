@@ -2779,7 +2779,8 @@ def log_run_node(state: AgentState) -> dict:
         semantic_cache_hits=1 if state.get("semantic_cache_hit") else 0,
         notes=state.get("analyst_notes") or "",
         audit_passed=(
-            bool((ar := state.get("audit_result")) and hasattr(ar, "passed") and ar.passed)
+            (ar := state.get("audit_result")) is None
+            or (hasattr(ar, "passed") and ar.passed)
         ),
     )
 
