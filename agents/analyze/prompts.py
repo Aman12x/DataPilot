@@ -62,14 +62,8 @@ SQL generation:
   Output a single ```sql ... ``` code block. No explanation unless asked.
 
 Narrative generation:
-  Follow this exact 7-section markdown structure:
-  ## TL;DR
-  ## What we found
-  ## Where it's concentrated
-  ## What else is affected
-  ## Confidence level
-  ## Recommendation
-  ## Caveats
+  Follow the section structure specified in the task prompt exactly.
+  The task prompt defines the required sections — do not substitute a different structure.
 """
 
 
@@ -239,8 +233,12 @@ Then output this exact line:
 
 **Part 2 — Additional Details** (shown only on request):
 
-4. **Segment Breakdown** - bullet each key segment with its numbers. \
-   Format: "[Segment]: [treatment value] vs [control value] ([delta])." \
+4. **Segment Breakdown** - bullet each key segment with its numbers from the \
+   "All segments" reference table in the draft. \
+   Format: "[Segment]: treatment=[trt_mean] vs control=[ctrl_mean] (Δ=[effect_size]), \
+   n=[ctrl_n] ctrl / [trt_n] trt of [total_ctrl] / [total_trt] total analyzed." \
+   Use ctrl_mean and trt_mean exactly as they appear in the reference table — do not derive, \
+   round differently, or estimate them. Include row counts so readers can judge sample size. \
    If no meaningful segment difference exists, write one sentence stating so.
 5. **Secondary Metrics** - one bullet per guardrail metric with its direction and value. \
    Flag breached guardrails with "FLAGGED:" prefix. \
@@ -260,6 +258,21 @@ Formatting rules:
   "standard deviation", "t-test", or "regression". Translate all of these into plain English.
 - If analyst_notes are provided, incorporate them and note any deviation from automated findings.
 - Output only the markdown report. No preamble, no closing remarks.
+
+NUMERICAL ACCURACY — violations here are critical errors:
+- When stating a difference or gap ("underperforms by N", "N points higher/lower"), \
+  you MUST verify the arithmetic: the stated gap must equal the larger value minus the \
+  smaller value from the tool results. If control=77.4% and treatment=77.0%, the gap is \
+  0.4 points, not 12.
+- When using directional words ("underperforms", "worse", "lower"), the number you cite \
+  for that entity MUST actually be lower than the comparison value. If it is higher, \
+  the correct word is "outperforms" or "higher".
+- Every comparison sentence must state BOTH values explicitly: \
+  "[Entity]: [value] vs [comparison]: [comparison value] ([computed gap])."
+- Never blend a gap figure from one comparison with entity values from a different \
+  comparison. Each sentence must use numbers that all come from the same row or group.
+- For every segment finding in the Segment Breakdown, the n counts MUST come from the \
+  "All segments" reference table in the draft. Never estimate or omit them.
 
 {analyst_notes_section}
 """
@@ -301,10 +314,12 @@ CRITICAL — must fix before showing to stakeholders:
    data above. Flag any number that cannot be traced there.
 
 MODERATE — auto-correctable presentation issues:
-4. SUBGROUP MISSING PARENT: Any finding naming a subgroup (e.g. "iOS users") must state the
-   parent segment value in the same sentence.
-   Required: "[Subgroup] ([parent segment]: [parent value]) generated [value]."
-   Flag any subgroup finding that omits the parent segment value.
+4. SUBGROUP MISSING CONTEXT: Any finding naming a subgroup (e.g. "iOS users") must state both
+   the parent segment value AND the sample size (n counts) in the same sentence.
+   Required format: "[Segment]: [treatment value] vs [control value] ([delta]),
+   n=[ctrl_n] ctrl / [trt_n] trt of [total_ctrl] / [total_trt] total analyzed."
+   Flag any segment finding that omits the parent segment value OR the n counts.
+   The n counts must match the "All segments" reference table in the draft — do not estimate them.
 5. STATISTICAL JARGON: Flag any of: p-value, r-squared, coefficient, correlation,
    statistical significance, regression, VIF, standard deviation.
 
@@ -369,6 +384,21 @@ Set analysis_mode to "general" for everything else:
   - Questions like "why did X happen", "what drives Y", "show me Z by segment"
   - Data that has no clear treatment/control split
 
+## query_type rules
+
+Set query_type to "lookup" when the task is a simple retrieval or count:
+  - Counting or totalling something: "how many", "what is the total", "how much"
+  - Fetching a single value or small table: "what is the average X", "show me X"
+  - Ranking or listing: "top 10", "which are the highest", "list all"
+  - Any question whose complete answer is one number or a short table of numbers
+  - No investigation, no "why", no trend explanation needed
+
+Set query_type to "exploratory" when the task requires analysis or investigation:
+  - Root-cause or driver questions: "why", "what drives", "what explains"
+  - Trend or pattern analysis: "how has X changed", "is there a trend"
+  - Comparison or segmentation: "how does X compare across", "which segment"
+  - Any question where the answer requires more than reading off a number
+
 ## Other rules
 - If the task clearly names or implies a specific metric, resolve it.
 - Set ambiguous=true only if two different metrics would produce materially
@@ -378,6 +408,7 @@ Set analysis_mode to "general" for everything else:
 
 Return a JSON object with these exact keys:
   analysis_mode       — "ab_test" | "general" | "power_analysis"
+  query_type          — "lookup" | "exploratory"
   primary_metric      — the metric column to analyze (string)
   metric_direction    — "higher_is_better" | "lower_is_better"
   covariate           — best pre-experiment covariate column, or empty string if general (string)
@@ -549,10 +580,13 @@ Priority when task matches multiple cases: **A > B > C**
 
 ### STEP 2 — Apply these rules for every metric column
 
+**Every aggregating query MUST include `COUNT(*) AS total_records`** in the SELECT \
+list so the system can report the underlying sample size to the user. This is \
+required for ALL GROUP BY queries regardless of metric type.
+
 **Binary outcome columns (0/1 flags: churned, on_time_delivery, converted, etc.):**
 - "rate", "percentage", "how often", "what share" → `AVG(col)` — gives the rate directly (0.0–1.0)
 - "how many", "count of failures" → `SUM(col)` or `SUM(CASE WHEN col = 0 THEN 1 END)`
-- Always add `COUNT(*) AS total_records` alongside any rate or count so volume is visible
 - **Per-entity collapse** (one row per user/entity, not one row per group) → `MAX(col)` — did this entity ever have the outcome?
   - Only use MAX() when you are collapsing to entity level first, then grouping. Never use MAX() when computing a group-level rate.
 
@@ -633,7 +667,8 @@ The report has two parts separated by the exact marker `<!-- details -->` on its
 **Part 1 — Brief Report** (shown immediately to stakeholders):
 
 1. **Bottom Line** - 2 sentences max. Open with the most important number or trend \
-   from the data. Sentence 2: what it means for the business.
+   from the data — state the total rows analyzed (from describe_result.row_count if present) \
+   so readers know the data volume behind the finding. Sentence 2: what it means for the business.
 2. **Key Findings** - 3-5 bullets. Each bullet must include a specific number from \
    the data. Format: "[What happened]: [number] ([context or comparison])." \
    Do not write a bullet without a number. Use plain counts and rates that \
@@ -691,6 +726,33 @@ NUMERICAL ACCURACY — violations here are critical errors:
 """
 
 
+# ── LOOKUP_NARRATIVE_PROMPT ───────────────────────────────────────────────────
+# Used by generate_narrative when query_type == "lookup".
+# The user asked a simple question and wants a direct answer, not a report.
+# Parameterised: {task}, {tool_results_json}, {analyst_notes_section}
+
+LOOKUP_NARRATIVE_PROMPT = """\
+## Question
+
+{task}
+
+## Data
+
+```json
+{tool_results_json}
+```
+
+## Instructions
+
+Answer the question in 1–3 sentences. Lead with the exact number or value from the data. \
+No sections, no headers, no recommendations, no caveats, no analysis. \
+If the data contains a table of results (e.g. top 10 products), present it as a compact \
+markdown table. Every number must come from the data above — do not estimate or round differently.
+
+{analyst_notes_section}
+"""
+
+
 # ── SCHEMA_ANNOTATION_PROMPT ──────────────────────────────────────────────────
 # One-time prompt run when a user connects an external Postgres DB.
 # Parameterised: {raw_schema}, {sample_values_json}
@@ -723,4 +785,46 @@ Rules:
 - Do not rename columns or change types.
 - If a column's meaning is genuinely ambiguous, write "-- unclear from name/samples".
 - Output only the annotated schema block, no surrounding prose.
+"""
+
+
+# ── DECK_PROMPT ───────────────────────────────────────────────────────────────
+# Generates a structured stakeholder deck JSON from the approved narrative.
+# Parameterised: {mode}, {narrative}
+
+DECK_PROMPT = """\
+You are a senior data scientist preparing a 30-second executive briefing — \
+the format used in data review meetings at Meta and Google.
+
+## Analysis mode: {mode}
+
+## Approved narrative
+
+{narrative}
+
+---
+
+Output ONLY valid JSON — no markdown fences, no explanation:
+
+{{
+  "verdict": "<positive|neutral|negative>",
+  "headline": "<one sentence — lead with the primary finding and its magnitude>",
+  "hero_metric": "<the single most important delta/change, e.g. '+12.4% CTR' or '-18% churn'>",
+  "confidence": "<one phrase, e.g. 'High — p=0.002, n=45K' or 'Moderate — 1,648 records'>",
+  "recommendation": "<one action sentence — start with a verb, name the team or next step>",
+  "evidence": ["<3–5 bullets, each must contain a specific number>"],
+  "watch_out": "<one sentence — specific risk or caveat, not generic advice>"
+}}
+
+Rules:
+- verdict: positive if the primary metric clearly improved, negative if clearly worsened, neutral if mixed or unclear
+- hero_metric is always a change or rate — never a raw absolute count
+- every evidence bullet starts with the metric name then colon then the value
+- recommendation must be immediately actionable
+- for A/B tests:
+  - if significant and positive AND ≥2 weeks of data: recommend full ship
+  - if significant and positive BUT only 1 week of data or novelty risk flagged: recommend STAGED rollout (e.g. "Roll out to 50% of traffic, monitor for 2–3 weeks before full ship") — do NOT say "ship immediately"
+  - if negative: recommend stopping; if neutral: recommend more data
+- watch_out must identify the MOST VULNERABLE segment or condition (lowest effect, smallest sample, or where lift might not sustain) — do NOT name the top-performing segment as the monitoring target
+- if only 1 week of data is available, watch_out MUST mention novelty effect risk and staged rollout monitoring, not just post-launch monitoring
 """

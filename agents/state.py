@@ -37,6 +37,7 @@ class AgentState(TypedDict, total=False):
     # ── Input ─────────────────────────────────────────────────────────────────
     task: str                           # raw analyst/PM question
     analysis_mode: str                  # 'ab_test' | 'general' | 'power_analysis'
+    query_type: str                     # 'lookup' | 'exploratory' — set by resolve_task_intent
     task_clarification: str             # analyst answer to the intent clarifying question (if any)
     relevant_history: list[dict]        # injected from memory store at run start
     db_backend: str                     # 'duckdb' | 'postgres'
@@ -107,6 +108,7 @@ class AgentState(TypedDict, total=False):
     narrative_approved: bool
     final_narrative: str
     narrative_revision_count: int       # auto-correction attempts; capped at 3
+    deck_data: dict                     # structured stakeholder deck (generated after approval)
     srm_acknowledged: bool              # analyst explicitly confirmed SRM at analysis_gate
 
     # ── Analyst overrides (accumulated across all 3 HITL gates) ──────────────

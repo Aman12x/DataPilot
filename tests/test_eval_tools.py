@@ -175,6 +175,40 @@ class TestScoreFaithfulness:
         result = score_faithfulness(narrative, hr)
         assert result["score"] >= 0.5, f"Expected faithfulness ≥ 0.5, got {result}"
 
+    def test_tool_results_supports_computed_stats(self):
+        """Numbers from tool_results dict count as supported even when not in the DataFrame."""
+        # Binary DataFrame with values 0 and 1 only — no 0.082 in raw data
+        df = pd.DataFrame({"dau_rate": [0, 1, 0, 1, 0, 1]})
+        narrative = "The CUPED-adjusted ATE was 0.082 (p=0.0013)."
+        tool_results = {"cuped_result": {"cuped_ate": 0.082, "p_value": 0.0013}}
+        result_without = score_faithfulness(narrative, df)
+        result_with    = score_faithfulness(narrative, df, tool_results=tool_results)
+        assert result_with["score"] > result_without["score"], (
+            "tool_results should raise faithfulness score for computed stats"
+        )
+        assert result_with["score"] == 1.0, f"Both numbers should be supported, got {result_with}"
+
+    def test_tool_results_nested_values_extracted(self):
+        """Nested dicts and lists in tool_results are flattened."""
+        df = pd.DataFrame({"x": [0, 1]})
+        narrative = "Control mean 0.466, treatment mean 0.366."
+        tool_results = {
+            "ttest_result": {
+                "control_mean": 0.466,
+                "treatment_mean": 0.366,
+                "segments": [{"seg_mean": 0.5}],
+            }
+        }
+        result = score_faithfulness(narrative, df, tool_results=tool_results)
+        assert result["score"] == 1.0, f"Nested values should be found, got {result}"
+
+    def test_no_df_but_tool_results_still_scores(self):
+        """With no DataFrame, tool_results alone should support numbers."""
+        narrative = "Severity was 3.2 and ATE was 0.082."
+        tool_results = {"anomaly_result": {"severity": 3.2}, "cuped_result": {"cuped_ate": 0.082}}
+        result = score_faithfulness(narrative, None, tool_results=tool_results)
+        assert result["score"] == 1.0, f"tool_results without df should work, got {result}"
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 # 3. score_key_findings

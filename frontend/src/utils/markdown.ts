@@ -11,5 +11,10 @@ export function stripMarkdown(md: string): string {
 
 /** Remove SQL / code fences from narrative before rendering. */
 export function sanitiseNarrative(md: string): string {
-  return md.replace(/```[\w]*\n[\s\S]*?```/g, "").replace(/\n{3,}/g, "\n\n").trim();
+  const trimmed = md.trim();
+  // If the entire narrative is wrapped in a single outer code fence, extract it.
+  const outerFence = trimmed.match(/^```[\w]*\n([\s\S]*?)```\s*$/);
+  if (outerFence) return outerFence[1].trim().replace(/\n{3,}/g, "\n\n");
+  // Otherwise strip embedded code blocks (e.g. SQL examples).
+  return trimmed.replace(/```[\w]*\n[\s\S]*?```/g, "").replace(/\n{3,}/g, "\n\n").trim();
 }

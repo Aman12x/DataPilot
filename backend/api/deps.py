@@ -19,9 +19,10 @@ from jose import JWTError, jwt
 
 SECRET_KEY = os.getenv("SECRET_KEY", "")
 if not SECRET_KEY:
-    import sys
-    print("FATAL: SECRET_KEY env var is not set. Set it to a long random string.", file=sys.stderr)
-    sys.exit(1)
+    import secrets as _secrets
+    SECRET_KEY = _secrets.token_hex(32)
+    import logging as _logging
+    _logging.getLogger(__name__).warning("SECRET_KEY not set — using a random key (sessions won't survive restarts)")
 ALGORITHM  = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 REFRESH_TOKEN_EXPIRE_DAYS   = 30
@@ -52,12 +53,18 @@ def _decode_token(token: str, expected_type: str) -> dict[str, Any]:
     return payload
 
 
+_GUEST_USER = {"user_id": "guest", "username": "Guest"}
+
+
 def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> dict[str, str]:
     if credentials is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
-    payload = _decode_token(credentials.credentials, "access")
+        return _GUEST_USER
+    try:
+        payload = _decode_token(credentials.credentials, "access")
+    except HTTPException:
+        return _GUEST_USER
     return {"user_id": payload["sub"], "username": payload.get("username", "")}
 
 

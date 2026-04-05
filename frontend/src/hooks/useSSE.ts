@@ -43,6 +43,16 @@ export interface PowerAnalysisResult {
   sensitivity:         SensitivityRow[];
 }
 
+export interface DeckData {
+  verdict:        "positive" | "neutral" | "negative";
+  headline:       string;
+  hero_metric:    string;
+  confidence:     string;
+  recommendation: string;
+  evidence:       string[];
+  watch_out:      string;
+}
+
 export interface DoneEvent {
   type: "done";
   state: {
@@ -53,6 +63,7 @@ export interface DoneEvent {
     trust_indicators:     TrustIndicators;
     analysis_mode:        string;
     power_analysis_result?: PowerAnalysisResult;
+    deck_data?:           DeckData;
   };
 }
 

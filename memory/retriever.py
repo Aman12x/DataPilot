@@ -79,14 +79,20 @@ def retrieve_relevant_history(
 
     task_tokens = _tokenize(task)
 
-    scored = [
-        (run, _overlap_score(task_tokens, run))
-        for run in all_runs
-    ]
-    # Sort: descending overlap score, then descending timestamp (already ordered)
+    # Combined score: keyword overlap (primary signal) boosted by eval quality.
+    # Runs with high eval_score surface before runs with equal overlap but poor
+    # quality.  eval_score=None (rare) treated as 0.5 (neutral).
+    def _combined_score(run: dict[str, Any]) -> float:
+        overlap  = _overlap_score(task_tokens, run)
+        quality  = run.get("eval_score") or 0.5
+        return overlap * 0.7 + quality * 0.3
+
+    scored = [(run, _combined_score(run)) for run in all_runs]
     scored.sort(key=lambda x: x[1], reverse=True)
 
-    top = [run for run, score in scored[:top_n] if score > 0]
+    # Only include runs that have at least one overlapping keyword (score > 0.3
+    # because even a zero-overlap run gets 0.3 * eval_score from the quality term).
+    top = [run for run, score in scored[:top_n] if _overlap_score(task_tokens, run) > 0]
 
     # Return only the fields useful for history injection
     return [

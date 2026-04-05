@@ -26,8 +26,10 @@ from langgraph.types import interrupt
 
 from agents.analyze.prompts import (
     ANALYST_NOTES_BLOCK,
+    DECK_PROMPT,
     HISTORY_INJECTION_PREFIX,
     INSIGHTS_NARRATIVE_PROMPT,
+    LOOKUP_NARRATIVE_PROMPT,
     NARRATIVE_AUDIT_PROMPT,
     NARRATIVE_PROMPT,
     POWER_ANALYSIS_NARRATIVE_PROMPT,
@@ -83,8 +85,8 @@ _DEFAULT_FUNNEL_STEPS = _csv("DEFAULT_FUNNEL_STEPS", "impression,click,install,d
 _SCHEMA_CACHE_PATH    = os.getenv("SCHEMA_CACHE_PATH", "memory/schema_cache.json")
 
 # LLM token limits — named constants so they're visible and changeable
-_MAX_TOKENS_SQL       = int(os.getenv("MAX_TOKENS_SQL",       "512"))
-_MAX_TOKENS_NARRATIVE = int(os.getenv("MAX_TOKENS_NARRATIVE", "2048"))
+_MAX_TOKENS_SQL       = int(os.getenv("MAX_TOKENS_SQL",       "4096"))
+_MAX_TOKENS_NARRATIVE = int(os.getenv("MAX_TOKENS_NARRATIVE", "4096"))
 
 # Max LLM-based SQL correction retries in execute_query (0 = disabled)
 _MAX_SQL_RETRIES = int(os.getenv("MAX_SQL_RETRIES", "2"))
@@ -362,7 +364,13 @@ def _validate_query_content(
 
     if mode == "ab_test" and mc.primary_metric in df.columns:
         col = df[mc.primary_metric].dropna()
-        if len(col) > 0 and (col > 1.0).mean() > 0.8:
+        # Only flag >1 as suspicious for metrics that should be rates (0–1).
+        # Revenue, duration, count, and score columns are legitimately > 1.
+        _RATE_KEYWORDS = {"rate", "ctr", "cvr", "conversion", "retention", "churn",
+                          "open_rate", "click_rate", "bounce", "engagement_rate"}
+        metric_lower = mc.primary_metric.lower()
+        is_rate_metric = any(kw in metric_lower for kw in _RATE_KEYWORDS)
+        if is_rate_metric and len(col) > 0 and (col > 1.0).mean() > 0.8:
             warnings.append(
                 f"Metric '{mc.primary_metric}' has {(col > 1.0).mean():.0%} of values > 1.0 "
                 "— looks like a percentage (0–100) rather than a rate (0–1). "
@@ -853,6 +861,32 @@ def load_schema(state: AgentState) -> dict:
     }
 
 
+# ── Lookup-vs-exploratory heuristics ─────────────────────────────────────────
+# Used as a fallback when the LLM returns "exploratory" for a task that is
+# clearly a simple retrieval/count question.  Prevents "how many TVs were sold?"
+# from triggering the full correlation/regression pipeline.
+
+_LOOKUP_RE = re.compile(
+    r"^(how\s+many|what\s+is\s+the\s+(total|average|count|number)|"
+    r"what\s+was\s+the|what\s+are\s+the\s+(top|bottom|\d+)|"
+    r"show\s+(me\s+)?(the\s+)?total|list\s+(the\s+|all\s+)?|"
+    r"get\s+(the\s+|me\s+)?|count\s+(of\s+|the\s+)?|"
+    r"total\s+(number|count|revenue|sales)|number\s+of\s+)",
+    re.IGNORECASE,
+)
+_ANALYSIS_RE = re.compile(
+    r"(why|trend|pattern|correlat|impact|cause|relationship|"
+    r"significant|compare|breakdown|investigat|driver|anomal|differ|"
+    r"segment|cohort|funnel|retention|churn|uplift|effect)",
+    re.IGNORECASE,
+)
+
+
+def _is_lookup_task(task: str) -> bool:
+    """Return True when a task looks like a simple retrieval, not an analysis."""
+    return bool(_LOOKUP_RE.search(task)) and not bool(_ANALYSIS_RE.search(task))
+
+
 # ── Helpers for resolve_task_intent ──────────────────────────────────────────
 
 def _llm_resolve_intent(
@@ -1052,13 +1086,26 @@ def resolve_task_intent(state: AgentState) -> dict:
     # Extract MDE target for power analysis (default 5.0 if not stated in task)
     mde_target_pct = float(result.get("mde_target_pct") or 5.0)
 
+    # query_type: "lookup" for simple retrieval/count, "exploratory" for analysis.
+    # Only meaningful for general mode; ab_test always runs the full pipeline.
+    raw_query_type = result.get("query_type", "exploratory")
+    query_type = raw_query_type if raw_query_type in ("lookup", "exploratory") else "exploratory"
+
+    # Heuristic fallback: if the LLM returned "exploratory" but the task reads
+    # like a plain retrieval question, override to "lookup" so we skip the
+    # heavy correlation/regression pipeline.
+    if final_mode == "general" and query_type == "exploratory" and _is_lookup_task(task):
+        logger.info("resolve_task_intent: overriding query_type to 'lookup' via heuristic for task: %s", task[:80])
+        query_type = "lookup"
+
     return {
-        "metric_config":       updated_mc,
-        "metric":              updated_mc.primary_metric,
-        "covariate":           updated_mc.covariate,
-        "task_clarification":  clarification,
-        "analysis_mode":       final_mode,
+        "metric_config":        updated_mc,
+        "metric":               updated_mc.primary_metric,
+        "covariate":            updated_mc.covariate,
+        "task_clarification":   clarification,
+        "analysis_mode":        final_mode,
         "power_mde_target_pct": mde_target_pct,
+        "query_type":           query_type,
     }
 
 
@@ -1176,17 +1223,6 @@ def generate_sql(state: AgentState) -> dict:
 def query_gate(state: AgentState) -> dict:
     warnings    = state.get("sql_validation_warnings", [])
     db_backend  = state.get("db_backend", "duckdb")
-
-    # Auto-approve clean queries on non-Postgres backends (uploaded files, demo data).
-    # Postgres queries always require human review — they run against external production DBs.
-    # Any query with validation warnings always requires review regardless of backend.
-    if db_backend != "postgres" and not warnings:
-        logger.info("query_gate: auto-approving clean %s query", db_backend)
-        return {
-            "query_approved": True,
-            "generated_sql":  state.get("generated_sql", ""),
-            "analyst_override": {},
-        }
 
     payload = {
         "gate":                     "query",
@@ -2124,15 +2160,22 @@ def generate_charts_node(state: AgentState) -> dict:
             describe = state.get("describe_result")
             corr     = state.get("correlation_result")
             qr       = state.get("query_result", pd.DataFrame())
-            # Use sum of total_records if present (aggregated query) so the
-            # trust indicator reflects the underlying row count, not the number
-            # of aggregated groups returned by the query.
+            # Prefer total_records column (sum of per-group counts) or the raw
+            # table row count from schema_context.  Fall back to describe.row_count
+            # only as last resort — that reflects the query result size, not the
+            # original dataset size, when the SQL aggregated rows.
             if isinstance(qr, pd.DataFrame) and "total_records" in qr.columns:
                 n_underlying = int(qr["total_records"].sum())
-            elif describe:
-                n_underlying = describe.row_count
             else:
-                n_underlying = len(qr)
+                # Try parsing "TABLE: foo  -- 1,648 rows" from schema_context
+                schema_ctx = state.get("schema_context", "") or ""
+                m = re.search(r"TABLE:[^\n]*--\s*([\d,]+)\s*rows", schema_ctx)
+                if m:
+                    n_underlying = int(m.group(1).replace(",", ""))
+                elif describe:
+                    n_underlying = describe.row_count
+                else:
+                    n_underlying = len(qr)
             if describe and corr:
                 specs  = generate_general_charts(describe, corr)
                 charts = [s.model_dump() for s in specs]
@@ -2229,6 +2272,7 @@ def analysis_gate(state: AgentState) -> dict:
         payload = {
             "gate":                    "analysis",
             "analysis_mode":           "ab_test",
+            "srm_detected":            srm_detected,
             "decomposition":           _to_dict(state.get("decomposition_result")),
             "top_anomaly_slice":       top_slice,
             "forecast_outside_ci":     forecast_res.outside_ci if forecast_res else None,
@@ -2299,6 +2343,15 @@ def generate_narrative(state: AgentState) -> dict:
     if "forecast_result" in tool_results:
         tool_results["forecast_result"].pop("forecast_df", None)
     tool_results_json = json.dumps(tool_results, default=str)
+    # Hard cap: narrative prompt must stay well under the 200k token limit.
+    # ~4 chars per token → cap at 80k chars (~20k tokens) for tool results.
+    _MAX_TOOL_JSON = 80_000
+    if len(tool_results_json) > _MAX_TOOL_JSON:
+        logger.warning(
+            "generate_narrative: tool_results_json too large (%d chars), truncating to %d",
+            len(tool_results_json), _MAX_TOOL_JSON,
+        )
+        tool_results_json = tool_results_json[:_MAX_TOOL_JSON] + "\n... [truncated]"
 
     context_narrative = state.get("context_narrative", "")
     context_narrative_section = (
@@ -2318,13 +2371,21 @@ def generate_narrative(state: AgentState) -> dict:
         from tools.schemas import NarrativeResult
         template_out = NarrativeResult(narrative_draft="", recommendation="")
 
+    elif mode == "general" and state.get("query_type") == "lookup":
+        task_prompt = LOOKUP_NARRATIVE_PROMPT.format(
+            task=state.get("task", ""),
+            tool_results_json=tool_results_json,
+            analyst_notes_section=analyst_notes_section,
+        ) + context_narrative_section
+        from tools.schemas import NarrativeResult
+        template_out = NarrativeResult(narrative_draft="", recommendation="")
+
     elif mode == "general":
         task_prompt = INSIGHTS_NARRATIVE_PROMPT.format(
             task=state.get("task", ""),
             tool_results_json=tool_results_json,
             analyst_notes_section=analyst_notes_section,
         ) + context_narrative_section
-        # General analysis: no template draft — LLM works directly from stats
         from tools.schemas import NarrativeResult
         template_out = NarrativeResult(narrative_draft="", recommendation="")
     else:
@@ -2359,13 +2420,15 @@ def generate_narrative(state: AgentState) -> dict:
             analyst_notes_section=analyst_notes_section,
         ) + context_narrative_section
 
-    schema_context = state.get("schema_context", "")
+    schema_context = (state.get("schema_context", "") or "")[:20_000]
     history_text   = _format_history(state.get("relevant_history", []))
 
-    # Multi-turn: prepend static blocks then conversation history
+    # Multi-turn: prepend static blocks then conversation history.
+    # Cap each conversation turn to avoid runaway growth across revisions.
     messages = _build_cached_messages(schema_context, history_text, task_prompt)
     for turn in state.get("conversation_history", []):
-        messages.append(turn)
+        capped = {**turn, "content": turn["content"][:8_000]} if isinstance(turn.get("content"), str) else turn
+        messages.append(capped)
 
     with trace_generation("generate_narrative", _fast_model(), task_prompt, max_tokens=_MAX_TOKENS_NARRATIVE) as gen:
         response = _anthropic_client().messages.create(
@@ -2375,7 +2438,11 @@ def generate_narrative(state: AgentState) -> dict:
         )
         cost_info = gen.update(response)
 
-    polished_narrative = response.content[0].text
+    polished_narrative = response.content[0].text.strip()
+    # Strip outer code fence if Claude wrapped the entire response in one.
+    # (The frontend's sanitiseNarrative would remove fenced content, leaving nothing.)
+    if polished_narrative.startswith("```"):
+        polished_narrative = re.sub(r"^```[a-z]*\n?", "", polished_narrative).rstrip("`").strip()
 
     # ── Narrative audit ───────────────────────────────────────────────────────
     from tools.schemas import NarrativeAuditResult, NarrativeFinding  # noqa: F401
@@ -2389,7 +2456,7 @@ def generate_narrative(state: AgentState) -> dict:
         )
         audit_resp = _anthropic_client().messages.create(
             model=_fast_model(),
-            max_tokens=1024,
+            max_tokens=2048,
             messages=[{"role": "user", "content": audit_prompt}],
         )
         raw = audit_resp.content[0].text.strip()
@@ -2402,7 +2469,10 @@ def generate_narrative(state: AgentState) -> dict:
 
         if not critical:
             if audit_result.corrected_narrative:
-                polished_narrative = audit_result.corrected_narrative
+                corrected = audit_result.corrected_narrative.strip()
+                if corrected.startswith("```"):
+                    corrected = re.sub(r"^```[a-z]*\n?", "", corrected).rstrip("`").strip()
+                polished_narrative = corrected
                 if moderate:
                     issues = "; ".join(f.issue for f in moderate)
                     polished_narrative += f"\n\n> **Auto-corrected:** {issues}"
@@ -2415,15 +2485,41 @@ def generate_narrative(state: AgentState) -> dict:
     new_history = list(state.get("conversation_history") or [])
     new_history.append({"role": "assistant", "content": polished_narrative})
 
+    # When audit finds critical issues, append a precise correction request so
+    # the next auto-retry sees exactly what to fix. The LLM picks this up from
+    # conversation_history on the next generate_narrative call.
+    if audit_blocked and audit_result is not None:
+        critical = [f for f in audit_result.findings if f.severity == "critical"]
+        fix_lines = []
+        for f in critical:
+            line = f"- [{f.severity}] {f.issue}"
+            if f.corrected_sentence:
+                line += f" → should be: {f.corrected_sentence}"
+            fix_lines.append(line)
+        correction_msg = (
+            "The narrative above contains critical accuracy errors that must be fixed "
+            "before it can be published. Please rewrite the narrative correcting ONLY "
+            "these specific issues (keep all other content unchanged):\n\n"
+            + "\n".join(fix_lines)
+        )
+        new_history.append({"role": "user", "content": correction_msg})
+        logger.info(
+            "generate_narrative: appended %d critical audit corrections to history "
+            "(revision_count=%d)",
+            len(critical),
+            (state.get("narrative_revision_count") or 0) + 1,
+        )
+
     return {
-        "narrative_draft":      polished_narrative,
-        "recommendation":       template_out.recommendation,
-        "conversation_history": new_history,
-        "audit_result":         audit_result,
-        "audit_blocked":        audit_blocked,
-        "cache_read_tokens":    (state.get("cache_read_tokens") or 0) + cost_info.get("cache_read_tokens", 0),
-        "cache_write_tokens":   (state.get("cache_write_tokens") or 0) + cost_info.get("cache_write_tokens", 0),
-        "estimated_cost_usd":   (state.get("estimated_cost_usd") or 0.0) + cost_info.get("estimated_cost_usd", 0.0),
+        "narrative_draft":           polished_narrative,
+        "recommendation":            template_out.recommendation,
+        "conversation_history":      new_history,
+        "audit_result":              audit_result,
+        "audit_blocked":             audit_blocked,
+        "narrative_revision_count":  (state.get("narrative_revision_count") or 0) + 1,
+        "cache_read_tokens":         (state.get("cache_read_tokens") or 0) + cost_info.get("cache_read_tokens", 0),
+        "cache_write_tokens":        (state.get("cache_write_tokens") or 0) + cost_info.get("cache_write_tokens", 0),
+        "estimated_cost_usd":        (state.get("estimated_cost_usd") or 0.0) + cost_info.get("estimated_cost_usd", 0.0),
     }
 
 
@@ -2513,112 +2609,40 @@ def _build_audit_log(state: AgentState) -> str:
     return "\n".join(lines)
 
 
+def _generate_deck(state: "AgentState", final_narrative: str) -> dict:
+    """Generate a structured stakeholder deck JSON from the approved narrative."""
+    mode = state.get("analysis_mode", "general")
+    try:
+        prompt = DECK_PROMPT.format(
+            mode=mode,
+            narrative=final_narrative[:4000],
+        )
+        resp = _anthropic_client().messages.create(
+            model=_fast_model(),
+            max_tokens=800,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = resp.content[0].text.strip()
+        if raw.startswith("```"):
+            raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
+        return json.loads(raw)
+    except Exception as exc:
+        logger.warning("deck generation failed: %s", exc)
+        return {}
+
+
 # ── Node 19: narrative_gate (HITL interrupt 3) ────────────────────────────────
 
 @observe(name="narrative_gate")
 def narrative_gate(state: AgentState) -> dict:
-    # ── Pre-interrupt: auto-block factually wrong narratives ─────────────────
-    # Capped at 3 attempts to avoid infinite loops. On exhaustion, fall through
-    # to the analyst interrupt with violations listed so they can fix manually.
-    _MAX_AUTO_REVISIONS = 3
-    claim_violations: list[str] = []
-    mode = state.get("analysis_mode", "ab_test")
-    narrative = state.get("narrative_draft", "")
-
-    if mode == "ab_test" and narrative:
-        ttest     = state.get("ttest_result")
-        cuped     = state.get("cuped_result")
-        srm       = state.get("srm_result")
-        guardrail = state.get("guardrail_result")
-        mde       = state.get("mde_result")
-        if ttest is not None:
-            try:
-                from tools.eval_tools import score_claim_accuracy, score_safety_constraints
-                all_violations = (
-                    score_claim_accuracy(narrative, ttest, cuped)["violations"]
-                    + score_safety_constraints(narrative, srm, guardrail, mde, ttest)["violations"]
-                )
-                if all_violations:
-                    revision_count = state.get("narrative_revision_count") or 0
-                    if revision_count < _MAX_AUTO_REVISIONS:
-                        violation_str = "; ".join(all_violations)
-                        logger.warning(
-                            "narrative_gate: auto-blocking (attempt %d/%d) — %s",
-                            revision_count + 1, _MAX_AUTO_REVISIONS, violation_str,
-                        )
-                        return {
-                            "narrative_approved":       False,
-                            "narrative_revision_count": revision_count + 1,
-                            "analyst_notes": (
-                                f"AUTO-CORRECTION: The narrative contains factual inconsistencies "
-                                f"that must be fixed before review: {violation_str}. "
-                                "Correct these claims to exactly match the statistical results."
-                            ),
-                        }
-                    else:
-                        logger.warning(
-                            "narrative_gate: auto-correction cap reached (%d) — "
-                            "surfacing violations to analyst: %s",
-                            _MAX_AUTO_REVISIONS, all_violations,
-                        )
-                        claim_violations = all_violations
-            except Exception as exc:
-                logger.debug("narrative_gate: claim accuracy check failed — %s", exc)
-
-    elif mode == "general" and narrative:
-        try:
-            from tools.eval_tools import score_general_claim_accuracy
-            general = score_general_claim_accuracy(
-                narrative,
-                describe_result=state.get("describe_result"),
-                correlation_result=state.get("correlation_result"),
-            )
-            if general["violations"]:
-                revision_count = state.get("narrative_revision_count") or 0
-                if revision_count < _MAX_AUTO_REVISIONS:
-                    violation_str = "; ".join(general["violations"])
-                    logger.warning(
-                        "narrative_gate: general-mode auto-blocking (attempt %d/%d) — %s",
-                        revision_count + 1, _MAX_AUTO_REVISIONS, violation_str,
-                    )
-                    return {
-                        "narrative_approved":       False,
-                        "narrative_revision_count": revision_count + 1,
-                        "analyst_notes": (
-                            f"AUTO-CORRECTION: The narrative makes claims that contradict the "
-                            f"data: {violation_str}. Correct these before review."
-                        ),
-                    }
-                else:
-                    claim_violations = general["violations"]
-        except Exception as exc:
-            logger.debug("narrative_gate: general claim accuracy check failed — %s", exc)
-
-    # ── LLM audit: critical findings ─────────────────────────────────────────
-    audit_result   = state.get("audit_result")
+    # narrative_gate is a pure HITL review step — no auto-blocking here.
+    # Auto-corrections happen in generate_narrative (via audit_blocked loop).
+    # Surfacing violations to the analyst is done via the payload message.
+    audit_result = state.get("audit_result")
     audit_findings: list[str] = []
     if audit_result and hasattr(audit_result, "findings"):
         critical = [f for f in (audit_result.findings or []) if f.severity == "critical"]
-        if critical:
-            revision_count = state.get("narrative_revision_count") or 0
-            if revision_count < _MAX_AUTO_REVISIONS:
-                issues_str = "; ".join(f.issue for f in critical)
-                logger.warning(
-                    "narrative_gate: audit critical block (attempt %d/%d) — %s",
-                    revision_count + 1, _MAX_AUTO_REVISIONS, issues_str,
-                )
-                return {
-                    "narrative_approved":       False,
-                    "narrative_revision_count": revision_count + 1,
-                    "analyst_notes": (
-                        f"AUDIT CRITICAL: {issues_str}. "
-                        "Rewrite to fix these before the report can be shown."
-                    ),
-                }
-            else:
-                audit_findings = [
-                    f'{f.issue} (quote: "{f.quote}")' for f in critical
-                ]
+        audit_findings = [f'{f.issue} (quote: "{f.quote}")' for f in critical]
 
     payload: dict = {
         "gate":             "narrative",
@@ -2626,18 +2650,11 @@ def narrative_gate(state: AgentState) -> dict:
         "recommendation":   state.get("recommendation", ""),
         "message":          "Review the narrative. Approve, or add notes to trigger a revision.",
     }
-    if claim_violations:
-        payload["claim_violations"] = claim_violations
-        payload["message"] = (
-            "⚠️ Auto-correction reached its limit. The following factual issues could not be "
-            "resolved automatically — please fix them manually before approving: "
-            + "; ".join(claim_violations)
-        )
-    elif audit_findings:
+    if audit_findings:
         payload["audit_critical_findings"] = audit_findings
         payload["message"] = (
-            "⚠️ AUDIT: Critical accuracy issues could not be auto-corrected. "
-            "Review and fix before approving: " + "; ".join(audit_findings)
+            "⚠️ AUDIT: Potential accuracy issues detected — review before approving: "
+            + "; ".join(audit_findings)
         )
     analyst_response = interrupt(payload)
 
@@ -2651,11 +2668,13 @@ def narrative_gate(state: AgentState) -> dict:
         override["recommendation_override"] = rec_override.strip()
 
     if approved:
-        audit_log     = _build_audit_log(state)
-        final         = state.get("narrative_draft", "") + "\n\n" + audit_log
+        audit_log  = _build_audit_log(state)
+        final      = state.get("narrative_draft", "") + "\n\n" + audit_log
+        deck_data  = _generate_deck(state, final)
         return {
             "narrative_approved": True,
             "final_narrative":    final,
+            "deck_data":          deck_data,
             "analyst_notes":      analyst_notes,
             "analyst_override":   override,
         }
@@ -2799,6 +2818,9 @@ def log_run_node(state: AgentState) -> dict:
         result_cols   = set(df_log.columns) if df_log is not None and hasattr(df_log, "columns") else set()
         if required_cols.issubset(result_cols):
             narrative = state.get("final_narrative") or state.get("narrative_draft") or ""
+            if not narrative.strip():
+                logger.info("log_run: skipping SQL cache — narrative is empty")
+                return {"run_id": run_id}
             semantic_cache.store_cache(
                 task=task,
                 node_name="generate_sql",

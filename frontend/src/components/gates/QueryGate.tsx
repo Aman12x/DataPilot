@@ -32,7 +32,7 @@ export default function QueryGate({ payload, onSubmit, submitting }: Props) {
         style={s.sql}
         value={sql}
         onChange={(e) => setSql(e.target.value)}
-        rows={8}
+        rows={16}
         spellCheck={false}
         disabled={submitting}
       />

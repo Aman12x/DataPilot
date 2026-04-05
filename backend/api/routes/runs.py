@@ -109,6 +109,8 @@ def _get_memory_store(request: Request) -> Any:
 
 
 def _user_from_token_param(token: str) -> dict[str, str]:
+    if not token or token == "guest":
+        return {"user_id": "guest", "username": "Guest"}
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
     except JWTError:
@@ -396,7 +398,12 @@ async def stream_run(
             # Terminal
             config = {"configurable": {"thread_id": run_id}}
             try:
-                final_state  = graph.get_state(config)
+                final_state = graph.get_state(config)
+                # Guard against stale "ok" from an intermediate invoke (race condition):
+                # if the graph still has pending nodes, this invoke ended at a gate that
+                # is about to interrupt — keep waiting for the actual terminal invoke.
+                if final_state.next:
+                    continue
                 state_values = final_state.values if hasattr(final_state, "values") else {}
             except Exception:
                 state_values = item.get("snap") or {}
@@ -413,6 +420,7 @@ async def stream_run(
                         "charts":           state_values.get("charts", []),
                         "trust_indicators": state_values.get("trust_indicators", {}),
                         "analysis_mode":    state_values.get("analysis_mode", ""),
+                        "deck_data":        state_values.get("deck_data") or {},
                     },
                 }, cls=_JsonEncoder)
             }

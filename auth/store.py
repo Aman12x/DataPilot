@@ -1,8 +1,12 @@
 """
 auth/store.py — User account store for DataPilot.
 
-Uses a separate SQLite DB from the memory store so auth concerns
-never touch analysis data.
+Uses a separate DB from the memory store so auth concerns never touch
+analysis data.
+
+Storage backend (in priority order):
+  1. DATABASE_URL set → PostgreSQL (psycopg2)
+  2. AUTH_DB_PATH / default → SQLite
 
 Password hashing: PBKDF2-HMAC-SHA256 with a 32-byte random salt per user,
 260,000 iterations. No third-party crypto dependencies.
@@ -15,19 +19,95 @@ import os
 import secrets
 import sqlite3
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any, Generator
 
 
 def _auth_db_path() -> str:
     return os.getenv("AUTH_DB_PATH", "memory/auth.db")
 
 
-def _connect(path: str) -> sqlite3.Connection:
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    con = sqlite3.connect(path)
-    con.row_factory = sqlite3.Row
-    return con
+# ── Postgres / SQLite abstraction ─────────────────────────────────────────────
+
+_DATABASE_URL = os.getenv("DATABASE_URL", "")
+_USE_PG = bool(_DATABASE_URL)
+
+
+def _q(sql: str) -> str:
+    """Translate SQLite ? placeholders to Postgres %s."""
+    return sql.replace("?", "%s") if _USE_PG else sql
+
+
+class _PGCursorAdapter:
+    """Wraps a psycopg2 RealDictCursor to match the sqlite3 cursor interface."""
+
+    def __init__(self, cur: Any) -> None:
+        self._cur = cur
+
+    def fetchone(self) -> Any:
+        return self._cur.fetchone()
+
+    def fetchall(self) -> list[Any]:
+        return self._cur.fetchall()
+
+
+class _PGConnAdapter:
+    """Wraps a psycopg2 connection to expose sqlite3-style .execute()."""
+
+    def __init__(self, conn: Any) -> None:
+        self._conn = conn
+
+    def execute(self, sql: str, params: tuple = ()) -> _PGCursorAdapter:
+        import psycopg2.extras  # noqa: PLC0415
+
+        cur = self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(_q(sql), params)
+        return _PGCursorAdapter(cur)
+
+
+@contextmanager
+def _connect(path: str) -> Generator[Any, None, None]:
+    """
+    Yield a database connection for *path* (SQLite) or DATABASE_URL (Postgres).
+
+    The caller uses ``with _connect(path) as con:`` — identical to the old
+    sqlite3 context-manager pattern but now routes to Postgres when
+    DATABASE_URL is set.
+    """
+    if _USE_PG:
+        import psycopg2  # noqa: PLC0415
+
+        conn = psycopg2.connect(_DATABASE_URL)
+        try:
+            yield _PGConnAdapter(conn)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    else:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        conn = sqlite3.connect(path)
+        conn.row_factory = sqlite3.Row
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
+# INSERT OR IGNORE syntax differs between SQLite and Postgres
+_REVOKE_TOKEN_SQL = (
+    "INSERT INTO revoked_tokens (jti, revoked_at) VALUES (?, ?) ON CONFLICT (jti) DO NOTHING"
+    if _USE_PG
+    else "INSERT OR IGNORE INTO revoked_tokens (jti, revoked_at) VALUES (?, ?)"
+)
 
 
 def init_db(path: str | None = None) -> None:
@@ -68,10 +148,7 @@ def revoke_token(jti: str, path: str | None = None) -> None:
     init_db(path)
     ts = datetime.now(timezone.utc).isoformat()
     with _connect(path) as con:
-        con.execute(
-            "INSERT OR IGNORE INTO revoked_tokens (jti, revoked_at) VALUES (?, ?)",
-            (jti, ts),
-        )
+        con.execute(_REVOKE_TOKEN_SQL, (jti, ts))
 
 
 def create_reset_token(email: str, path: str | None = None) -> str | None:
@@ -80,14 +157,17 @@ def create_reset_token(email: str, path: str | None = None) -> str | None:
     Returns the token string, or None if no account with that email exists.
     """
     from datetime import timedelta
+
     path = path or _auth_db_path()
     init_db(path)
     with _connect(path) as con:
-        row = con.execute("SELECT user_id FROM users WHERE email = ?",
-                          (email.strip().lower(),)).fetchone()
+        row = con.execute(
+            "SELECT user_id FROM users WHERE email = ?",
+            (email.strip().lower(),),
+        ).fetchone()
     if row is None:
         return None
-    token      = secrets.token_urlsafe(32)
+    token = secrets.token_urlsafe(32)
     expires_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
     with _connect(path) as con:
         con.execute(
@@ -126,7 +206,7 @@ def update_password(user_id: str, new_password: str, path: str | None = None) ->
         return False
     path = path or _auth_db_path()
     init_db(path)
-    salt     = secrets.token_hex(32)
+    salt = secrets.token_hex(32)
     pwd_hash = _hash_password(new_password, salt)
     with _connect(path) as con:
         con.execute(
@@ -149,21 +229,22 @@ def is_token_revoked(jti: str, path: str | None = None) -> bool:
 
 @dataclass
 class User:
-    user_id:    str
-    username:   str
-    email:      str
+    user_id: str
+    username: str
+    email: str
     created_at: str
 
     def to_dict(self) -> dict:
         return {
-            "user_id":    self.user_id,
-            "username":   self.username,
-            "email":      self.email,
+            "user_id": self.user_id,
+            "username": self.username,
+            "email": self.email,
             "created_at": self.created_at,
         }
 
 
 # ── Password helpers ──────────────────────────────────────────────────────────
+
 
 def _hash_password(password: str, salt: str) -> str:
     dk = hashlib.pbkdf2_hmac(
@@ -177,12 +258,13 @@ def _hash_password(password: str, salt: str) -> str:
 
 # ── CRUD ──────────────────────────────────────────────────────────────────────
 
+
 def create_user(
     username: str,
     email: str,
     password: str,
     path: str | None = None,
-) -> User | str:
+) -> "User | str":
     """
     Create a new user account.
 
@@ -197,9 +279,9 @@ def create_user(
     init_db(path)
 
     user_id = str(uuid.uuid4())
-    salt    = secrets.token_hex(32)
+    salt = secrets.token_hex(32)
     pwd_hash = _hash_password(password, salt)
-    ts      = datetime.now(timezone.utc).isoformat()
+    ts = datetime.now(timezone.utc).isoformat()
 
     try:
         with _connect(path) as con:
@@ -208,7 +290,12 @@ def create_user(
                    VALUES (?, ?, ?, ?, ?, ?)""",
                 (user_id, username.strip(), email.strip().lower(), pwd_hash, salt, ts),
             )
-    except sqlite3.IntegrityError as exc:
+    except Exception as exc:
+        # Catches sqlite3.IntegrityError and psycopg2 UniqueViolation alike.
+        # Re-raise anything that isn't a uniqueness conflict.
+        type_name = type(exc).__name__
+        if type_name not in ("IntegrityError", "UniqueViolation"):
+            raise
         msg = str(exc)
         if "username" in msg:
             return f"Username '{username}' is already taken."
@@ -216,14 +303,19 @@ def create_user(
             return f"An account with email '{email}' already exists."
         return "Account creation failed. Please try again."
 
-    return User(user_id=user_id, username=username.strip(), email=email.strip().lower(), created_at=ts)
+    return User(
+        user_id=user_id,
+        username=username.strip(),
+        email=email.strip().lower(),
+        created_at=ts,
+    )
 
 
 def verify_user(
     login: str,
     password: str,
     path: str | None = None,
-) -> User | None:
+) -> "User | None":
     """
     Verify credentials. `login` can be username or email.
 
@@ -254,7 +346,7 @@ def verify_user(
     )
 
 
-def get_user_by_id(user_id: str, path: str | None = None) -> User | None:
+def get_user_by_id(user_id: str, path: str | None = None) -> "User | None":
     path = path or _auth_db_path()
     init_db(path)
     with _connect(path) as con:

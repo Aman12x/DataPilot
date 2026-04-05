@@ -13,12 +13,11 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 from typing import Any
 
 import numpy as np
 
-from memory.store import _connect, _db_path, init_db
+from memory.store import _USE_PG, _connect, _db_path, init_db
 
 
 def _hard_threshold() -> float:
@@ -50,12 +49,22 @@ def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
 
 def _ensure_cache_columns(path: str) -> None:
     """Add cache_node_name / cached_result / dataset_fingerprint columns to runs if not present."""
+    blob_type = "BYTEA" if _USE_PG else "BLOB"
     with _connect(path) as con:
-        cols = {row[1] for row in con.execute("PRAGMA table_info(runs)").fetchall()}
+        if _USE_PG:
+            cols = {
+                row["column_name"]
+                for row in con.execute(
+                    "SELECT column_name FROM information_schema.columns"
+                    " WHERE table_name = 'runs'"
+                ).fetchall()
+            }
+        else:
+            cols = {row["name"] for row in con.execute("PRAGMA table_info(runs)").fetchall()}
         if "cache_node_name" not in cols:
             con.execute("ALTER TABLE runs ADD COLUMN cache_node_name TEXT")
         if "cached_result" not in cols:
-            con.execute("ALTER TABLE runs ADD COLUMN cached_result BLOB")
+            con.execute(f"ALTER TABLE runs ADD COLUMN cached_result {blob_type}")
         if "dataset_fingerprint" not in cols:
             con.execute("ALTER TABLE runs ADD COLUMN dataset_fingerprint TEXT DEFAULT ''")
 

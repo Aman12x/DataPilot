@@ -16,6 +16,18 @@ import NarrativeGate from "../components/gates/NarrativeGate";
 import { type Mode, type PgCreds, type Sample, MODE_META } from "../types/analysis";
 import { stripMarkdown, sanitiseNarrative } from "../utils/markdown";
 import { extractApiError } from "../utils/error";
+import StakeholderDeck from "../components/StakeholderDeck";
+import type { DeckData } from "../hooks/useSSE";
+
+// ── Fallback samples (shown even when backend is offline) ─────────────────────
+const FALLBACK_SAMPLES: Sample[] = [
+  { name: "ecommerce_ab_test.csv",       label: "E-commerce A/B Test",    domain: "E-commerce", icon: "🛒", mode: "ab_test",  suggested_task: "Did the new checkout flow increase revenue and orders? Identify which customer segments and devices benefited most." },
+  { name: "clinical_trial.csv",          label: "Clinical Trial",          domain: "Healthcare", icon: "🏥", mode: "ab_test",  suggested_task: "Did Drug A improve recovery scores compared to the control group? Check for side effects and subgroup differences by age and severity." },
+  { name: "media_ctr_experiment.csv",    label: "Media CTR Experiment",    domain: "Media",      icon: "📱", mode: "ab_test",  suggested_task: "Did the new content recommendation algorithm improve click-through rate and watch time? Break down results by platform, content type, and age group." },
+  { name: "saas_churn_analysis.csv",     label: "SaaS Churn Analysis",     domain: "SaaS",       icon: "📊", mode: "general", suggested_task: "What factors most strongly predict customer churn? Which industries and plan types have the highest churn rates?" },
+  { name: "logistics_ops.csv",           label: "Logistics Operations",    domain: "Logistics",  icon: "🚚", mode: "general", suggested_task: "Why are deliveries being delayed? Which carriers and routes have the worst on-time performance?" },
+  { name: "customer_transactions_10k.csv", label: "Retail Transactions",   domain: "Retail",     icon: "🏪", mode: "general", suggested_task: "Which product categories and customer segments drive the most revenue? What patterns exist in fraud, returns, and churn?" },
+];
 
 // ── ModeSelect — the two-button landing ───────────────────────────────────────
 
@@ -154,12 +166,13 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
   const [uploadResult,   setUploadResult]   = useState<UploadResult | null>(null);
   const [uploadError,    setUploadError]    = useState("");
   const [uploadFileName, setUploadFileName] = useState("");
-  const [samples,        setSamples]        = useState<Sample[]>([]);
+  const [samples,        setSamples]        = useState<Sample[]>(FALLBACK_SAMPLES.filter(s => s.mode === mode));
   const [loadingSample,  setLoadingSample]  = useState<string | null>(null);
   const [submitting,     setSubmitting]     = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    setSamples(FALLBACK_SAMPLES.filter(s => s.mode === mode));
     client.get<Sample[]>("/samples")
       .then(r => setSamples(r.data.filter(s => s.mode === mode)))
       .catch(() => {});
@@ -496,8 +509,12 @@ function FinishedView({ state, runId, steps, onNewAnalysis, onFollowUp }: {
   const navigate = useNavigate();
   const [copied,       setCopied]      = useState(false);
   const [showDetails,  setShowDetails] = useState(false);
+  const [showFullReport, setShowFullReport] = useState(false);
   const [followUp,     setFollowUp]    = useState("");
   const [submitting,   setSubmitting]  = useState(false);
+
+  const deck = state.deck_data as DeckData | undefined;
+  const hasDeck = deck && deck.headline && deck.hero_metric;
 
   const isPowerAnalysis = state.analysis_mode === "power_analysis";
   const { brief, details } = splitNarrative(state.narrative_draft);
@@ -579,9 +596,27 @@ function FinishedView({ state, runId, steps, onNewAnalysis, onFollowUp }: {
 
         {hasTrust && <TrustBanner trust={state.trust_indicators} />}
 
-        <div style={s.narrativeCard} className="slide-up">
-          <Markdown content={brief} />
-        </div>
+        {/* Stakeholder deck — shown first; full report revealed on demand */}
+        {hasDeck && !showFullReport && (
+          <StakeholderDeck deck={deck!} onViewReport={() => setShowFullReport(true)} />
+        )}
+
+        {/* Full narrative — always shown when no deck, or when user clicked through */}
+        {(!hasDeck || showFullReport) && (
+          <>
+            {hasDeck && showFullReport && (
+              <button
+                style={s.btnBackToDeck}
+                onClick={() => setShowFullReport(false)}
+              >
+                ← Back to summary
+              </button>
+            )}
+            <div style={s.narrativeCard} className="slide-up">
+              <Markdown content={brief} />
+            </div>
+          </>
+        )}
 
         {showDetails && (
           <div className="fade-in">
@@ -982,7 +1017,8 @@ const s: Record<string, React.CSSProperties> = {
   chartsSectionLabel: { color: "#45475a", fontSize: 11, fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.08em", marginBottom: 12 },
   chartsGrid:         { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 },
 
-  narrativeCard: { background: "#1e1e2e", border: "1px solid #313244", borderRadius: 12, padding: "28px 32px", lineHeight: 1.7 },
+  narrativeCard:  { background: "#1e1e2e", border: "1px solid #313244", borderRadius: 12, padding: "28px 32px", lineHeight: 1.7 },
+  btnBackToDeck:  { background: "transparent", border: "none", color: "#89b4fa", fontSize: 13, cursor: "pointer", padding: "0 0 12px", display: "block" },
 
   followUpBox:   { marginTop: 20, padding: "16px 20px", background: "#181825", border: "1px solid #313244", borderRadius: 10 },
   followUpLabel: { color: "#585b70", fontSize: 11, fontWeight: 600, textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 10 },

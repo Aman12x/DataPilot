@@ -62,6 +62,8 @@ def format_narrative(
     cohens_d         = ttest_result.get("cohens_d",  None)         if ttest_ran else None
     n_control        = ttest_result.get("n_control",  0)           if ttest_ran else 0
     n_treatment      = ttest_result.get("n_treatment", 0)          if ttest_ran else 0
+    control_mean     = ttest_result.get("control_mean", None)      if ttest_ran else None
+    treatment_mean   = ttest_result.get("treatment_mean", None)    if ttest_ran else None
     ci_lower         = ttest_result.get("ci_lower",  None)         if ttest_ran else None
     ci_upper         = ttest_result.get("ci_upper",  None)         if ttest_ran else None
     winsorized       = ttest_result.get("winsorized", False)         if ttest_ran else False
@@ -74,6 +76,10 @@ def format_narrative(
     seg_effect      = hte_result.get("effect_size", 0.0)
     seg_share       = hte_result.get("segment_share", 0.0)
     interaction_p   = hte_result.get("interaction_p_value", None)
+    # Actual row counts for the top segment (first entry in sorted all_segments list)
+    _top_seg_data   = (hte_result.get("all_segments") or [{}])[0]
+    seg_n_ctrl      = _top_seg_data.get("n_control", 0)
+    seg_n_trt       = _top_seg_data.get("n_treatment", 0)
 
     novelty_skipped   = novelty_result.get("skipped", False)
     novelty_likely    = novelty_result.get("novelty_likely", False)
@@ -116,9 +122,9 @@ def format_narrative(
 
     # ── 1. TL;DR ────────────────────────────────────────────────────────────────
     if sig is None:
-        sig_str = "significance unknown (analysis did not run)"
+        sig_str = "inconclusive (analysis did not run)"
     else:
-        sig_str = "statistically significant" if sig else "not statistically significant"
+        sig_str = "confirmed (real, not due to chance)" if sig else "inconclusive (may be due to chance)"
 
     ate_str = f"CUPED ATE={cuped_ate:+.4f}" if cuped_ate is not None else "CUPED ATE=n/a"
     p_str   = f"p={p_value:.4f}"            if p_value  is not None else "p=n/a"
@@ -144,8 +150,12 @@ def format_narrative(
         n_str = f" [n={n_control:,} ctrl / {n_treatment:,} trt]" if n_control and n_treatment else ""
         wins_str = " _(outliers winsorized at 1%)_" if winsorized else ""
         alt_str  = f" _{alternative} test_" if alternative != "two-sided" else ""
+        means_str = (
+            f" control={control_mean:.4f}, treatment={treatment_mean:.4f},"
+            if control_mean is not None and treatment_mean is not None else ""
+        )
         cuped_line = (
-            f"- **Experiment (CUPED):** ATE={cuped_ate:+.4f} "
+            f"- **Experiment (CUPED):**{means_str} ATE={cuped_ate:+.4f} "
             f"(variance reduction {var_red:.1f}%){d_str}, {p_str} → {sig_str.upper()}.{n_str}{wins_str}{alt_str}"
         )
     else:
@@ -168,16 +178,42 @@ def format_narrative(
     if interaction_p is not None:
         interact_str = (
             f" Interaction test p={interaction_p:.4f} — "
-            + ("heterogeneity is **statistically confirmed**." if interaction_p < 0.05
-               else "heterogeneity not yet statistically confirmed (may be sampling noise).")
+            + ("segment differences are **real, not random noise**." if interaction_p < 0.05
+               else "segment differences may be random noise (not yet confirmed).")
         )
     else:
         interact_str = ""
 
+    _total_n = n_control + n_treatment
+    _seg_total_n = seg_n_ctrl + seg_n_trt
+    _seg_share_pct = f"{seg_share * 100:.1f}%"
     concentration_lines = [
         f"- **Top segment (HTE):** {top_seg}: effect size {seg_effect:+.4f}, "
-        f"represents {seg_share:.1f}% of experiment users.{interact_str}",
+        f"{_seg_share_pct} of experiment users "
+        f"(n={seg_n_ctrl:,} ctrl / {seg_n_trt:,} trt out of {n_control:,} / {n_treatment:,} total analyzed)."
+        f"{interact_str}",
     ]
+    # Reference table for all segments — LLM uses this for the Segment Breakdown section.
+    all_segs = hte_result.get("all_segments") or []
+    if len(all_segs) > 1:
+        seg_rows = []
+        for _s in all_segs[:10]:
+            _sig = "✅" if _s.get("significant") else "—"
+            _nc, _nt = _s.get("n_control", 0), _s.get("n_treatment", 0)
+            _cm, _tm = _s.get("control_mean"), _s.get("treatment_mean")
+            _share = (_nc + _nt) / max(_total_n, 1)
+            _means_part = (
+                f" ctrl_mean={_cm:.4f}, trt_mean={_tm:.4f},"
+                if _cm is not None and _tm is not None else ""
+            )
+            seg_rows.append(
+                f"  - {_sig} {_s['segment']}:{_means_part} ATE={_s['effect_size']:+.4f}, "
+                f"n={_nc:,} ctrl / {_nt:,} trt ({_share * 100:.1f}% of {_total_n:,} total analyzed)"
+            )
+        concentration_lines.append(
+            "- **All segments (reference — every number in Segment Breakdown must come from here):**\n"
+            + "\n".join(seg_rows)
+        )
     if dropoff_step_data:
         concentration_lines.append(
             f"- **Funnel:** Largest drop-off at `{biggest_dropoff}` step "

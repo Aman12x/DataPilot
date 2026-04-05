@@ -170,6 +170,35 @@ def _route_after_execute_query(state: AgentState) -> str:
     return "load_auxiliary_data"
 
 
+def _route_after_describe_data(state: AgentState) -> str:
+    """
+    After describe_data:
+      - lookup queries → skip correlation/regression/timeseries, go straight to charts
+      - exploratory queries → run the full analysis pipeline
+    """
+    if state.get("query_type") == "lookup":
+        return "generate_charts"
+    return "find_correlations"
+
+
+_MAX_AUTO_REVISIONS = int(os.getenv("MAX_AUTO_REVISIONS", "2"))
+
+
+def _route_after_generate_narrative(state: AgentState) -> str:
+    """
+    After generate_narrative:
+      - Audit found critical issues AND under auto-revision cap → self-correct
+        (conversation_history already contains the correction instructions)
+      - Otherwise → show narrative_gate to the analyst
+    """
+    if (
+        state.get("audit_blocked")
+        and (state.get("narrative_revision_count") or 0) < _MAX_AUTO_REVISIONS
+    ):
+        return "generate_narrative"
+    return "narrative_gate"
+
+
 def _route_after_narrative_gate(state: AgentState) -> str:
     """
     After narrative_gate:
@@ -300,8 +329,12 @@ def build_graph(checkpointer=None) -> StateGraph:
         },
     )
 
-    # General analysis path: describe → correlations → regression → timeseries → generate_charts
-    builder.add_edge("describe_data",     "find_correlations")
+    # General analysis path: describe → (lookup: charts | exploratory: correlations → ...) → charts
+    builder.add_conditional_edges(
+        "describe_data",
+        _route_after_describe_data,
+        {"find_correlations": "find_correlations", "generate_charts": "generate_charts"},
+    )
     builder.add_edge("find_correlations", "run_regression")
     builder.add_edge("run_regression",    "detect_timeseries")
     builder.add_edge("detect_timeseries", "generate_charts")
@@ -332,7 +365,11 @@ def build_graph(checkpointer=None) -> StateGraph:
         lambda s: "generate_narrative" if s.get("analysis_approved", True) else "analysis_gate",
         {"generate_narrative": "generate_narrative", "analysis_gate": "analysis_gate"},
     )
-    builder.add_edge("generate_narrative", "narrative_gate")
+    builder.add_conditional_edges(
+        "generate_narrative",
+        _route_after_generate_narrative,
+        {"narrative_gate": "narrative_gate", "generate_narrative": "generate_narrative"},
+    )
 
     # Narrative revision loop / finish
     builder.add_conditional_edges(

@@ -50,6 +50,22 @@ SAMPLES = [
         "mode":           "general",
         "suggested_task": "Why are deliveries being delayed? Which carriers and routes have the worst on-time performance?",
     },
+    {
+        "name":           "media_ctr_experiment.csv",
+        "label":          "Media CTR Experiment",
+        "domain":         "Media",
+        "icon":           "📱",
+        "mode":           "ab_test",
+        "suggested_task": "Did the new content recommendation algorithm improve click-through rate and watch time? Break down results by platform, content type, and age group.",
+    },
+    {
+        "name":           "customer_transactions_10k.csv",
+        "label":          "Retail Transactions",
+        "domain":         "Retail",
+        "icon":           "🏪",
+        "mode":           "general",
+        "suggested_task": "Which product categories and customer segments drive the most revenue? What patterns exist in fraud, returns, and churn?",
+    },
 ]
 
 _ALLOWED = {s["name"] for s in SAMPLES}

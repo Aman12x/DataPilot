@@ -4,6 +4,7 @@ import { gateCard, gateTitle, gateMessage, gateTextarea, gateActions, gateBtnApp
 interface Props {
   payload: {
     message: string;
+    srm_detected?: boolean;
     significant: boolean | null;
     top_segment: string | null;
     novelty_likely: boolean | null;
@@ -37,7 +38,10 @@ function Stat({ label, value, tone }: { label: string; value: string | null; ton
 
 export default function AnalysisGate({ payload, onSubmit, submitting }: Props) {
   const [notes, setNotes] = useState("");
+  const [srmAcked, setSrmAcked] = useState(false);
   const { significant: sig, novelty_likely: novel, guardrails_breached: guard, mde_powered: mde } = payload;
+  const srmDetected = !!payload.srm_detected;
+  const canApprove  = !srmDetected || srmAcked;
 
   return (
     <div style={{ ...gateCard, maxWidth: 640 }}>
@@ -66,6 +70,22 @@ export default function AnalysisGate({ payload, onSubmit, submitting }: Props) {
         </div>
       )}
 
+      {srmDetected && (
+        <label style={s.srmAck} className="fade-in">
+          <input
+            type="checkbox"
+            checked={srmAcked}
+            onChange={(e) => setSrmAcked(e.target.checked)}
+            disabled={submitting}
+            style={{ accentColor: "#f38ba8", width: 15, height: 15, flexShrink: 0 }}
+          />
+          <span style={{ color: "#f38ba8", fontSize: 13, lineHeight: 1.4 }}>
+            I understand the statistical results are unreliable due to sample ratio mismatch
+            and wish to proceed anyway.
+          </span>
+        </label>
+      )}
+
       <textarea
         style={gateTextarea}
         value={notes}
@@ -76,7 +96,12 @@ export default function AnalysisGate({ payload, onSubmit, submitting }: Props) {
       />
 
       <div style={gateActions}>
-        <button style={gateBtnApprove} onClick={() => onSubmit({ approved: true, notes })} disabled={submitting}>
+        <button
+          style={{ ...gateBtnApprove, opacity: canApprove ? 1 : 0.45 }}
+          onClick={() => onSubmit({ approved: true, notes, ...(srmDetected ? { srm_acknowledged: srmAcked } : {}) })}
+          disabled={submitting || !canApprove}
+          title={!canApprove ? "Acknowledge the SRM warning above to proceed" : undefined}
+        >
           {submitting ? "Submitting…" : "Approve & Continue"}
         </button>
         <button
@@ -98,4 +123,5 @@ const s: Record<string, React.CSSProperties> = {
   breachedLabel:{ color: "#f38ba8", fontSize: 12, fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.06em" },
   badge:        { background: "#f38ba822", color: "#f38ba8", borderRadius: 6, padding: "3px 10px", fontSize: 12, fontWeight: 500 },
   btnReject:    { padding: "10px 22px", background: "transparent", color: "#f38ba8", border: "1px solid #f38ba844", borderRadius: 8, cursor: "pointer", fontSize: 14 },
+  srmAck:       { display: "flex", alignItems: "flex-start", gap: 10, background: "#f38ba811", border: "1px solid #f38ba844", borderRadius: 8, padding: "12px 14px", marginBottom: 12, cursor: "pointer" },
 };

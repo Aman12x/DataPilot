@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { StepEvent } from "../hooks/useSSE";
 
 interface Props {
@@ -8,6 +8,12 @@ interface Props {
 
 export default function ChainOfThought({ steps, isRunning }: Props) {
   const [open, setOpen] = useState(false);
+
+  // Auto-open while the run is active so users see live progress without clicking.
+  // Once the run finishes they can collapse it; don't force re-open on completion.
+  useEffect(() => {
+    if (isRunning) setOpen(true);
+  }, [isRunning]);
 
   if (steps.length === 0 && !isRunning) return null;
 

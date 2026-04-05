@@ -156,10 +156,15 @@ EVAL_CRITERIA: dict[str, tuple[str, Callable[[dict], bool]]] = {
     ),
     # ── RAGAS-inspired: faithfulness ─────────────────────────────────────────
     "narrative_faithful": (
-        "Numbers cited in narrative are supported by query results (faithfulness ≥ 0.70)",
+        "Numbers cited in narrative are supported by query results or tool stats (faithfulness ≥ 0.70)",
         _safe(lambda s: score_faithfulness(
             s.get("narrative_draft", ""),
             s.get("query_result"),
+            tool_results={
+                k: (v.model_dump() if hasattr(v, "model_dump") else v)
+                for k, v in s.items()
+                if k.endswith("_result") and v is not None
+            },
         )["score"] >= 0.70),
     ),
     # ── RAGAS-inspired: relevancy ────────────────────────────────────────────
@@ -186,6 +191,7 @@ def _run_tools(db_path: str, skip_narrative: bool) -> dict[str, Any]:
     # ── Load data ─────────────────────────────────────────────────────────────
     print("  Loading experiment data...")
     exp_df = conn.query(_EXPERIMENT_SQL)
+    state["query_result"] = exp_df       # kept for faithfulness scoring
 
     print("  Loading metrics_daily...")
     daily_df = conn.query(_METRICS_DAILY_SQL)

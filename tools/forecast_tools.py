@@ -104,7 +104,13 @@ def _forecast_prophet(
     date_col: str,
     metric_col: str,
 ) -> ForecastResult:
-    from prophet import Prophet  # raises ImportError if not installed
+    import io, sys
+    _stderr = sys.stderr
+    sys.stderr = io.StringIO()          # silence Prophet's "Importing plotly failed" noise
+    try:
+        from prophet import Prophet     # raises ImportError if not installed
+    finally:
+        sys.stderr = _stderr
 
     prophet_train = train.rename(columns={date_col: "ds", metric_col: "y"})
 

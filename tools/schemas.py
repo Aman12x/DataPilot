@@ -31,19 +31,23 @@ class TtestResult(BaseModel):
     cohens_d:         float         = 0.0   # pooled-std effect size; |d|<0.2 small, 0.2–0.5 medium, >0.5 large
     n_control:        int           = 0
     n_treatment:      int           = 0
+    control_mean:     float         = 0.0   # mean of the control arm (post-winsorization if applied)
+    treatment_mean:   float         = 0.0   # mean of the treatment arm (post-winsorization if applied)
     winsorized:       bool          = False  # True when outlier-clipping was applied
     skewness_warning: Optional[str] = None   # set when |skew| > 2 in either arm
     alternative:      str           = "two-sided"  # 'two-sided' | 'greater' | 'less'
 
 
 class SegmentResult(BaseModel):
-    segment:       str
-    effect_size:   float
-    segment_share: float
-    n_control:     int
-    n_treatment:   int
-    p_value:       float
-    significant:   bool
+    segment:        str
+    effect_size:    float
+    segment_share:  float
+    n_control:      int
+    n_treatment:    int
+    control_mean:   float = 0.0   # mean of the metric in the control arm for this segment
+    treatment_mean: float = 0.0   # mean of the metric in the treatment arm for this segment
+    p_value:        float
+    significant:    bool
 
 
 class HteResult(BaseModel):

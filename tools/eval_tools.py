@@ -102,47 +102,84 @@ def _df_numeric_values(df: pd.DataFrame) -> list[float]:
     return values
 
 
+def _tool_results_numeric_values(tool_results: dict | None) -> list[float]:
+    """
+    Recursively flatten all finite numeric scalars from a tool-results dict.
+
+    Tool results contain computed statistics (ATE, p-values, arm means, severity,
+    etc.) that are legitimately cited in narratives but are not raw DataFrame values.
+    Including them in faithfulness scoring prevents correct computed statistics from
+    being flagged as hallucinations.
+    """
+    if not tool_results:
+        return []
+    values: list[float] = []
+
+    def _recurse(obj: Any) -> None:
+        if isinstance(obj, dict):
+            for v in obj.values():
+                _recurse(v)
+        elif isinstance(obj, (list, tuple)):
+            for item in obj:
+                _recurse(item)
+        elif isinstance(obj, (int, float)):
+            fv = float(obj)
+            if math.isfinite(fv):
+                values.append(fv)
+
+    _recurse(tool_results)
+    return values
+
+
 def score_faithfulness(
     narrative: str,
     df: pd.DataFrame | None,
+    tool_results: dict | None = None,
     tolerance: float = 0.10,
 ) -> dict:
     """
-    Fraction of numbers in the narrative supported by a value in df within
-    `tolerance` relative error.
+    Fraction of numbers in the narrative supported by a value in df OR in
+    tool_results within `tolerance` relative error.
+
+    tool_results should be a dict of computed statistics from the analysis
+    pipeline (ttest_result, cuped_result, anomaly_result, etc.) serialised to
+    plain Python dicts.  Numbers in the narrative that match computed statistics
+    are considered grounded — the LLM didn't invent them.
 
     Returns a dict with keys: score, supported, total, unsupported_numbers.
 
-    A score of 1.0 means every cited number is traceable to the data.
-    A score < 0.7 is a strong signal of hallucination.
+    A score of 1.0 means every cited number is traceable to the data or to a
+    computed statistic.  A score < 0.7 is a strong signal of hallucination.
     """
-    if df is None or df.empty:
-        return {"score": 1.0, "supported": 0, "total": 0,
-                "unsupported_numbers": [], "note": "no dataframe"}
-
     narrative_nums = _extract_narrative_numbers(narrative)
     if not narrative_nums:
         return {"score": 1.0, "supported": 0, "total": 0,
                 "unsupported_numbers": [], "note": "no numbers in narrative"}
 
-    df_vals = _df_numeric_values(df)
-    if not df_vals:
+    df_vals: list[float] = []
+    if df is not None and not df.empty:
+        df_vals = _df_numeric_values(df)
+
+    tool_vals = _tool_results_numeric_values(tool_results)
+    all_vals = df_vals + tool_vals
+
+    if not all_vals:
         return {"score": 1.0, "supported": 0, "total": 0,
-                "unsupported_numbers": [], "note": "no numeric columns in df"}
+                "unsupported_numbers": [], "note": "no reference values available"}
 
     supported = 0
     unsupported: list[float] = []
 
     for num in narrative_nums:
         denom = abs(num) if abs(num) > 1e-9 else 1.0
-        matched = any(abs(num - dv) / denom <= tolerance for dv in df_vals)
+        matched = any(abs(num - dv) / denom <= tolerance for dv in all_vals)
         # Also check num/100 to handle percentage-cited-as-fraction mismatch
         # e.g. narrative says "77.4%" → num=77.4, but df stores 0.774
         # Only apply this for numbers in (0, 100] — larger values can't be percentages.
         if not matched and 0 < num <= 100:
             num_as_frac = num / 100.0
             denom_frac = abs(num_as_frac) if abs(num_as_frac) > 1e-9 else 1.0
-            matched = any(abs(num_as_frac - dv) / denom_frac <= tolerance for dv in df_vals)
+            matched = any(abs(num_as_frac - dv) / denom_frac <= tolerance for dv in all_vals)
         if matched:
             supported += 1
         else:
@@ -217,6 +254,7 @@ def evaluate_run(
     df: pd.DataFrame | None = None,
     ground_truth_findings: Sequence[str] | None = None,
     faithfulness_tolerance: float = 0.10,
+    tool_results: dict | None = None,
 ) -> EvalResult:
     """
     Run all three RAGAS-inspired metrics and return a composite EvalResult.
@@ -227,11 +265,16 @@ def evaluate_run(
         df:                     The query result DataFrame (used for faithfulness).
         ground_truth_findings:  Expected keywords that must appear in the narrative.
         faithfulness_tolerance: Relative tolerance for numeric matching (default 10%).
+        tool_results:           Dict of computed statistics from the analysis pipeline
+                                (ttest_result, cuped_result, etc.) serialised to plain
+                                Python dicts.  Numbers matching these are treated as
+                                grounded, not hallucinated.
 
     Returns:
         EvalResult with per-metric scores and a weighted composite.
     """
-    faith_detail  = score_faithfulness(narrative, df, tolerance=faithfulness_tolerance)
+    faith_detail  = score_faithfulness(narrative, df, tool_results=tool_results,
+                                       tolerance=faithfulness_tolerance)
     rel_score     = score_relevancy(task, narrative)
     kf_detail     = score_key_findings(narrative, ground_truth_findings or [])
 
