@@ -204,14 +204,24 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="DataPilot API", version="1.0.0", lifespan=lifespan)
 
 # CORS: in prod set CORS_ORIGINS=https://your-frontend.railway.app (comma-separated).
-_cors_raw = os.getenv("CORS_ORIGINS", "")
-_origins  = [o.strip() for o in _cors_raw.split(",") if o.strip()]
+# Falls back to APP_URL (frontend public URL) when CORS_ORIGINS is unset.
+_cors_raw = os.getenv("CORS_ORIGINS", "").strip()
+if not _cors_raw:
+    _app_url = os.getenv("APP_URL", "").strip()
+    if _app_url:
+        _cors_raw = _app_url
+_origins = [o.strip().rstrip("/") for o in _cors_raw.split(",") if o.strip()]
 _wildcard = not _origins
 _ENV = os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("ENV", "development")
 _IS_PRODUCTION = _ENV.lower() in ("production", "prod")
 if _wildcard:
     if _IS_PRODUCTION:
-        raise RuntimeError("CORS_ORIGINS must be set in production")
+        raise RuntimeError(
+            "CORS_ORIGINS must be set in production. "
+            "On Railway, add to the backend service: "
+            "CORS_ORIGINS=https://<your-frontend>.up.railway.app "
+            "(or set APP_URL to the same frontend URL)."
+        )
     logger.warning("CORS_ORIGINS not set — all origins allowed. Set in production.")
 
 app.add_middleware(

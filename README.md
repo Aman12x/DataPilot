@@ -255,7 +255,7 @@ Two services from the same repo:
 
 | Service | Root dir | Required env vars |
 |---------|----------|-------------------|
-| `backend` | `backend/` | `ANTHROPIC_API_KEY`, `SECRET_KEY`, `CORS_ORIGINS` |
+| `backend` | `backend/` | `ANTHROPIC_API_KEY`, `SECRET_KEY`, `CORS_ORIGINS` (or `APP_URL`) |
 | `frontend` | `frontend/` | `VITE_API_URL` (backend's public Railway URL) |
 
 Mount a Railway volume at `/app/memory` on the backend service. Without it, every redeploy wipes all user accounts and run history.
