@@ -1,7 +1,6 @@
 const f: Record<string, React.CSSProperties> = {
   group: { display: "flex", flexDirection: "column", gap: 6 },
-  label: { fontSize: 12, fontWeight: 600, color: "#a6adc8", letterSpacing: "0.04em", textTransform: "uppercase" },
-  input: { padding: "10px 12px", background: "#181825", color: "#cdd6f4", border: "1px solid #313244", borderRadius: 8, fontSize: 14, transition: "border-color 0.2s" },
+  label: { fontSize: 11, fontWeight: 600, color: "#a6adc8", letterSpacing: "0.06em", textTransform: "uppercase" },
 };
 
 export default function FormField({ label, type, value, onChange, placeholder, required = true, autoFocus }: {
@@ -13,7 +12,7 @@ export default function FormField({ label, type, value, onChange, placeholder, r
     <div style={f.group}>
       <label style={f.label}>{label}</label>
       <input
-        style={f.input}
+        className="dp-input"
         type={type}
         value={value}
         onChange={onChange}

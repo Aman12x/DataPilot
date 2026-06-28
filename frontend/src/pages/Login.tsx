@@ -97,8 +97,14 @@ export default function Login() {
         <span style={{ color: "#45475a", fontSize: 12, flexShrink: 0 }}>or</span>
         <div style={s.dividerLine} />
       </div>
-      <button style={s.guestBtn} onClick={continueAsGuest} type="button">
-        Continue as Guest
+      <button
+        style={s.guestBtn}
+        className="dp-guest-btn"
+        onClick={continueAsGuest}
+        type="button"
+        disabled={loading}
+      >
+        {loading ? "Starting guest session…" : "Continue as Guest"}
       </button>
     </AuthCard>
   );

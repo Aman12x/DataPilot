@@ -81,8 +81,8 @@ export default function History() {
             </div>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
-            <button style={s.newBtn} onClick={() => navigate("/")}>+ New Analysis</button>
-            <button style={s.logoutBtn} onClick={async () => { await logout(); navigate("/login"); }}>Sign out</button>
+            <button className="dp-btn dp-btn-primary" style={{ padding: "10px 20px" }} onClick={() => navigate("/")}>+ New Analysis</button>
+            <button className="dp-btn dp-btn-ghost" style={{ padding: "10px 16px" }} onClick={async () => { await logout(); navigate("/login"); }}>Sign out</button>
           </div>
         </div>
 
@@ -98,7 +98,7 @@ export default function History() {
             <div style={s.emptyIcon}>📊</div>
             <p style={s.emptyText}>No analyses yet</p>
             <p style={s.emptySub}>Run your first analysis to see it here</p>
-            <button style={s.newBtn} onClick={() => navigate("/")}>Start Analysing</button>
+            <button className="dp-btn dp-btn-primary" style={{ padding: "12px 24px", marginTop: 8 }} onClick={() => navigate("/")}>Start Analysing</button>
           </div>
         )}
 
@@ -109,8 +109,8 @@ export default function History() {
             return (
               <div
                 key={r.run_id}
-                style={{ ...s.card, animationDelay: `${idx * 40}ms`, ...(isOpen ? s.cardOpen : {}) }}
-                className="fade-in"
+                className={`dp-card dp-history-card fade-in${isOpen ? " dp-card-open" : ""}`}
+                style={{ ...s.card, animationDelay: `${idx * 40}ms`, ...(isOpen ? s.cardOpen : {}), boxShadow: undefined, borderRadius: undefined, background: undefined }}
                 onClick={() => toggleExpand(r)}
               >
                 <div style={s.cardTop}>

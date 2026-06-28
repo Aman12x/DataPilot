@@ -15,7 +15,7 @@ export default function QueryGate({ payload, onSubmit, submitting }: Props) {
   const [sql, setSql] = useState(payload.generated_sql);
 
   return (
-    <div style={{ ...gateCard, maxWidth: 720 }}>
+    <div className="dp-card" style={{ maxWidth: 720, padding: gateCard.padding, margin: gateCard.margin }}>
       <h3 style={gateTitle}>Review the SQL Query</h3>
       <p style={{ ...gateMessage, marginBottom: 14 }}>{payload.message}</p>
 
