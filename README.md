@@ -4,7 +4,7 @@
 
 Ask a question in plain English. DataPilot generates SQL, runs statistical analysis, and produces an evidence-based report. It pauses for analyst review at every decision point before moving forward.
 
-**Eval:** 11/11 DAU experiment · 11/11 cross-domain generalisability · 444 tests passing
+**Eval:** 11/11 DAU experiment · 11/11 cross-domain generalisability · **539 tests passing**
 
 ---
 
@@ -154,13 +154,34 @@ Treatment/control comparison with covariate adjustment, subgroup HTE, guardrail 
 | Agent graph | LangGraph 1.1 (SqliteSaver / PostgresSaver) |
 | LLM | Claude Sonnet (claude-sonnet-4-20250514) |
 | Query engine | DuckDB (upload/local) · PostgreSQL (external) |
-| Auth | JWT HS256 + bcrypt + refresh token revocation |
+| Auth | JWT HS256 + PBKDF2 + refresh token rotation |
 | Semantic cache | MiniLM (all-MiniLM-L6-v2) + SQLite |
 | Run state | Redis Streams (multi-pod) · asyncio.Queue (local) |
 | Stats | scipy · numpy · scikit-learn · Prophet |
 | Eval | RAGAS-inspired (faithfulness + relevancy + key findings) |
 | Observability | Sentry · structured logging |
-| Tests | pytest · 444 tests |
+| Tests | pytest (539) · Playwright E2E |
+
+---
+
+## Security
+
+Production deployments must set the variables documented in [`.env.example`](.env.example):
+
+- **`SECRET_KEY`** — JWT signing key (required in production; server refuses to start without it)
+- **`CORS_ORIGINS`** — comma-separated frontend origin(s)
+- **`REDIS_URL`** — recommended for multi-pod run state and rate limits
+
+Other controls:
+
+- Auth required on API routes; guest sessions use ephemeral `guest-{uuid}` tokens
+- Semantic cache scoped per user and dataset fingerprint
+- SQL guardrails (read-only, no file-read functions, auto `LIMIT`)
+- Short-lived scoped tokens for SSE/PDF streams
+- Refresh token rotation; password reset invalidates all sessions
+- Branch rulesets should require `test-backend` and `build-frontend` CI checks
+
+See [`tests/test_security_fixes.py`](tests/test_security_fixes.py) for regression coverage.
 
 ---
 

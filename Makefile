@@ -19,6 +19,10 @@ eval-full:
 test:
 	python -m pytest tests/ -v
 
+## Run Playwright E2E (requires backend deps + frontend npm ci)
+e2e:
+	cd frontend && npm run test:e2e
+
 ## Regenerate the DuckDB dataset from scratch
 data:
 	python data/generate_data.py

@@ -1,0 +1,9 @@
+title = "DataPilot gitleaks config"
+
+[allowlist]
+description = "Allowlisted paths and patterns"
+paths = [
+  '''\.env\.example$''',
+  '''^tests/''',
+  '''^data/samples/''',
+]
