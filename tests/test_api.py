@@ -397,6 +397,19 @@ class TestEmailVerification:
         assert r.status_code == 403
         assert "not verified" in r.json()["detail"].lower()
 
+    def test_register_survives_verification_email_failure(self, client, monkeypatch):
+        monkeypatch.setenv("AUTH_AUTO_VERIFY_EMAIL", "false")
+        monkeypatch.setenv("RESEND_API_KEY", "re_test_key")
+        un = f"emailfail_{uuid.uuid4().hex[:6]}"
+        with patch("api.email.send_verification_email", side_effect=RuntimeError("smtp down")):
+            r = client.post("/auth/register", json={
+                "username": un, "email": f"{un}@test.com", "password": "Password1!",
+            })
+        assert r.status_code == 201
+        body = r.json()
+        assert body["verify_pending"] is True
+        assert body["email_sent"] is False
+
 
 # ════════════════════════════════════════════════════════════════════════════════
 # Runs — create

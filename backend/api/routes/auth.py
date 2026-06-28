@@ -126,20 +126,25 @@ async def register(req: RegisterRequest, request: Request):
     from ..email import send_verification_email
 
     token = create_verification_token(result.user_id)
+    email_sent = True
     try:
         send_verification_email(result.email, token)
     except RuntimeError:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Could not send verification email. Please try again.",
-        )
+        email_sent = False
 
+    detail = (
+        "Check your email for a verification link before signing in."
+        if email_sent
+        else "Account created, but we could not send the verification email. "
+             "Use Resend verification or resend below once email is configured."
+    )
     return JSONResponse(
         status_code=status.HTTP_201_CREATED,
         content={
             "user": result.to_dict(),
             "verify_pending": True,
-            "detail": "Check your email for a verification link before signing in.",
+            "email_sent": email_sent,
+            "detail": detail,
         },
     )
 

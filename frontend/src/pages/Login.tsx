@@ -73,6 +73,18 @@ export default function Login() {
 
       if (tab === "register" && data.verify_pending) {
         setPendingEmail(form.email);
+        if (data.email_sent === false) {
+          setError(data.detail ?? "Account created, but the verification email could not be sent.");
+        }
+        return;
+      }
+
+      const authed = await checkAuth();
+      if (!authed) {
+        setError(
+          "Request succeeded but you are not signed in. Confirm CORS_ORIGINS on the backend "
+          + "matches your frontend URL exactly (including https://)."
+        );
         return;
       }
 
