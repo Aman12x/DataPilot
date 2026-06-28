@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "tolerance": 0.02,
+  "evals": {
+    "analyze_eval": {
+      "score": 0.9231,
+      "n_pass": 12,
+      "n_total": 13
+    },
+    "generalisability_eval": {
+      "score": 1.0,
+      "n_pass": 13,
+      "n_total": 13
+    },
+    "transactions_eval": {
+      "score": 1.0,
+      "n_pass": 7,
+      "n_total": 7
+    },
+    "fixture_eval": {
+      "score": 1.0,
+      "n_pass": 4,
+      "n_total": 4
+    }
+  }
+}

@@ -195,9 +195,16 @@ See [`tests/test_security_fixes.py`](tests/test_security_fixes.py) for regressio
 ## Eval scores
 
 ```bash
+make eval                              # all fast offline evals (no API key)
+make eval-all                          # evals + baseline regression gate (CI uses this)
 python evals/analyze_eval.py           # DAU experiment scenario
 python evals/generalisability_eval.py  # cross-domain: clinical + ecommerce
+python evals/transactions_eval.py      # golden Q&A on customer_transactions_10k
+python evals/fixture_eval.py           # fixture keyword + faithfulness checks
 ```
+
+CI runs `evals/compare_baseline.py` on every push to catch score regressions.
+Nightly workflow runs the full LLM narrative eval when `ANTHROPIC_API_KEY` is configured.
 
 **DAU experiment (11/11):**
 ```

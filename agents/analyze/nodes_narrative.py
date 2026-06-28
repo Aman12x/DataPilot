@@ -437,13 +437,38 @@ def _compute_quality_score(state: AgentState) -> float:
         cuped  = state.get("cuped_result")
         if ttest is not None:
             try:
-                from tools.eval_tools import score_claim_accuracy
+                from tools.eval_tools import score_claim_accuracy, score_safety_constraints
                 claim = score_claim_accuracy(narrative, ttest, cuped)
                 if claim["violations"]:
                     logger.warning("Claim accuracy violations: %s", claim["violations"])
                     ragas_score = min(ragas_score if ragas_score is not None else 1.0, 0.6)
+                safety = score_safety_constraints(
+                    narrative,
+                    srm_result=state.get("srm_result"),
+                    guardrail_result=state.get("guardrail_result"),
+                    mde_result=state.get("mde_result"),
+                    ttest_result=ttest,
+                )
+                if safety["violations"]:
+                    logger.warning("Safety constraint violations: %s", safety["violations"])
+                    ragas_score = min(ragas_score if ragas_score is not None else 1.0, 0.6)
             except Exception as exc:
                 logger.debug("_compute_quality_score: claim_accuracy failed — %s", exc)
+
+    # ── General-mode claim accuracy (correlation direction/strength) ────────────
+    if mode == "general" and narrative:
+        try:
+            from tools.eval_tools import score_general_claim_accuracy
+            general = score_general_claim_accuracy(
+                narrative,
+                describe_result=state.get("describe_result"),
+                correlation_result=state.get("correlation_result"),
+            )
+            if general["violations"]:
+                logger.warning("General claim accuracy violations: %s", general["violations"])
+                ragas_score = min(ragas_score if ragas_score is not None else 1.0, 0.6)
+        except Exception as exc:
+            logger.debug("_compute_quality_score: general_claim_accuracy failed — %s", exc)
 
     # ── LLM judge (opt-in via ENABLE_LLM_JUDGE=true) ─────────────────────────
     if os.getenv("ENABLE_LLM_JUDGE") == "true" and narrative and task:

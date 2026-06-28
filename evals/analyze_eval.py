@@ -462,7 +462,11 @@ def main() -> int:
         eval_score=result["score"],
     )
     update_eval_score(run_id, result["score"])
-    print(f"\nEval run logged to memory store (run_id: {run_id}, score: {result['score']:.2f})")
+    log_msg = f"\nEval run logged to memory store (run_id: {run_id}, score: {result['score']:.2f})"
+    if args.json_out:
+        print(log_msg, file=sys.stderr)
+    else:
+        print(log_msg)
 
     return 0 if result["score"] >= 0.80 else 1
 

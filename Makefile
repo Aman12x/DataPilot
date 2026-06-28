@@ -1,15 +1,27 @@
 # DataPilot — convenience targets
 # Always use `python -m` to stay inside the active venv.
 
-.PHONY: app eval test data clean
+.PHONY: app eval eval-all eval-full eval-baseline test data clean
 
 ## Start the Streamlit UI
 app:
 	python -m streamlit run ui/app.py
 
-## Run the offline eval harness (no API key needed for 9/11 criteria)
+## Run all fast offline evals (no API key)
 eval:
+	python data/generate_data.py
 	python evals/analyze_eval.py --skip-narrative
+	python evals/generalisability_eval.py
+	python evals/transactions_eval.py
+	python evals/fixture_eval.py
+
+## Run all offline evals + baseline regression gate
+eval-all:
+	python evals/compare_baseline.py
+
+## Update committed baseline scores (run after intentional eval improvements)
+eval-baseline:
+	python evals/compare_baseline.py --update
 
 ## Run the offline eval with LLM narrative (requires ANTHROPIC_API_KEY)
 eval-full:
