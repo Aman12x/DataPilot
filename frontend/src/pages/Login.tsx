@@ -20,9 +20,7 @@ export default function Login() {
     setLoading(true);
     setError("");
     try {
-      const { data } = await client.post("/auth/guest");
-      localStorage.setItem("access_token", data.access_token);
-      localStorage.removeItem("refresh_token");
+      await client.post("/auth/guest");
       navigate("/");
     } catch (err) {
       setError(extractApiError(err, "Could not start guest session"));
@@ -41,8 +39,7 @@ export default function Login() {
         ? { login: form.login, password: form.password }
         : { username: form.username, email: form.email, password: form.password };
       const { data } = await client.post(url, body);
-      localStorage.setItem("access_token",  data.access_token);
-      localStorage.setItem("refresh_token", data.refresh_token);
+      void data;
       navigate("/");
     } catch (err) {
       setError(extractApiError(err, "Authentication failed"));

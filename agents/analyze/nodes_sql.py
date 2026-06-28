@@ -1,6 +1,7 @@
 """Analyze graph nodes — sql."""
 from __future__ import annotations
 
+from agents.analyze.prompt_safety import wrap_untrusted_content
 import agents.analyze.node_shared as _shared
 globals().update({k: v for k, v in vars(_shared).items() if not k.startswith("__")})
 
@@ -28,17 +29,20 @@ def generate_sql(state: AgentState) -> dict:
     sql_examples   = _filter_few_shot_by_schema(sql_examples, current_tables)
     few_shot_block = _build_few_shot_block(sql_examples)
 
+    safe_task = wrap_untrusted_content(task, label="analyst_task")
+    safe_schema = wrap_untrusted_content(schema_context, label="database_schema")
+
     if mode == "general":
         task_prompt = SQL_GENERATION_GENERAL_PROMPT.format(
-            task=task,
-            schema_context=schema_context,
+            task=safe_task,
+            schema_context=safe_schema,
             db_backend=db_backend,
             metric_context=_metric_context(mc),
         )
     else:
         task_prompt = SQL_GENERATION_PROMPT.format(
-            task=task,
-            schema_context=schema_context,
+            task=safe_task,
+            schema_context=safe_schema,
             db_backend=db_backend,
             metric_context=_metric_context(mc),
             primary_metric=mc.primary_metric,
@@ -57,10 +61,10 @@ def generate_sql(state: AgentState) -> dict:
     if context_narrative:
         task_prompt = (
             f"Previous analysis context (same database, different question):\n"
-            f"{context_narrative[:2000]}\n\n"
+            f"{wrap_untrusted_content(context_narrative[:2000], label='prior_context')}\n\n"
         ) + task_prompt
 
-    messages = _build_cached_messages(schema_context, history_text, task_prompt)
+    messages = _build_cached_messages(safe_schema, history_text, task_prompt)
 
     with trace_generation("generate_sql", _fast_model(), task_prompt) as gen:
         response = _anthropic_client().messages.create(

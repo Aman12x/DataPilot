@@ -1,6 +1,7 @@
 """Analyze graph nodes — narrative."""
 from __future__ import annotations
 
+from agents.analyze.prompt_safety import wrap_untrusted_content
 import agents.analyze.node_shared as _shared
 globals().update({k: v for k, v in vars(_shared).items() if not k.startswith("__")})
 
@@ -14,9 +15,12 @@ def generate_narrative(state: AgentState) -> dict:
 
     analyst_notes = state.get("analyst_notes") or ""
     analyst_notes_section = (
-        ANALYST_NOTES_BLOCK.format(analyst_notes=analyst_notes)
+        ANALYST_NOTES_BLOCK.format(
+            analyst_notes=wrap_untrusted_content(analyst_notes, label="analyst_notes"),
+        )
         if analyst_notes.strip() else ""
     )
+    safe_task = wrap_untrusted_content(state.get("task", ""), label="analyst_task")
 
     # Collect all *_result fields for the LLM prompt
     # Exclude audit_result — it's an internal quality check, not source data.
@@ -41,7 +45,7 @@ def generate_narrative(state: AgentState) -> dict:
     context_narrative = state.get("context_narrative", "")
     context_narrative_section = (
         f"\n\nPrevious analysis context (same database, follow-up question):\n"
-        f"{context_narrative[:2000]}"
+        f"{wrap_untrusted_content(context_narrative[:2000], label='prior_context')}"
         if context_narrative else ""
     )
 
@@ -49,7 +53,7 @@ def generate_narrative(state: AgentState) -> dict:
         pa = state.get("power_analysis_result")
         power_result_json = json.dumps(_to_dict(pa), default=str) if pa else "{}"
         task_prompt = POWER_ANALYSIS_NARRATIVE_PROMPT.format(
-            task=state.get("task", ""),
+            task=safe_task,
             power_result_json=power_result_json,
             analyst_notes_section=analyst_notes_section,
         ) + context_narrative_section
@@ -58,7 +62,7 @@ def generate_narrative(state: AgentState) -> dict:
 
     elif mode == "general" and state.get("query_type") == "lookup":
         task_prompt = LOOKUP_NARRATIVE_PROMPT.format(
-            task=state.get("task", ""),
+            task=safe_task,
             tool_results_json=tool_results_json,
             analyst_notes_section=analyst_notes_section,
         ) + context_narrative_section
@@ -67,7 +71,7 @@ def generate_narrative(state: AgentState) -> dict:
 
     elif mode == "general":
         task_prompt = INSIGHTS_NARRATIVE_PROMPT.format(
-            task=state.get("task", ""),
+            task=safe_task,
             tool_results_json=tool_results_json,
             analyst_notes_section=analyst_notes_section,
         ) + context_narrative_section
@@ -106,11 +110,12 @@ def generate_narrative(state: AgentState) -> dict:
         ) + context_narrative_section
 
     schema_context = (state.get("schema_context", "") or "")[:20_000]
+    safe_schema = wrap_untrusted_content(schema_context, label="database_schema") if schema_context else ""
     history_text   = _format_history(state.get("relevant_history", []))
 
     # Multi-turn: prepend static blocks then conversation history.
     # Cap each conversation turn to avoid runaway growth across revisions.
-    messages = _build_cached_messages(schema_context, history_text, task_prompt)
+    messages = _build_cached_messages(safe_schema, history_text, task_prompt)
     for turn in state.get("conversation_history", []):
         capped = {**turn, "content": turn["content"][:8_000]} if isinstance(turn.get("content"), str) else turn
         messages.append(capped)

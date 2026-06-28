@@ -95,11 +95,6 @@ export function useSSE(runId: string | null, reconnectTrigger: number = 0) {
     let cancelled = false;
 
     (async () => {
-      const access = localStorage.getItem("access_token");
-      if (!access) {
-        setError("Not authenticated. Please log in.");
-        return;
-      }
       try {
         const { data } = await client.get<{ stream_token: string }>(
           `/runs/${runId}/stream-token`

@@ -59,7 +59,7 @@ if _SENTRY_DSN:
 def _make_sqlite_checkpointer():
     import sqlite3
     from langgraph.checkpoint.sqlite import SqliteSaver
-    from agents.analyze.graph import _PickleSerde
+    from agents.analyze.checkpoint_serde import SafeCheckpointSerde
 
     db_path = os.getenv("GRAPH_DB_PATH", "memory/graph.db")
     os.makedirs(os.path.dirname(db_path) if os.path.dirname(db_path) else ".", exist_ok=True)
@@ -69,7 +69,7 @@ def _make_sqlite_checkpointer():
     conn.execute("PRAGMA busy_timeout=5000")
     conn.commit()
     logger.info("Using SQLite checkpointer at %s (WAL mode)", db_path)
-    return SqliteSaver(conn, serde=_PickleSerde())
+    return SqliteSaver(conn, serde=SafeCheckpointSerde())
 
 
 async def _make_postgres_checkpointer(database_url: str):

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import agents.analyze.node_shared as _shared
+from agents.analyze.prompt_safety import wrap_untrusted_content
+
 globals().update({k: v for k, v in vars(_shared).items() if not k.startswith("__")})
 
 # ── Lookup-vs-exploratory heuristics ─────────────────────────────────────────
@@ -54,12 +56,13 @@ def _llm_resolve_intent(
     available_metrics = ", ".join(sorted(known_columns)) if known_columns else "(schema not available)"
 
     task_prompt = TASK_INTENT_PROMPT.format(
-        task=task,
+        task=wrap_untrusted_content(task, label="analyst_task"),
         available_metrics=available_metrics,
         default_metric=mc.primary_metric,
     )
     history_text = ""   # intent resolution doesn't need history injection
-    messages = _build_cached_messages(schema_context, history_text, task_prompt)
+    safe_schema = wrap_untrusted_content(schema_context, label="database_schema") if schema_context else ""
+    messages = _build_cached_messages(safe_schema, history_text, task_prompt)
 
     safe_default = {
         "analysis_mode":       "ab_test",
@@ -273,7 +276,9 @@ def infer_metric_config_node(state: AgentState) -> dict:
         mc = load_metric_config()
         return {"metric_config": mc, "metric": mc.primary_metric, "covariate": mc.covariate}
 
-    prompt = SCHEMA_CONFIG_INFERENCE_PROMPT.format(schema_context=schema_context)
+    prompt = SCHEMA_CONFIG_INFERENCE_PROMPT.format(
+        schema_context=wrap_untrusted_content(schema_context, label="database_schema"),
+    )
 
     defaults = load_metric_config()
 

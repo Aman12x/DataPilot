@@ -713,6 +713,9 @@ def _sanitise_metric_config(
     return sanitised, warnings
 
 
+from agents.analyze.prompt_safety import wrap_untrusted_content
+
+
 def _llm_correct_sql(
     sql: str,
     error: str,
@@ -726,8 +729,8 @@ def _llm_correct_sql(
     prompt = SQL_CORRECTION_PROMPT.format(
         sql=sql,
         error=error,
-        schema_context=schema_context,
-        task=task,
+        schema_context=wrap_untrusted_content(schema_context, label="database_schema"),
+        task=wrap_untrusted_content(task, label="analyst_task"),
     )
     try:
         response = _anthropic_client().messages.create(

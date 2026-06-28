@@ -14,10 +14,12 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from jose import JWTError, jwt
+
+from .cookies import read_access_token, read_refresh_token
 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
@@ -124,15 +126,42 @@ def _decode_token(token: str, expected_type: str) -> dict[str, Any]:
     return payload
 
 
+def _resolve_access_token(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None,
+) -> str | None:
+    cookie_token = read_access_token(request)
+    if cookie_token:
+        return cookie_token
+    if credentials is not None:
+        return credentials.credentials
+    return None
+
+
 def get_current_user(
+    request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> dict[str, str]:
-    if credentials is None:
+    token = _resolve_access_token(request, credentials)
+    if token is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated"
         )
-    payload = _decode_token(credentials.credentials, "access")
+    payload = _decode_token(token, "access")
     return {"user_id": payload["sub"], "username": payload.get("username", "")}
+
+
+def resolve_refresh_token(
+    request: Request,
+    body_token: str | None = None,
+) -> str:
+    """Read refresh token from HttpOnly cookie or JSON body (API clients)."""
+    token = read_refresh_token(request) or body_token
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated"
+        )
+    return token
 
 
 def verify_refresh_token(refresh_token: str) -> tuple[str, str, int]:

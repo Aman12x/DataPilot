@@ -39,10 +39,11 @@ Rules:
 from __future__ import annotations
 
 import os
-import pickle
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
+
+from agents.analyze.checkpoint_serde import SafeCheckpointSerde
 
 from agents.analyze.nodes import (
     analysis_gate,
@@ -84,26 +85,8 @@ _HARD_HIT_THRESHOLD = float(
 )
 
 
-# ── Pickle serde for MemorySaver ──────────────────────────────────────────────
-# LangGraph's default msgpack serde cannot serialize pd.DataFrame (stored in
-# AgentState.query_result). We use pickle so all Python objects round-trip
-# correctly through the in-process checkpointer.
-
-class _PickleSerde:
-    """Minimal serde that uses pickle for all values."""
-
-    def dumps_typed(self, obj: object) -> tuple[str, bytes]:
-        return ("pickle", pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL))
-
-    def loads_typed(self, data: tuple[str, bytes]) -> object:
-        type_tag, payload = data
-        if type_tag == "pickle":
-            return pickle.loads(payload)
-        raise ValueError(f"Unknown serde type tag: {type_tag!r}")
-
-
 def _default_checkpointer() -> MemorySaver:
-    return MemorySaver(serde=_PickleSerde())
+    return MemorySaver(serde=SafeCheckpointSerde())
 
 
 # ── Routing functions ─────────────────────────────────────────────────────────

@@ -1,14 +1,34 @@
+import { useEffect, useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import Login from "./pages/Login";
 import ForgotPassword from "./pages/ForgotPassword";
 import ResetPassword from "./pages/ResetPassword";
 import Analysis from "./pages/Analysis";
 import History from "./pages/History";
+import { checkAuth } from "./api/client";
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const location = useLocation();
-  const token = localStorage.getItem("access_token");
-  if (!token) return <Navigate to="/login" state={{ from: location }} replace />;
+  const [status, setStatus] = useState<"loading" | "ok" | "denied">("loading");
+
+  useEffect(() => {
+    let cancelled = false;
+    checkAuth().then((ok) => {
+      if (!cancelled) setStatus(ok ? "ok" : "denied");
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  if (status === "loading") {
+    return (
+      <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", color: "#585b70" }}>
+        Loading…
+      </div>
+    );
+  }
+  if (status === "denied") {
+    return <Navigate to="/login" state={{ from: location }} replace />;
+  }
   return <>{children}</>;
 }
 

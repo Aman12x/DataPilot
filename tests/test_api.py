@@ -232,6 +232,7 @@ class TestAuth:
 
     def test_refresh_with_access_token_rejected(self, client):
         access, _, _ = _login(client)
+        client.cookies.clear()
         r = client.post("/auth/refresh", json={"refresh_token": access})
         assert r.status_code == 401
 
@@ -242,6 +243,7 @@ class TestAuth:
         assert r.json()["username"] == user["username"]
 
     def test_me_unauthenticated(self, client):
+        client.cookies.clear()
         r = client.get("/auth/me")
         assert r.status_code == 401
 
@@ -310,6 +312,7 @@ class TestRunCreate:
         assert "run_id" in r.json()
 
     def test_create_run_unauthenticated(self, client):
+        client.cookies.clear()
         r = client.post("/runs", json={"task": "analyse the experiment"})
         assert r.status_code == 401
 
@@ -494,6 +497,7 @@ class TestUpload:
         assert r.status_code == 400
 
     def test_upload_unauthenticated(self, client):
+        client.cookies.clear()
         r = client.post(
             "/upload",
             files={"file": ("data.csv", io.BytesIO(_SAMPLE_CSV), "text/csv")},

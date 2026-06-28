@@ -36,9 +36,8 @@ export default defineConfig({
       reuseExistingServer: !process.env.CI,
     },
     {
-      // Bypass Vite proxy in E2E — call backend directly (CORS is open in dev).
-      command:
-        "VITE_API_URL=http://127.0.0.1:8000 npm run dev -- --host 127.0.0.1 --port 5173",
+      // Same-origin via Vite proxy — HttpOnly auth cookies work without CORS.
+      command: "npm run dev -- --host 127.0.0.1 --port 5173",
       url: "http://127.0.0.1:5173",
       reuseExistingServer: !process.env.CI,
     },
