@@ -20,6 +20,9 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
 
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if _PROJECT_ROOT not in sys.path:
@@ -201,7 +204,28 @@ async def lifespan(app: FastAPI):
 
 # ── App ───────────────────────────────────────────────────────────────────────
 
+_ENV = os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("ENV", "development")
+_IS_PRODUCTION = _ENV.lower() in ("production", "prod")
+
 app = FastAPI(title="DataPilot API", version="1.0.0", lifespan=lifespan)
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next) -> Response:
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        if _IS_PRODUCTION:
+            response.headers.setdefault(
+                "Strict-Transport-Security",
+                "max-age=31536000; includeSubDomains",
+            )
+        return response
+
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 # CORS: in prod set CORS_ORIGINS=https://your-frontend.railway.app (comma-separated).
 # Falls back to APP_URL (frontend public URL) when CORS_ORIGINS is unset.
@@ -212,8 +236,6 @@ if not _cors_raw:
         _cors_raw = _app_url
 _origins = [o.strip().rstrip("/") for o in _cors_raw.split(",") if o.strip()]
 _wildcard = not _origins
-_ENV = os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("ENV", "development")
-_IS_PRODUCTION = _ENV.lower() in ("production", "prod")
 if _wildcard:
     if _IS_PRODUCTION:
         raise RuntimeError(

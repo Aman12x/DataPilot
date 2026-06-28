@@ -152,6 +152,9 @@ os.environ.setdefault("AUTH_DB_PATH",   f"/tmp/test_auth_{uuid.uuid4().hex}.db")
 os.environ.setdefault("MEMORY_DB_PATH", f"/tmp/test_mem_{uuid.uuid4().hex}.db")
 os.environ.setdefault("UPLOAD_DIR",     f"/tmp/test_uploads_{uuid.uuid4().hex}")
 os.environ.setdefault("GRAPH_DB_PATH",  f"/tmp/test_graph_{uuid.uuid4().hex}.db")
+os.environ.setdefault("AUTH_AUTO_VERIFY_EMAIL", "true")
+os.environ.setdefault("AUTH_RETURN_TOKENS", "true")
+os.environ.setdefault("AUTH_RATE_MAX_ATTEMPTS", "10000")
 
 from api.main import app
 app.router.lifespan_context = _test_lifespan   # type: ignore[assignment]
@@ -213,12 +216,41 @@ class TestAuth:
         r = client.post("/auth/register",
                         json={"username": un, "email": f"other_{un}@a.com", "password": "Password1!"})
         assert r.status_code == 400
+        assert "already be in use" in r.json()["detail"]
+
+    def test_register_duplicate_email(self, client):
+        un = f"dupemail_{uuid.uuid4().hex[:6]}"
+        email = f"{un}@test.com"
+        client.post("/auth/register",
+                    json={"username": un, "email": email, "password": "Password1!"})
+        r = client.post("/auth/register",
+                        json={"username": f"other_{un}", "email": email, "password": "Password1!"})
+        assert r.status_code == 400
+        assert "already be in use" in r.json()["detail"]
+
+    def test_register_weak_password(self, client):
+        un = f"weakpw_{uuid.uuid4().hex[:6]}"
+        r = client.post("/auth/register",
+                        json={"username": un, "email": f"{un}@a.com", "password": "short"})
+        assert r.status_code in (400, 422)
+        detail = r.json()["detail"]
+        if isinstance(detail, list):
+            assert any("8 characters" in str(item) for item in detail)
+        else:
+            assert "8 characters" in detail
+
+    def test_register_password_needs_number(self, client):
+        un = f"nonum_{uuid.uuid4().hex[:6]}"
+        r = client.post("/auth/register",
+                        json={"username": un, "email": f"{un}@a.com", "password": "passwordonly"})
+        assert r.status_code == 400
+        assert "number" in r.json()["detail"]
 
     def test_login_bad_password(self, client):
         un = f"badpw_{uuid.uuid4().hex[:6]}"
         client.post("/auth/register",
-                    json={"username": un, "email": f"{un}@a.com", "password": "correct"})
-        r = client.post("/auth/login", json={"login": un, "password": "wrong"})
+                    json={"username": un, "email": f"{un}@a.com", "password": "Password1!"})
+        r = client.post("/auth/login", json={"login": un, "password": "WrongPass1"})
         assert r.status_code == 401
 
     def test_refresh(self, client):
@@ -296,6 +328,74 @@ class TestAuth:
         ).status_code == 200
 
         assert client.post("/auth/refresh", json={"refresh_token": refresh}).status_code == 401
+
+
+class TestAuthRateLimit:
+    def test_auth_rate_limit_enforced(self, client, monkeypatch):
+        """More than AUTH_RATE_MAX_ATTEMPTS register calls from one IP should 429."""
+        from api.auth_rate import reset_auth_rate_limits
+        reset_auth_rate_limits()
+        monkeypatch.setenv("AUTH_RATE_MAX_ATTEMPTS", "10")
+
+        for i in range(10):
+            un = f"ratelimit_{uuid.uuid4().hex[:6]}_{i}"
+            r = client.post("/auth/register", json={
+                "username": un, "email": f"{un}@test.com", "password": "Password1!",
+            })
+            assert r.status_code in (201, 400), r.text
+        r = client.post("/auth/register", json={
+            "username": f"blocked_{uuid.uuid4().hex[:6]}",
+            "email": f"blocked_{uuid.uuid4().hex[:8]}@test.com",
+            "password": "Password1!",
+        })
+        assert r.status_code == 429
+
+
+class TestEmailVerification:
+    def test_register_without_auto_verify_returns_pending(self, client, monkeypatch):
+        monkeypatch.setenv("AUTH_AUTO_VERIFY_EMAIL", "false")
+        monkeypatch.setenv("RESEND_API_KEY", "re_test_key")
+        un = f"verify_{uuid.uuid4().hex[:6]}"
+        with patch("api.email.send_verification_email") as send_mock:
+            r = client.post("/auth/register", json={
+                "username": un, "email": f"{un}@test.com", "password": "Password1!",
+            })
+        assert r.status_code == 201
+        body = r.json()
+        assert body["verify_pending"] is True
+        assert "access_token" not in body
+        send_mock.assert_called_once()
+
+    def test_verify_email_issues_session(self, client, monkeypatch):
+        monkeypatch.setenv("AUTH_AUTO_VERIFY_EMAIL", "false")
+        monkeypatch.setenv("RESEND_API_KEY", "re_test_key")
+        un = f"verify2_{uuid.uuid4().hex[:6]}"
+        email = f"{un}@test.com"
+        with patch("api.email.send_verification_email"):
+            client.post("/auth/register", json={
+                "username": un, "email": email, "password": "Password1!",
+            })
+        from auth.store import create_verification_token, get_user_by_email
+        user = get_user_by_email(email)
+        assert user is not None
+        assert user.email_verified is False
+        token = create_verification_token(user.user_id)
+        r = client.post("/auth/verify-email", json={"token": token})
+        assert r.status_code == 200
+        assert r.json()["access_token"]
+        assert r.json()["user"]["email_verified"] is True
+
+    def test_login_blocked_until_verified(self, client, monkeypatch):
+        monkeypatch.setenv("AUTH_AUTO_VERIFY_EMAIL", "false")
+        monkeypatch.setenv("RESEND_API_KEY", "re_test_key")
+        un = f"unverified_{uuid.uuid4().hex[:6]}"
+        with patch("api.email.send_verification_email"):
+            client.post("/auth/register", json={
+                "username": un, "email": f"{un}@test.com", "password": "Password1!",
+            })
+        r = client.post("/auth/login", json={"login": un, "password": "Password1!"})
+        assert r.status_code == 403
+        assert "not verified" in r.json()["detail"].lower()
 
 
 # ════════════════════════════════════════════════════════════════════════════════

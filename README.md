@@ -4,7 +4,7 @@
 
 Ask a question in plain English. DataPilot generates SQL, runs statistical analysis, and produces an evidence-based report. It pauses for analyst review at every decision point before moving forward.
 
-**Eval:** 11/11 DAU experiment · 11/11 cross-domain generalisability · **544 tests passing**
+**Eval:** 11/11 DAU experiment · 11/11 cross-domain generalisability · **551 tests passing**
 
 ---
 
@@ -160,7 +160,7 @@ Treatment/control comparison with covariate adjustment, subgroup HTE, guardrail 
 | Stats | scipy · numpy · scikit-learn · Prophet |
 | Eval | RAGAS-inspired (faithfulness + relevancy + key findings) |
 | Observability | Sentry · structured logging |
-| Tests | pytest (544) · Playwright E2E |
+| Tests | pytest (551) · Playwright E2E |
 
 ---
 
@@ -174,7 +174,11 @@ Production deployments must set the variables documented in [`.env.example`](.en
 
 Other controls:
 
+- **Email verification** on sign-up when `RESEND_API_KEY` is configured (auto-skipped in dev without email)
 - **HttpOnly cookies** for access/refresh tokens (JavaScript cannot read session credentials)
+- Auth endpoint rate limits (Redis-backed when `REDIS_URL` is set; per-IP with `X-Forwarded-For` support)
+- Generic register errors (no username/email enumeration)
+- Password policy: min 8 chars, at least one letter and one number
 - Auth required on API routes; guest sessions use ephemeral `guest-{uuid}` tokens
 - Semantic cache scoped per user and dataset fingerprint
 - SQL guardrails (read-only, no file-read functions, auto `LIMIT`)

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import secrets
 import sqlite3
 import uuid
@@ -23,6 +24,12 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Generator
+
+_USERNAME_RE = re.compile(r"^[a-zA-Z0-9_]{1,64}$")
+_RESERVED_USERNAMES = frozenset({"admin", "guest", "root", "support", "system", "null", "api"})
+_DUPLICATE_ACCOUNT_MSG = (
+    "Unable to create account. That username or email may already be in use."
+)
 
 
 def _auth_db_path() -> str:
@@ -140,7 +147,37 @@ def init_db(path: str | None = None) -> None:
                 used       INTEGER NOT NULL DEFAULT 0
             )
         """)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS email_verification_tokens (
+                token      TEXT PRIMARY KEY,
+                user_id    TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                used       INTEGER NOT NULL DEFAULT 0
+            )
+        """)
         _ensure_session_version_column(con)
+        _ensure_email_verified_column(con)
+
+
+def _ensure_email_verified_column(con: Any) -> None:
+    if _USE_PG:
+        cols = {
+            row["column_name"]
+            for row in con.execute(
+                "SELECT column_name FROM information_schema.columns"
+                " WHERE table_name = 'users'"
+            ).fetchall()
+        }
+        if "email_verified" not in cols:
+            con.execute(
+                "ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0"
+            )
+    else:
+        cols = {row["name"] for row in con.execute("PRAGMA table_info(users)").fetchall()}
+        if "email_verified" not in cols:
+            con.execute(
+                "ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0"
+            )
 
 
 def _ensure_session_version_column(con: Any) -> None:
@@ -248,7 +285,7 @@ def consume_reset_token(token: str, path: str | None = None) -> str | None:
 
 def update_password(user_id: str, new_password: str, path: str | None = None) -> bool:
     """Update the password for a user. Returns True on success."""
-    if len(new_password) < 8:
+    if validate_password(new_password):
         return False
     path = path or _auth_db_path()
     init_db(path)
@@ -281,6 +318,7 @@ class User:
     username: str
     email: str
     created_at: str
+    email_verified: bool = True
 
     def to_dict(self) -> dict:
         return {
@@ -288,10 +326,36 @@ class User:
             "username": self.username,
             "email": self.email,
             "created_at": self.created_at,
+            "email_verified": self.email_verified,
         }
 
 
 # ── Password helpers ──────────────────────────────────────────────────────────
+
+
+def validate_password(password: str) -> str | None:
+    """Return an error message if password is too weak, else None."""
+    if len(password) < 8:
+        return "Password must be at least 8 characters."
+    if len(password) > 256:
+        return "Password is too long."
+    if not re.search(r"[A-Za-z]", password):
+        return "Password must include at least one letter."
+    if not re.search(r"\d", password):
+        return "Password must include at least one number."
+    return None
+
+
+def validate_username(username: str) -> str | None:
+    """Return an error message if username is invalid, else None."""
+    name = username.strip()
+    if not name:
+        return "Username is required."
+    if not _USERNAME_RE.match(name):
+        return "Username may only contain letters, numbers, and underscores."
+    if name.lower() in _RESERVED_USERNAMES:
+        return "That username is not available."
+    return None
 
 
 def _hash_password(password: str, salt: str) -> str:
@@ -312,6 +376,8 @@ def create_user(
     email: str,
     password: str,
     path: str | None = None,
+    *,
+    email_verified: bool = False,
 ) -> "User | str":
     """
     Create a new user account.
@@ -320,8 +386,10 @@ def create_user(
         User on success.
         str (error message) on failure — duplicate username/email, weak password.
     """
-    if len(password) < 8:
-        return "Password must be at least 8 characters."
+    if err := validate_username(username):
+        return err
+    if err := validate_password(password):
+        return err
 
     path = path or _auth_db_path()
     init_db(path)
@@ -330,32 +398,108 @@ def create_user(
     salt = secrets.token_hex(32)
     pwd_hash = _hash_password(password, salt)
     ts = datetime.now(timezone.utc).isoformat()
+    normalized_username = username.strip().lower()
+    normalized_email = email.strip().lower()
 
     try:
         with _connect(path) as con:
             con.execute(
-                """INSERT INTO users (user_id, username, email, pwd_hash, salt, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (user_id, username.strip(), email.strip().lower(), pwd_hash, salt, ts),
+                """INSERT INTO users
+                   (user_id, username, email, pwd_hash, salt, created_at, email_verified)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    user_id,
+                    normalized_username,
+                    normalized_email,
+                    pwd_hash,
+                    salt,
+                    ts,
+                    1 if email_verified else 0,
+                ),
             )
     except Exception as exc:
-        # Catches sqlite3.IntegrityError and psycopg2 UniqueViolation alike.
-        # Re-raise anything that isn't a uniqueness conflict.
         type_name = type(exc).__name__
         if type_name not in ("IntegrityError", "UniqueViolation"):
             raise
-        msg = str(exc)
-        if "username" in msg:
-            return f"Username '{username}' is already taken."
-        if "email" in msg:
-            return f"An account with email '{email}' already exists."
-        return "Account creation failed. Please try again."
+        return _DUPLICATE_ACCOUNT_MSG
 
     return User(
         user_id=user_id,
-        username=username.strip(),
-        email=email.strip().lower(),
+        username=normalized_username,
+        email=normalized_email,
         created_at=ts,
+        email_verified=email_verified,
+    )
+
+
+def create_verification_token(user_id: str, path: str | None = None) -> str:
+    """Create a 24-hour email verification token."""
+    from datetime import timedelta
+
+    path = path or _auth_db_path()
+    init_db(path)
+    token = secrets.token_urlsafe(32)
+    expires_at = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
+    with _connect(path) as con:
+        con.execute(
+            "INSERT INTO email_verification_tokens (token, user_id, expires_at) VALUES (?, ?, ?)",
+            (token, user_id, expires_at),
+        )
+    return token
+
+
+def consume_verification_token(token: str, path: str | None = None) -> str | None:
+    """Validate and consume a verification token. Returns user_id or None."""
+    path = path or _auth_db_path()
+    init_db(path)
+    now = datetime.now(timezone.utc).isoformat()
+    with _connect(path) as con:
+        row = con.execute(
+            """SELECT user_id, expires_at, used FROM email_verification_tokens
+               WHERE token = ?""",
+            (token,),
+        ).fetchone()
+        if row is None or row["used"] or row["expires_at"] < now:
+            return None
+        con.execute(
+            "UPDATE email_verification_tokens SET used = 1 WHERE token = ?", (token,)
+        )
+        con.execute(
+            "UPDATE users SET email_verified = 1 WHERE user_id = ?", (row["user_id"],)
+        )
+    return row["user_id"]
+
+
+def mark_email_verified(user_id: str, path: str | None = None) -> None:
+    path = path or _auth_db_path()
+    init_db(path)
+    with _connect(path) as con:
+        con.execute(
+            "UPDATE users SET email_verified = 1 WHERE user_id = ?", (user_id,)
+        )
+
+
+def get_user_by_email(email: str, path: str | None = None) -> "User | None":
+    path = path or _auth_db_path()
+    init_db(path)
+    with _connect(path) as con:
+        row = con.execute(
+            "SELECT * FROM users WHERE email = ?", (email.strip().lower(),)
+        ).fetchone()
+    if row is None:
+        return None
+    return _user_from_row(row)
+
+
+def _user_from_row(row: Any) -> User:
+    keys = row.keys() if hasattr(row, "keys") else ()
+    verified = bool(row["email_verified"]) if "email_verified" in keys else True
+    return User(
+        user_id=row["user_id"],
+        username=row["username"],
+        email=row["email"],
+        created_at=row["created_at"],
+        email_verified=verified,
     )
 
 
@@ -371,12 +515,13 @@ def verify_user(
     """
     path = path or _auth_db_path()
     init_db(path)
+    normalized = login.strip().lower()
 
     with _connect(path) as con:
         row = con.execute(
             """SELECT * FROM users
                WHERE username = ? OR email = ?""",
-            (login.strip(), login.strip().lower()),
+            (normalized, normalized),
         ).fetchone()
 
     if row is None:
@@ -386,12 +531,7 @@ def verify_user(
     if not secrets.compare_digest(expected, row["pwd_hash"]):
         return None
 
-    return User(
-        user_id=row["user_id"],
-        username=row["username"],
-        email=row["email"],
-        created_at=row["created_at"],
-    )
+    return _user_from_row(row)
 
 
 def get_user_by_id(user_id: str, path: str | None = None) -> "User | None":
@@ -403,9 +543,4 @@ def get_user_by_id(user_id: str, path: str | None = None) -> "User | None":
         ).fetchone()
     if row is None:
         return None
-    return User(
-        user_id=row["user_id"],
-        username=row["username"],
-        email=row["email"],
-        created_at=row["created_at"],
-    )
+    return _user_from_row(row)

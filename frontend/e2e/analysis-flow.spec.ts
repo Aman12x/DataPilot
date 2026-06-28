@@ -4,6 +4,33 @@ import path from "path";
 const FIXTURE_CSV = path.join(process.cwd(), "e2e", "fixtures", "saas_churn.csv");
 
 test.describe("Analysis flow", () => {
+  test("user can register and reach the home screen", async ({ page }) => {
+    const suffix = Date.now();
+    const username = `e2e_user_${suffix}`;
+    const email = `e2e_${suffix}@example.com`;
+
+    await page.goto("/login");
+    await page.getByRole("button", { name: "Create Account" }).click();
+
+    await page.getByPlaceholder("john_doe").fill(username);
+    await page.getByPlaceholder("you@example.com").fill(email);
+    await page.locator('input[autocomplete="new-password"]').first().fill("Password1!");
+    await page.locator('input[autocomplete="new-password"]').nth(1).fill("Password1!");
+
+    const registerResponsePromise = page.waitForResponse(
+      (resp) => resp.url().includes("/auth/register") && resp.request().method() === "POST",
+    );
+    await page.getByRole("button", { name: "Create Account →" }).click();
+    const registerResponse = await registerResponsePromise;
+    expect(
+      registerResponse.ok(),
+      `Register failed (${registerResponse.status()}): ${await registerResponse.text()}`,
+    ).toBeTruthy();
+
+    await expect(page).toHaveURL("/");
+    await expect(page.getByText(/Loading DataPilot|Explore/i)).toBeVisible({ timeout: 15_000 });
+  });
+
   test("guest can log in, upload CSV, and start a run", async ({ page }) => {
     await page.goto("/login");
     await expect(page.getByRole("button", { name: "Continue as Guest" })).toBeVisible();
