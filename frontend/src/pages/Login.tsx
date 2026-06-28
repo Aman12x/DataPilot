@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import client, { checkAuth } from "../api/client";
+import client, { checkAuth, pingBackend } from "../api/client";
 import AuthCard, { authShared } from "../components/AuthCard";
 import FormField from "../components/FormField";
 import Spinner from "../components/Spinner";
@@ -34,7 +34,9 @@ export default function Login() {
       await client.post("/auth/guest");
       navigate("/");
     } catch (err) {
-      setError(extractApiError(err, "Could not start guest session"));
+      const ping = await pingBackend();
+      const msg = extractApiError(err, "Could not start guest session");
+      setError(ping.ok ? msg : `${msg} ${ping.detail}`);
     } finally {
       setLoading(false);
     }
@@ -90,7 +92,9 @@ export default function Login() {
 
       navigate("/");
     } catch (err) {
-      setError(extractApiError(err, "Authentication failed"));
+      const ping = await pingBackend();
+      const msg = extractApiError(err, "Authentication failed");
+      setError(ping.ok ? msg : `${msg} ${ping.detail}`);
     } finally {
       setLoading(false);
     }

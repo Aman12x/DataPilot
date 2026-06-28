@@ -1,17 +1,5 @@
 import axios from "axios";
-
-// In dev: Vite proxies /api → 127.0.0.1:8000 (see vite.config.ts).
-// In prod: VITE_API_URL must be set at build time to the backend's public URL,
-//          e.g. https://datapilot-backend.up.railway.app
-if (import.meta.env.PROD && !import.meta.env.VITE_API_URL) {
-  throw new Error(
-    "[DataPilot] VITE_API_URL is not set. " +
-    "Add it as a Railway environment variable on the frontend service " +
-    "and redeploy so it is baked into the production bundle."
-  );
-}
-
-export const API_BASE = import.meta.env.VITE_API_URL ?? "/api";
+import { API_BASE } from "../config";
 
 const client = axios.create({
   baseURL: API_BASE,
@@ -40,6 +28,7 @@ client.interceptors.response.use(
 );
 
 export default client;
+export { API_BASE };
 
 export interface UploadResult {
   upload_id: string;
@@ -67,5 +56,19 @@ export async function checkAuth(): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+/** Lightweight connectivity check — no auth required. */
+export async function pingBackend(): Promise<{ ok: boolean; detail: string }> {
+  try {
+    const r = await axios.get(`${API_BASE}/health`, { timeout: 10_000 });
+    return { ok: r.status === 200, detail: "Backend is reachable." };
+  } catch {
+    return {
+      ok: false,
+      detail: `Cannot reach backend at ${API_BASE}. Set VITE_API_URL on the frontend service `
+        + "and CORS_ORIGINS on the backend, then redeploy both.",
+    };
   }
 }
