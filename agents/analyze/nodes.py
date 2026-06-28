@@ -747,7 +747,9 @@ def _llm_correct_sql(
 def check_semantic_cache(state: AgentState) -> dict:
     task        = state.get("task", "")
     fingerprint = state.get("duckdb_path", "")  # empty string for demo DB
-    hit  = semantic_cache.check_cache(task, "generate_sql", dataset_fingerprint=fingerprint)
+    hit  = semantic_cache.check_cache(
+        task, "generate_sql", dataset_fingerprint=fingerprint, user_id=state.get("user_id")
+    )
     if hit is None:
         return {}
     cached    = hit["result"]
@@ -1237,15 +1239,24 @@ def query_gate(state: AgentState) -> dict:
     approved    = analyst_response.get("approved", True)
     edited_sql  = analyst_response.get("sql") or state.get("generated_sql", "")
 
+    schema_context = state.get("schema_context", "")
+    validation_issues: list[str] = []
+    if edited_sql.strip():
+        validation = _validate_sql_references(edited_sql, schema_context)
+        validation_issues = validation.get("bad_tables", []) + validation.get("bad_columns", [])
+
     override: dict = {}
     if edited_sql.strip() != state.get("generated_sql", "").strip():
         override["sql_edited"] = True
 
-    return {
+    result = {
         "query_approved":   approved,
         "generated_sql":    edited_sql,
         "analyst_override": override,
     }
+    if validation_issues:
+        result["sql_validation_warnings"] = validation_issues
+    return result
 
 
 # ── Node 6: execute_query ─────────────────────────────────────────────────────
@@ -2831,6 +2842,7 @@ def log_run_node(state: AgentState) -> dict:
                 },
                 run_id=run_id,
                 dataset_fingerprint=state.get("duckdb_path", ""),
+                user_id=state.get("user_id"),
             )
         else:
             logger.info(

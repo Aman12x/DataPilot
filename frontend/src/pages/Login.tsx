@@ -16,9 +16,19 @@ export default function Login() {
   const set = (k: string) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setForm((f) => ({ ...f, [k]: e.target.value }));
 
-  const continueAsGuest = () => {
-    localStorage.setItem("access_token", "guest");
-    navigate("/");
+  const continueAsGuest = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const { data } = await client.post("/auth/guest");
+      localStorage.setItem("access_token", data.access_token);
+      localStorage.removeItem("refresh_token");
+      navigate("/");
+    } catch (err) {
+      setError(extractApiError(err, "Could not start guest session"));
+    } finally {
+      setLoading(false);
+    }
   };
 
   const submit = async (e: React.FormEvent) => {

@@ -140,6 +140,52 @@ def init_db(path: str | None = None) -> None:
                 used       INTEGER NOT NULL DEFAULT 0
             )
         """)
+        _ensure_session_version_column(con)
+
+
+def _ensure_session_version_column(con: Any) -> None:
+    if _USE_PG:
+        cols = {
+            row["column_name"]
+            for row in con.execute(
+                "SELECT column_name FROM information_schema.columns"
+                " WHERE table_name = 'users'"
+            ).fetchall()
+        }
+        if "session_version" not in cols:
+            con.execute(
+                "ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0"
+            )
+    else:
+        cols = {row["name"] for row in con.execute("PRAGMA table_info(users)").fetchall()}
+        if "session_version" not in cols:
+            con.execute(
+                "ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0"
+            )
+
+
+def get_session_version(user_id: str, path: str | None = None) -> int:
+    path = path or _auth_db_path()
+    init_db(path)
+    with _connect(path) as con:
+        row = con.execute(
+            "SELECT session_version FROM users WHERE user_id = ?", (user_id,)
+        ).fetchone()
+    if row is None:
+        return 0
+    return int(row["session_version"] or 0)
+
+
+def bump_session_version(user_id: str, path: str | None = None) -> None:
+    """Invalidate all outstanding refresh tokens for a user."""
+    path = path or _auth_db_path()
+    init_db(path)
+    with _connect(path) as con:
+        con.execute(
+            "UPDATE users SET session_version = COALESCE(session_version, 0) + 1 "
+            "WHERE user_id = ?",
+            (user_id,),
+        )
 
 
 def revoke_token(jti: str, path: str | None = None) -> None:
@@ -210,7 +256,9 @@ def update_password(user_id: str, new_password: str, path: str | None = None) ->
     pwd_hash = _hash_password(new_password, salt)
     with _connect(path) as con:
         con.execute(
-            "UPDATE users SET pwd_hash = ?, salt = ? WHERE user_id = ?",
+            "UPDATE users SET pwd_hash = ?, salt = ?, "
+            "session_version = COALESCE(session_version, 0) + 1 "
+            "WHERE user_id = ?",
             (pwd_hash, salt, user_id),
         )
     return True

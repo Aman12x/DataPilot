@@ -32,6 +32,8 @@ router = APIRouter(tags=["upload"])
 
 _UPLOAD_DIR   = os.getenv("UPLOAD_DIR", "tmp_uploads")
 _MAX_BYTES    = 50 * 1024 * 1024  # 50 MB
+_MAX_ROWS     = int(os.getenv("UPLOAD_MAX_ROWS", "1000000"))
+_MAX_COLS     = int(os.getenv("UPLOAD_MAX_COLS", "500"))
 _ALLOWED_EXT  = {".csv", ".xlsx", ".xls"}
 _VARIANT_COLS = {
     "variant", "arm", "treatment", "group", "exp_group",
@@ -182,6 +184,16 @@ async def upload_file(
     df = _normalise_cols(df)
     if df.empty:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is empty")
+    if len(df) > _MAX_ROWS:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"File exceeds {_MAX_ROWS:,} row limit",
+        )
+    if len(df.columns) > _MAX_COLS:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"File exceeds {_MAX_COLS} column limit",
+        )
 
     upload_id = str(uuid.uuid4())
     user_dir  = os.path.join(_UPLOAD_DIR, current_user["user_id"])
@@ -211,9 +223,12 @@ async def upload_file(
                 except OSError:
                     pass
         con.close()
-    except Exception as exc:
+    except Exception:
         logger.exception("DuckDB write failed for upload %s", upload_id)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not process upload",
+        )
 
     logger.info("upload user=%s id=%s rows=%d cols=%d",
                 current_user["user_id"], upload_id, len(df), len(df.columns))

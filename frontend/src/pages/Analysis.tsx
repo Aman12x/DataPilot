@@ -522,10 +522,16 @@ function FinishedView({ state, runId, steps, onNewAnalysis, onFollowUp }: {
   const hasCharts  = state.charts && state.charts.length > 0;
   const hasTrust   = state.trust_indicators && state.trust_indicators.confidence_level;
 
-  const downloadPdf = () => {
-    const token  = localStorage.getItem("access_token") ?? "";
-    const params = new URLSearchParams({ token, narrative: sanitiseNarrative(state.narrative_draft), recommendation: state.recommendation });
-    window.open(`${API_BASE}/runs/${runId}/pdf?${params}`, "_blank");
+  const downloadPdf = async () => {
+    try {
+      const { data } = await client.get<{ pdf_token: string }>(`/runs/${runId}/pdf-token`);
+      window.open(
+        `${API_BASE}/runs/${runId}/pdf?pdf_token=${encodeURIComponent(data.pdf_token)}`,
+        "_blank"
+      );
+    } catch {
+      alert("Could not generate PDF.");
+    }
   };
 
   const downloadCsv = () => {

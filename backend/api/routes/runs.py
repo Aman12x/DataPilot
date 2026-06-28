@@ -2,11 +2,13 @@
 backend/api/routes/runs.py
 
 POST  /runs                  {task, db_backend?}   → {run_id}
-GET   /runs/{id}/stream      ?token=...&last_id=   → SSE stream
+GET   /runs/{id}/stream-token                      → {stream_token}
+GET   /runs/{id}/stream      ?stream_token=...      → SSE stream
 POST  /runs/{id}/resume      {gate, value}         → {status: "ok"}
 GET   /runs                  ?limit=10             → list of past runs
 GET   /runs/{id}/detail                            → run detail (narrative, recommendation)
-GET   /runs/{id}/pdf         ?token=...            → PDF bytes
+GET   /runs/{id}/pdf-token                         → {pdf_token}
+GET   /runs/{id}/pdf         ?pdf_token=...         → PDF bytes
 GET   /health                                      → {status: "ok"}
 """
 from __future__ import annotations
@@ -23,18 +25,24 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import Response
-from jose import JWTError, jwt
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from sse_starlette.sse import EventSourceResponse
 
-from ..deps import ALGORITHM, SECRET_KEY, get_current_user
+from ..deps import (
+    create_pdf_token,
+    create_stream_token,
+    get_current_user,
+    verify_scoped_token,
+)
 from ..run_manager import (
     check_rate_limit,
     cleanup_run,
     get_cached_error,
+    get_gate_deadline,
     get_owner,
     read_result,
     resume_run,
+    set_gate_deadline,
     start_run,
 )
 from .upload import resolve_upload_path
@@ -80,7 +88,22 @@ def _validate_pg_host(host: str) -> None:
     except HTTPException:
         raise
     except Exception:
-        pass  # DNS failure or hostname — let it fail at connect time
+        raise HTTPException(
+            status_code=400,
+            detail=f"Could not resolve database host '{host}'",
+        )
+
+
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+_ALLOWED_GATES = frozenset({
+    "semantic_cache", "intent", "query", "analysis", "narrative", "srm",
+})
+
+_ALLOWED_DB_BACKENDS = frozenset({"duckdb", "postgres"})
 
 
 # ── JSON helpers ──────────────────────────────────────────────────────────────
@@ -108,33 +131,37 @@ def _get_memory_store(request: Request) -> Any:
     return request.app.state.memory_store
 
 
-def _user_from_token_param(token: str) -> dict[str, str]:
-    if not token or token == "guest":
-        return {"user_id": "guest", "username": "Guest"}
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid token")
-    if payload.get("type") != "access":
-        raise HTTPException(status_code=401, detail="Wrong token type")
-    return {"user_id": payload["sub"], "username": payload.get("username", "")}
+def _user_from_stream_token(stream_token: str, run_id: str) -> dict[str, str]:
+    return verify_scoped_token(stream_token, "stream", run_id)
 
 
 async def _check_ownership(graph: Any, run_id: str, user_id: str) -> None:
     owner = await get_owner(run_id)
-    if owner is not None and owner != user_id:
-        raise HTTPException(status_code=403, detail="Not your run")
-    if owner is None:
-        config = {"configurable": {"thread_id": run_id}}
-        try:
-            state     = graph.get_state(config)
-            state_uid = (state.values or {}).get("user_id") if hasattr(state, "values") else None
-            if state_uid and state_uid != user_id:
-                raise HTTPException(status_code=403, detail="Not your run")
-        except HTTPException:
-            raise
-        except Exception:
-            pass
+    if owner is not None:
+        if owner != user_id:
+            raise HTTPException(status_code=403, detail="Not your run")
+        return
+
+    config = {"configurable": {"thread_id": run_id}}
+    try:
+        state     = graph.get_state(config)
+        state_uid = (state.values or {}).get("user_id") if hasattr(state, "values") else None
+        if state_uid and state_uid != user_id:
+            raise HTTPException(status_code=403, detail="Not your run")
+        if state_uid:
+            return
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
+    raise HTTPException(status_code=403, detail="Not your run")
+
+
+async def _check_parent_ownership(graph: Any, parent_run_id: str, user_id: str) -> None:
+    if not _UUID_RE.match(parent_run_id):
+        raise HTTPException(status_code=400, detail="Invalid parent_run_id")
+    await _check_ownership(graph, parent_run_id, user_id)
 
 
 def _snap_to_interrupt_payload(graph: Any, run_id: str) -> dict | None:
@@ -171,6 +198,13 @@ class StartRunRequest(BaseModel):
             raise ValueError("analysis_mode must be 'ab_test', 'general', or '' (auto)")
         return v
 
+    @field_validator("db_backend")
+    @classmethod
+    def _check_backend(cls, v: str) -> str:
+        if v not in _ALLOWED_DB_BACKENDS:
+            raise ValueError("db_backend must be 'duckdb' or 'postgres'")
+        return v
+
     @field_validator("pg_port")
     @classmethod
     def _check_port(cls, v: int) -> int:
@@ -178,10 +212,24 @@ class StartRunRequest(BaseModel):
             raise ValueError("pg_port out of range")
         return v
 
+    @field_validator("parent_run_id")
+    @classmethod
+    def _check_parent(cls, v: str) -> str:
+        if v and not _UUID_RE.match(v):
+            raise ValueError("parent_run_id must be a valid UUID")
+        return v
+
 
 class ResumeRequest(BaseModel):
-    gate:  str
-    value: dict
+    gate:  str = Field(min_length=1, max_length=64)
+    value: dict = Field(default_factory=dict)
+
+    @field_validator("gate")
+    @classmethod
+    def _check_gate(cls, v: str) -> str:
+        if v not in _ALLOWED_GATES:
+            raise ValueError(f"Unknown gate: {v}")
+        return v
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -261,6 +309,7 @@ async def create_run(
     # Extract parent narrative for follow-up context injection
     context_narrative = ""
     if req.parent_run_id:
+        await _check_parent_ownership(graph, req.parent_run_id, current_user["user_id"])
         try:
             parent_config = {"configurable": {"thread_id": req.parent_run_id}}
             parent_state  = graph.get_state(parent_config)
@@ -299,14 +348,26 @@ async def create_run(
     return {"run_id": run_id}
 
 
+@router.get("/runs/{run_id}/stream-token")
+async def stream_token(
+    run_id: str,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    graph = _get_graph(request)
+    await _check_ownership(graph, run_id, current_user["user_id"])
+    token = create_stream_token(current_user["user_id"], run_id)
+    return {"stream_token": token}
+
+
 @router.get("/runs/{run_id}/stream")
 async def stream_run(
     run_id: str,
     request: Request,
-    token:   str = Query(...),
+    stream_token: str = Query(...),
     last_id: str = Query(default="$"),  # pass Last-Event-ID on reconnect
 ):
-    current_user = _user_from_token_param(token)
+    current_user = _user_from_stream_token(stream_token, run_id)
     graph        = _get_graph(request)
     await _check_ownership(graph, run_id, current_user["user_id"])
 
@@ -334,11 +395,7 @@ async def stream_run(
                 gate    = interrupt_payload.get("gate", "unknown")
                 expires = int(time.time()) + _GATE_TIMEOUT_SECS
                 logger.info("run.gate (replay) run=%s gate=%s", run_id, gate)
-                from ..run_manager import get_redis_client as _get_redis
-                _r = _get_redis()
-                if _r:
-                    await _r.set(f"run:gate_deadline:{run_id}", expires,
-                                 ex=_GATE_TIMEOUT_SECS + 60)
+                await set_gate_deadline(run_id, expires)
                 yield {
                     "data": json.dumps({
                         "type":       "gate",
@@ -376,13 +433,7 @@ async def stream_run(
                 gate    = interrupt_payload.get("gate", "unknown")
                 expires = int(time.time()) + _GATE_TIMEOUT_SECS
                 logger.info("run.gate run=%s gate=%s expires=%s", run_id, gate, expires)
-
-                # Store timeout in Redis so the resume endpoint can reject stale gates
-                from ..run_manager import get_redis_client as _get_redis
-                _r = _get_redis()
-                if _r:
-                    await _r.set(f"run:gate_deadline:{run_id}", expires,
-                                 ex=_GATE_TIMEOUT_SECS + 60)
+                await set_gate_deadline(run_id, expires)
 
                 yield {
                     "data": json.dumps({
@@ -440,17 +491,12 @@ async def resume_run_endpoint(
     await _check_ownership(graph, run_id, current_user["user_id"])
 
     # Reject resume if the gate window has expired
-    from ..run_manager import get_redis_client as _get_redis
-    _r = _get_redis()
-    if _r:
-        deadline_raw = await _r.get(f"run:gate_deadline:{run_id}")
-        if deadline_raw is not None:
-            deadline = int(deadline_raw)
-            if time.time() > deadline:
-                raise HTTPException(
-                    status_code=status.HTTP_410_GONE,
-                    detail="Gate expired — please start a new analysis",
-                )
+    deadline = await get_gate_deadline(run_id)
+    if deadline is not None and time.time() > deadline:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="Gate expired — please start a new analysis",
+        )
 
     logger.info("run.resume run=%s gate=%s user=%s", run_id, req.gate, current_user["user_id"])
     await resume_run(graph, run_id, req.value)
@@ -493,18 +539,38 @@ async def get_run_detail(
     }
 
 
+@router.get("/runs/{run_id}/pdf-token")
+async def pdf_token(
+    run_id: str,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    graph = _get_graph(request)
+    await _check_ownership(graph, run_id, current_user["user_id"])
+    return {"pdf_token": create_pdf_token(current_user["user_id"], run_id)}
+
+
 @router.get("/runs/{run_id}/pdf")
 async def get_pdf(
     run_id: str,
     request: Request,
-    token:          str = Query(...),
-    narrative:      str = Query(default=""),
-    task:           str = Query(default=""),
-    recommendation: str = Query(default=""),
+    pdf_token: str = Query(...),
 ):
-    current_user = _user_from_token_param(token)
+    current_user = verify_scoped_token(pdf_token, "pdf", run_id)
     graph        = _get_graph(request)
     await _check_ownership(graph, run_id, current_user["user_id"])
+
+    config = {"configurable": {"thread_id": run_id}}
+    try:
+        state  = graph.get_state(config)
+        values = state.values if hasattr(state, "values") else {}
+    except Exception:
+        raise HTTPException(status_code=404, detail="Run state not found")
+
+    task           = values.get("task", "")
+    narrative      = values.get("final_narrative") or values.get("narrative_draft", "")
+    recommendation = values.get("recommendation", "")
+
     try:
         from ..pdf import build_pdf
         pdf_bytes = build_pdf(task=task, narrative=narrative, recommendation=recommendation)
@@ -515,4 +581,4 @@ async def get_pdf(
         )
     except Exception as exc:
         logger.exception("PDF generation failed for run %s", run_id)
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail="PDF generation failed")

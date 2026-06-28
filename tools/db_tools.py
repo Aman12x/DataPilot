@@ -19,9 +19,56 @@ import pandas as pd
 # DuckDB already enforces read_only=True at the driver level; this adds a
 # defence-in-depth check that also covers PostgreSQL connections.
 _MUTATION_RE = re.compile(
-    r"\b(INSERT|UPDATE|DELETE|DROP|TRUNCATE|ALTER|CREATE|REPLACE|MERGE)\b",
+    r"\b(INSERT|UPDATE|DELETE|DROP|TRUNCATE|ALTER|CREATE|REPLACE|MERGE|COPY|GRANT|REVOKE|CALL|DO|ATTACH|DETACH)\b",
     re.IGNORECASE,
 )
+
+# DuckDB table functions that can read arbitrary host files.
+_FILE_READ_RE = re.compile(
+    r"\b(read_csv|read_csv_auto|read_parquet|read_json|read_json_auto|glob|read_blob|read_text)\s*\(",
+    re.IGNORECASE,
+)
+
+_MAX_SQL_LIMIT = int(os.getenv("SQL_MAX_ROWS", "50000"))
+
+
+def validate_sql(sql: str) -> None:
+    """
+    Defence-in-depth checks before executing analyst/LLM SQL.
+    Raises ValueError when the statement looks unsafe or out of scope.
+    """
+    stripped = sql.strip()
+    if not stripped:
+        raise ValueError("Empty SQL statement")
+
+    if ";" in stripped.rstrip(";"):
+        raise ValueError("Multi-statement SQL is not permitted")
+
+    upper = stripped.upper()
+    if not (upper.startswith("SELECT") or upper.startswith("WITH")):
+        raise ValueError("Only SELECT/WITH queries are permitted")
+
+    if _MUTATION_RE.search(stripped):
+        raise ValueError("Mutation or privileged SQL is not permitted")
+
+    if _FILE_READ_RE.search(stripped):
+        raise ValueError("File-read SQL functions are not permitted")
+
+
+def _ensure_limit(sql: str) -> str:
+    """Append LIMIT when missing (after validate_sql would have rejected — safety net)."""
+    if re.search(r"\bLIMIT\s+\d+", sql, re.IGNORECASE):
+        return sql
+    return f"{sql.rstrip()} LIMIT {_MAX_SQL_LIMIT}"
+
+
+_SAFE_IDENT_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+
+def _quote_ident(name: str) -> str:
+    if not _SAFE_IDENT_RE.match(name):
+        raise ValueError(f"Unsafe SQL identifier: {name!r}")
+    return f'"{name}"'
 
 
 # Schema comments: human-readable column descriptions injected into inspect_schema() output.
@@ -106,11 +153,8 @@ class DBConnection:
 
     def query(self, sql: str) -> pd.DataFrame:
         """Execute SQL and return a DataFrame. Only SELECT is permitted."""
-        if _MUTATION_RE.search(sql):
-            raise ValueError(
-                "Mutation SQL is not permitted — only SELECT statements are allowed. "
-                f"Blocked: {sql[:120]!r}"
-            )
+        validate_sql(sql)
+        sql = _ensure_limit(sql)
         if self.backend == "duckdb":
             return self._query_duckdb(sql)
         return self._query_postgres(sql)
@@ -281,10 +325,12 @@ class DBConnection:
         return df["table_name"].tolist()
 
     def _get_columns_postgres(self, table: str) -> list[tuple[str, str]]:
+        if not _SAFE_IDENT_RE.match(table):
+            raise ValueError(f"Unsafe table name: {table!r}")
         df = self._query_postgres(
-            f"SELECT column_name, data_type FROM information_schema.columns "
+            "SELECT column_name, data_type FROM information_schema.columns "
             f"WHERE table_schema = 'public' AND table_name = '{table}' "
-            f"ORDER BY ordinal_position"
+            "ORDER BY ordinal_position"
         )
         return list(zip(df["column_name"], df["data_type"]))
 
@@ -307,11 +353,12 @@ class DBConnection:
         when the column looks high-cardinality.
         """
         try:
-            # Fetch one more than the limit so we know when to give up
+            safe_table = _quote_ident(table)
+            safe_col = _quote_ident(col)
             df = self._query_postgres(
-                f"SELECT DISTINCT {col}::TEXT AS v "
-                f"FROM {table} "
-                f"WHERE {col} IS NOT NULL "
+                f"SELECT DISTINCT {safe_col}::TEXT AS v "
+                f"FROM {safe_table} "
+                f"WHERE {safe_col} IS NOT NULL "
                 f"ORDER BY 1 LIMIT {max_cardinality + 1}"
             )
             vals = df["v"].dropna().astype(str).tolist()

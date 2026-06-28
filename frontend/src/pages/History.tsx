@@ -53,12 +53,13 @@ export default function History() {
     e.stopPropagation();
     setDownloading(run.run_id);
     try {
-      const d = detail[run.run_id] ?? (await client.get(`/runs/${run.run_id}/detail`)).data;
-      const token  = localStorage.getItem("access_token") ?? "";
-      const params = new URLSearchParams({ token, narrative: d.narrative ?? "", recommendation: d.recommendation ?? "", task: d.task ?? run.task });
-      window.open(`${API_BASE}/runs/${run.run_id}/pdf?${params}`, "_blank");
+      const { data } = await client.get<{ pdf_token: string }>(`/runs/${run.run_id}/pdf-token`);
+      window.open(
+        `${API_BASE}/runs/${run.run_id}/pdf?pdf_token=${encodeURIComponent(data.pdf_token)}`,
+        "_blank"
+      );
     } catch {
-      alert("Could not load run details for PDF.");
+      alert("Could not generate PDF.");
     } finally { setDownloading(null); }
   };
 

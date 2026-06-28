@@ -113,7 +113,8 @@ class _FakeGraph:
         if run_id not in self._known_runs:
             raise Exception("run not found")
         state = MagicMock()
-        state.values = {"task": "test", "narrative_draft": "hello", "recommendation": "ship it"}
+        state.values = {"task": "test", "narrative_draft": "hello", "recommendation": "ship it", "user_id": "test-user"}
+        state.next = ()
         if run_id in self._gate_run_ids:
             interrupt_obj = MagicMock()
             interrupt_obj.value = {"gate": "intent", "payload": {"question": "What analysis?"}}
@@ -185,6 +186,16 @@ def _login(client, suffix=""):
     return data["access_token"], data["refresh_token"], data["user"]
 
 
+def _stream_url(client, run_id: str, access: str) -> str:
+    r = client.get(
+        f"/runs/{run_id}/stream-token",
+        headers={"Authorization": f"Bearer {access}"},
+    )
+    assert r.status_code == 200, r.text
+    token = r.json()["stream_token"]
+    return f"/runs/{run_id}/stream?stream_token={token}"
+
+
 # ════════════════════════════════════════════════════════════════════════════════
 # Auth
 # ════════════════════════════════════════════════════════════════════════════════
@@ -198,9 +209,9 @@ class TestAuth:
     def test_register_duplicate_username(self, client):
         un = f"dupuser_{uuid.uuid4().hex[:6]}"
         client.post("/auth/register",
-                    json={"username": un, "email": f"{un}@a.com", "password": "x"})
+                    json={"username": un, "email": f"{un}@a.com", "password": "Password1!"})
         r = client.post("/auth/register",
-                        json={"username": un, "email": f"other_{un}@a.com", "password": "x"})
+                        json={"username": un, "email": f"other_{un}@a.com", "password": "Password1!"})
         assert r.status_code == 400
 
     def test_login_bad_password(self, client):
@@ -214,7 +225,10 @@ class TestAuth:
         _, refresh, _ = _login(client)
         r = client.post("/auth/refresh", json={"refresh_token": refresh})
         assert r.status_code == 200
-        assert "access_token" in r.json()
+        body = r.json()
+        assert "access_token" in body
+        assert "refresh_token" in body
+        assert body["refresh_token"] != refresh
 
     def test_refresh_with_access_token_rejected(self, client):
         access, _, _ = _login(client)
@@ -230,6 +244,18 @@ class TestAuth:
     def test_me_unauthenticated(self, client):
         r = client.get("/auth/me")
         assert r.status_code == 401
+
+    def test_guest_session(self, client):
+        r = client.post("/auth/guest")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["access_token"]
+        assert body["user"]["user_id"].startswith("guest-")
+
+    def test_guest_sessions_are_unique(self, client):
+        a = client.post("/auth/guest").json()["user"]["user_id"]
+        b = client.post("/auth/guest").json()["user"]["user_id"]
+        assert a != b
 
     def test_logout_revokes_refresh_token(self, client):
         access, refresh, _ = _login(client)
@@ -252,6 +278,22 @@ class TestAuth:
         """Logging out with a garbage token should not error."""
         r = client.post("/auth/logout", json={"refresh_token": "not.a.token"})
         assert r.status_code == 200
+
+    def test_reset_password_invalidates_refresh_token(self, client):
+        _, refresh, user = _login(client)
+        email = user["email"]
+        assert client.post("/auth/forgot-password", json={"email": email}).status_code == 202
+
+        from auth.store import create_reset_token
+
+        token = create_reset_token(email)
+        assert token
+        assert client.post(
+            "/auth/reset-password",
+            json={"token": token, "password": "NewPassword1!"},
+        ).status_code == 200
+
+        assert client.post("/auth/refresh", json={"refresh_token": refresh}).status_code == 401
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -323,6 +365,27 @@ class TestRunCreate:
                         headers={"Authorization": f"Bearer {access}"})
         assert r.status_code == 201
 
+    def test_invalid_db_backend(self, client):
+        access, _, _ = _login(client)
+        r = client.post("/runs",
+                        json={"task": "analyse", "db_backend": "mysql"},
+                        headers={"Authorization": f"Bearer {access}"})
+        assert r.status_code == 422
+
+    def test_cross_user_parent_run_blocked(self, client):
+        access_a, _, _ = _login(client, "parentA")
+        hdrs_a = {"Authorization": f"Bearer {access_a}"}
+        parent_id = client.post("/runs", json={"task": "parent run"}, headers=hdrs_a).json()["run_id"]
+
+        access_b, _, _ = _login(client, "parentB")
+        hdrs_b = {"Authorization": f"Bearer {access_b}"}
+        r = client.post(
+            "/runs",
+            json={"task": "follow up", "parent_run_id": parent_id},
+            headers=hdrs_b,
+        )
+        assert r.status_code == 403
+
 
 # ════════════════════════════════════════════════════════════════════════════════
 # Runs — list / detail / ownership
@@ -350,17 +413,14 @@ class TestRunAccess:
         access, _, _ = _login(client)
         r = client.get(f"/runs/{uuid.uuid4()}/detail",
                        headers={"Authorization": f"Bearer {access}"})
-        assert r.status_code == 404
+        assert r.status_code == 403
 
     def test_resume_unknown_run(self, client):
         access, _, _ = _login(client)
         r = client.post(f"/runs/{uuid.uuid4()}/resume",
                         json={"gate": "intent", "value": {}},
                         headers={"Authorization": f"Bearer {access}"})
-        # Ownership check fails-open (server-restart case) → resume proceeds
-        # but graph raises internally. 200 means resume was accepted.
-        # 403/404 is also valid if ownership check has the run_id cached.
-        assert r.status_code in (200, 403, 404)
+        assert r.status_code == 403
 
     def test_ownership_cross_user_blocked(self, client):
         # User A creates run
@@ -511,7 +571,7 @@ class TestStreamRuns:
         hdrs = {"Authorization": f"Bearer {access}"}
         run_id = client.post("/runs", json={"task": "analyse"}, headers=hdrs).json()["run_id"]
 
-        events = _sse_events(client, f"/runs/{run_id}/stream?token={access}")
+        events = _sse_events(client, _stream_url(client, run_id, access))
         assert any(e.get("type") == "done" for e in events)
 
     def test_stream_gate_event(self, client, fake_mode):
@@ -521,7 +581,7 @@ class TestStreamRuns:
         hdrs = {"Authorization": f"Bearer {access}"}
         run_id = client.post("/runs", json={"task": "analyse"}, headers=hdrs).json()["run_id"]
 
-        events = _sse_events(client, f"/runs/{run_id}/stream?token={access}")
+        events = _sse_events(client, _stream_url(client, run_id, access))
         gate_events = [e for e in events if e.get("type") == "gate"]
         assert gate_events, f"Expected gate event, got: {events}"
         assert gate_events[0]["gate"] == "intent"
@@ -533,7 +593,7 @@ class TestStreamRuns:
         hdrs = {"Authorization": f"Bearer {access}"}
         run_id = client.post("/runs", json={"task": "analyse"}, headers=hdrs).json()["run_id"]
 
-        events = _sse_events(client, f"/runs/{run_id}/stream?token={access}")
+        events = _sse_events(client, _stream_url(client, run_id, access))
         assert any(e.get("type") == "error" for e in events)
 
     def test_stream_reconnect_after_crash(self, client, fake_mode):
@@ -544,10 +604,10 @@ class TestStreamRuns:
         run_id = client.post("/runs", json={"task": "analyse"}, headers=hdrs).json()["run_id"]
 
         # First stream — consumes the error
-        _sse_events(client, f"/runs/{run_id}/stream?token={access}")
+        _sse_events(client, _stream_url(client, run_id, access))
 
         # Second stream — should get error immediately from cache, not hang 30s
-        events = _sse_events(client, f"/runs/{run_id}/stream?token={access}")
+        events = _sse_events(client, _stream_url(client, run_id, access))
         assert any(e.get("type") == "error" for e in events)
 
 
@@ -615,7 +675,7 @@ class TestResumeRuns:
         run_id = client.post("/runs", json={"task": "analyse"}, headers=hdrs).json()["run_id"]
 
         # Stream to receive (and trigger) the gate
-        events = _sse_events(client, f"/runs/{run_id}/stream?token={access}")
+        events = _sse_events(client, _stream_url(client, run_id, access))
         assert any(e.get("type") == "gate" for e in events)
 
         # Resume the gate

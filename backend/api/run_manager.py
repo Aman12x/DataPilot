@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import os
+import queue
 import time
 from collections import OrderedDict, deque
 from typing import Any
@@ -29,6 +30,7 @@ REDIS_URL = os.getenv("REDIS_URL", "")
 
 # ── In-memory fallback ────────────────────────────────────────────────────────
 _queues:     dict[str, asyncio.Queue] = {}
+_sync_queues: dict[str, queue.Queue] = {}
 _run_owners: dict[str, str]           = {}
 _run_errors: OrderedDict[str, str]    = OrderedDict()  # run_id → error (capped, survives cleanup)
 _RUN_ERRORS_MAX = 1000
@@ -43,6 +45,10 @@ _MAX_RUNS    = int(os.getenv("MAX_RUNS_PER_WINDOW", "5"))
 _WINDOW_SECS = int(os.getenv("RATE_WINDOW_SECONDS", "300"))
 
 _local_rate: dict[str, deque] = {}
+_gate_deadlines: dict[str, int] = {}
+_MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT_GRAPH_INVOKES", "32"))
+_GATE_TIMEOUT_SECS = int(os.getenv("GATE_TIMEOUT_SECONDS", str(4 * 60 * 60)))
+_active_invokes = 0
 
 
 def set_redis_client(client: Any) -> None:
@@ -79,6 +85,10 @@ async def _publish_result(run_id: str, payload: dict) -> None:
         await _redis.xadd(key, {"data": json.dumps(payload)})
         await _redis.expire(key, _STREAM_TTL)
     else:
+        sq = _sync_queues.get(run_id)
+        if sq is not None:
+            sq.put(payload)
+            return
         q = _queues.get(run_id)
         if q is not None:
             await q.put(payload)
@@ -108,6 +118,12 @@ async def read_result(run_id: str, last_id: str = "$") -> dict | None:
         data["_stream_id"] = entry_id.decode()
         return data
     else:
+        sq = _sync_queues.get(run_id)
+        if sq is not None:
+            try:
+                return await asyncio.to_thread(sq.get, True, 30.0)
+            except queue.Empty:
+                return None
         q = _queues.get(run_id)
         if q is None:
             return None
@@ -117,9 +133,11 @@ async def read_result(run_id: str, last_id: str = "$") -> dict | None:
             return None
 
 
-def cleanup_run(run_id: str) -> None:
+def cleanup_run(run_id: str, *, drop_owner: bool = True) -> None:
     _queues.pop(run_id, None)
-    _run_owners.pop(run_id, None)
+    _sync_queues.pop(run_id, None)
+    if drop_owner:
+        _run_owners.pop(run_id, None)
 
 
 def _cache_error(run_id: str, msg: str) -> None:
@@ -279,18 +297,32 @@ def _step_detail(node: str, delta: dict) -> str | None:
     return None
 
 
-# ── Graph invocation ──────────────────────────────────────────────────────────
+async def set_gate_deadline(run_id: str, expires: int) -> None:
+    if _redis:
+        await _redis.set(f"run:gate_deadline:{run_id}", expires, ex=_GATE_TIMEOUT_SECS + 60)
+    else:
+        _gate_deadlines[run_id] = expires
+
+
+async def get_gate_deadline(run_id: str) -> int | None:
+    if _redis:
+        deadline_raw = await _redis.get(f"run:gate_deadline:{run_id}")
+        return int(deadline_raw) if deadline_raw is not None else None
+    return _gate_deadlines.get(run_id)
+
 
 async def start_run(graph: Any, run_id: str, initial_state: dict, user_id: str) -> None:
     await set_owner(run_id, user_id)
     if not _redis:
         _queues[run_id] = asyncio.Queue()
+        _sync_queues[run_id] = queue.Queue()
     asyncio.create_task(_invoke(graph, initial_state, run_id))
 
 
 async def resume_run(graph: Any, run_id: str, resume_value: Any) -> None:
-    if not _redis and run_id not in _queues:
+    if not _redis and run_id not in _sync_queues:
         _queues[run_id] = asyncio.Queue()
+        _sync_queues[run_id] = queue.Queue()
     asyncio.create_task(_invoke(graph, Command(resume=resume_value), run_id))
 
 
@@ -324,15 +356,33 @@ def _stream_graph(graph: Any, arg: Any, config: dict, run_id: str, loop: asyncio
         if detail is not None:
             event["detail"] = detail
         try:
-            asyncio.run_coroutine_threadsafe(
-                _publish_result(run_id, event), loop
-            ).result(timeout=2)
+            _publish_sync(run_id, event)
         except Exception:
             pass  # don't let a publish failure abort the graph
     return graph.get_state(config).values
 
 
+def _publish_sync(run_id: str, payload: dict) -> None:
+    """Thread-safe publish for in-memory mode (avoids event-loop deadlock)."""
+    if _redis:
+        loop = asyncio.get_event_loop()
+        asyncio.run_coroutine_threadsafe(_publish_result(run_id, payload), loop).result(timeout=2)
+        return
+    sq = _sync_queues.get(run_id)
+    if sq is not None:
+        sq.put(payload)
+
+
 async def _invoke(graph: Any, arg: Any, run_id: str) -> None:
+    global _active_invokes
+    if _active_invokes >= _MAX_CONCURRENT:
+        msg = "Server is busy. Please try again in a moment."
+        await _publish_result(run_id, {"ok": False, "error": msg})
+        await _store_error(run_id, msg)
+        cleanup_run(run_id)
+        return
+
+    _active_invokes += 1
     config = {"configurable": {"thread_id": run_id}}
     loop = asyncio.get_running_loop()
     try:
@@ -346,10 +396,12 @@ async def _invoke(graph: Any, arg: Any, run_id: str) -> None:
         logger.error("Graph invoke timed out after %ds for run %s", _INVOKE_TIMEOUT, run_id)
         await _publish_result(run_id, {"ok": False, "error": msg})
         await _store_error(run_id, msg)
-        cleanup_run(run_id)
+        cleanup_run(run_id, drop_owner=False)
     except Exception as exc:
         logger.exception("Graph invoke failed for run %s", run_id)
-        msg = str(exc)
+        msg = "Analysis failed. Please try again."
         await _publish_result(run_id, {"ok": False, "error": msg})
         await _store_error(run_id, msg)
-        cleanup_run(run_id)
+        cleanup_run(run_id, drop_owner=False)
+    finally:
+        _active_invokes -= 1
