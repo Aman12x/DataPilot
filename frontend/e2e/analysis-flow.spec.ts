@@ -6,7 +6,18 @@ const FIXTURE_CSV = path.join(process.cwd(), "e2e", "fixtures", "saas_churn.csv"
 test.describe("Analysis flow", () => {
   test("guest can log in, upload CSV, and start a run", async ({ page }) => {
     await page.goto("/login");
+    await expect(page.getByRole("button", { name: "Continue as Guest" })).toBeVisible();
+
+    const guestResponsePromise = page.waitForResponse(
+      (resp) => resp.url().includes("/auth/guest") && resp.request().method() === "POST",
+    );
     await page.getByRole("button", { name: "Continue as Guest" }).click();
+    const guestResponse = await guestResponsePromise;
+    expect(
+      guestResponse.ok(),
+      `Guest login failed (${guestResponse.status()}): ${await guestResponse.text()}`,
+    ).toBeTruthy();
+
     await expect(page).toHaveURL("/");
 
     await page.getByRole("button", { name: /Explore & Understand/i }).click();
@@ -38,7 +49,14 @@ test.describe("Analysis flow", () => {
     );
 
     await page.goto("/login");
+    const guestResponsePromise = page.waitForResponse(
+      (resp) => resp.url().includes("/auth/guest") && resp.request().method() === "POST",
+    );
     await page.getByRole("button", { name: "Continue as Guest" }).click();
+    const guestResponse = await guestResponsePromise;
+    expect(guestResponse.ok()).toBeTruthy();
+    await expect(page).toHaveURL("/");
+
     await page.getByRole("button", { name: /Explore & Understand/i }).click();
 
     await page.getByText("Upload CSV / Excel").click();
