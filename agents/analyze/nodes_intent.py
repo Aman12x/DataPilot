@@ -275,15 +275,23 @@ def infer_metric_config_node(state: AgentState) -> dict:
 
     prompt = SCHEMA_CONFIG_INFERENCE_PROMPT.format(schema_context=schema_context)
 
-    with trace_generation("infer_metric_config", _fast_model(), prompt) as gen:
-        response = _anthropic_client().messages.create(
-            model=_fast_model(),
-            max_tokens=512,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        gen.update(response)
-
     defaults = load_metric_config()
+
+    try:
+        with trace_generation("infer_metric_config", _fast_model(), prompt) as gen:
+            response = _anthropic_client().messages.create(
+                model=_fast_model(),
+                max_tokens=512,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            gen.update(response)
+    except Exception as exc:
+        logger.warning("infer_metric_config: LLM call failed (%s), using defaults.", exc)
+        return {
+            "metric_config": defaults,
+            "metric": defaults.primary_metric,
+            "covariate": defaults.covariate,
+        }
 
     try:
         raw = response.content[0].text.strip()

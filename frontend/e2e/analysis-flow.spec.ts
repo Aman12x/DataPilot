@@ -24,7 +24,6 @@ test.describe("Analysis flow", () => {
     await expect(page.getByRole("heading", { name: /Explore/i })).toBeVisible();
 
     await page.getByText("Upload CSV / Excel").click();
-    await page.getByRole("button", { name: /Choose file/i }).click();
     await page.locator('input[type="file"]').setInputFiles(FIXTURE_CSV);
 
     await expect(page.getByText(/rows/i)).toBeVisible({ timeout: 30_000 });
