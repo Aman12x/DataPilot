@@ -18,6 +18,11 @@ from pydantic import BaseModel
 from config.analysis_config import MetricConfig
 from tools import schemas as schema_models
 
+try:
+    from langgraph.types import Interrupt as _Interrupt
+except ImportError:  # pragma: no cover
+    _Interrupt = None  # type: ignore[misc, assignment]
+
 _SERDE_TAG = "json-v1"
 
 # Registry for Pydantic models stored in AgentState
@@ -81,6 +86,12 @@ def _encode(obj: Any) -> Any:
             "m": obj.__class__.__name__,
             "v": _encode(fields),
         }
+    if _Interrupt is not None and isinstance(obj, _Interrupt):
+        return {
+            "__t": "interrupt",
+            "v": _encode(obj.value),
+            "id": obj.id,
+        }
     if isinstance(obj, dict):
         return {str(k): _encode(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
@@ -104,6 +115,10 @@ def _decode(obj: Any) -> Any:
             if model_cls is None:
                 raise ValueError(f"Unknown checkpoint model: {obj['m']!r}")
             return model_cls.model_validate(_decode(obj["v"]))
+        if tag == "interrupt":
+            if _Interrupt is None:
+                raise ValueError("Cannot restore interrupt — langgraph.types.Interrupt unavailable")
+            return _Interrupt(value=_decode(obj["v"]), id=obj["id"])
     if isinstance(obj, dict):
         return {k: _decode(v) for k, v in obj.items()}
     if isinstance(obj, list):

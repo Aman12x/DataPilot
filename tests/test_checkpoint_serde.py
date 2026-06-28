@@ -36,3 +36,19 @@ def test_metric_config_roundtrip(serde):
 def test_rejects_pickle_checkpoints(serde):
     with pytest.raises(ValueError, match="Pickle checkpoints are disabled"):
         serde.loads_typed(("pickle", b"legacy"))
+
+
+def test_interrupt_roundtrip(serde):
+    from langgraph.types import Interrupt
+
+    payload = {
+        "gate": "query",
+        "generated_sql": "SELECT 1",
+        "message": "Review SQL",
+    }
+    tag, raw = serde.dumps_typed([Interrupt(value=payload, id="abc123")])
+    restored = serde.loads_typed((tag, raw))
+    assert len(restored) == 1
+    assert isinstance(restored[0], Interrupt)
+    assert restored[0].id == "abc123"
+    assert restored[0].value["gate"] == "query"
