@@ -4,7 +4,9 @@
 
 Ask a question in plain English. DataPilot generates SQL, runs statistical analysis, and produces an evidence-based report. It pauses for analyst review at every decision point before moving forward.
 
-**Eval:** 11/11 DAU experiment · 11/11 cross-domain generalisability · **551 tests passing**
+**Live demo:** [datapilotapp.singhaman.dev](https://datapilotapp.singhaman.dev) · **API:** [datapilot.singhaman.dev/health](https://datapilot.singhaman.dev/health)
+
+**Quality:** 4 offline eval harnesses · baseline regression gate · **578 pytest tests** · Playwright E2E · deterministic RAGAS-inspired scoring
 
 ---
 
@@ -158,9 +160,9 @@ Treatment/control comparison with covariate adjustment, subgroup HTE, guardrail 
 | Semantic cache | MiniLM (all-MiniLM-L6-v2) + SQLite |
 | Run state | Redis Streams (multi-pod) · asyncio.Queue (local) |
 | Stats | scipy · numpy · scikit-learn · Prophet |
-| Eval | RAGAS-inspired (faithfulness + relevancy + key findings) |
+| Eval | 4 offline harnesses · RAGAS-inspired (faithfulness + relevancy + key findings) · baseline regression |
 | Observability | Sentry · structured logging |
-| Tests | pytest (551) · Playwright E2E |
+| Tests | pytest (573) · Playwright E2E · offline eval gate in CI |
 
 ---
 
@@ -186,7 +188,7 @@ Other controls:
 - Refresh token rotation; password reset invalidates all sessions
 - User tasks and schema excerpts wrapped in delimiters before LLM calls
 - LangGraph checkpoints use JSON serde (pickle disabled)
-- Branch rulesets should require `test-backend`, `build-frontend`, and `e2e` CI checks
+- Branch rulesets should require `test-backend`, `eval-offline`, `build-frontend`, and `e2e` CI checks
 
 See [`tests/test_security_fixes.py`](tests/test_security_fixes.py) for regression coverage.
 
@@ -194,19 +196,30 @@ See [`tests/test_security_fixes.py`](tests/test_security_fixes.py) for regressio
 
 ## Eval scores
 
+Four offline harnesses run on every PR. Scores are compared against a committed baseline — CI fails if any harness drops more than 2%.
+
 ```bash
 make eval                              # all fast offline evals (no API key)
 make eval-all                          # evals + baseline regression gate (CI uses this)
+make eval-baseline                     # refresh baseline after intentional improvements
 python evals/analyze_eval.py           # DAU experiment scenario
 python evals/generalisability_eval.py  # cross-domain: clinical + ecommerce
 python evals/transactions_eval.py      # golden Q&A on customer_transactions_10k
 python evals/fixture_eval.py           # fixture keyword + faithfulness checks
 ```
 
-CI runs `evals/compare_baseline.py` on every push to catch score regressions.
-Nightly workflow runs the full LLM narrative eval when `ANTHROPIC_API_KEY` is configured.
+See [`evals/README.md`](evals/README.md) for architecture and how to add new harnesses.
 
-**DAU experiment (11/11):**
+| Harness | Score | Validates |
+|---------|-------|-----------|
+| DAU experiment | 12/13 (92%) | HTE segment, CUPED, t-test, guardrails, decomposition, forecast |
+| Cross-domain | 13/13 | Clinical recovery scores + ecommerce revenue A/B |
+| Transactions Q&A | 7/7 | 15 golden answers + faithfulness on 10k-row dataset |
+| CSV fixtures | 4/4 | Keyword + faithfulness on healthcare, HR, timeseries, A/B |
+
+Nightly CI runs the full LLM narrative eval when `ANTHROPIC_API_KEY` is configured.
+
+**DAU experiment (12/13 without API key):**
 ```
   PASS  hte_correct_segment       android/new surfaces as top HTE segment
   PASS  cuped_variance_reduced    >15% variance reduction
@@ -219,18 +232,22 @@ Nightly workflow runs the full LLM narrative eval when `ANTHROPIC_API_KEY` is co
   PASS  novelty_ruled_out         effect growing, not decaying
   PASS  narrative_mentions_segment narrative mentions android + new
   PASS  narrative_has_caveats     caveats section present
+  PASS  narrative_faithful        cited numbers match tool outputs
+  SKIP  narrative_relevant         requires LLM narrative (passes in make eval-full)
 ```
 
-**Cross-domain generalisability (11/11):**
+**Cross-domain generalisability (13/13):**
 ```
   PASS  🏥 Clinical: t-test on recovery scores
   PASS  🏥 Clinical: treatment has significantly higher recovery
+  PASS  🏥 Clinical: treatment mean recovery > control
   PASS  🏥 Clinical: CUPED with baseline_severity covariate
-  PASS  🏥 Clinical: HTE finds age-group differential
+  PASS  🏥 Clinical: HTE finds subgroup differential
   PASS  🏥 Clinical: guardrail on side_effect_count
   PASS  🏥 Clinical: MDE calculation completes
   PASS  🛒 Ecomm: t-test on revenue_usd
-  PASS  🛒 Ecomm: CUPED with session_duration covariate
+  PASS  🛒 Ecomm: treatment mean revenue > control
+  PASS  🛒 Ecomm: CUPED variance reduction > 0%
   PASS  🛒 Ecomm: HTE finds device/segment differential
   PASS  🛒 Ecomm: guardrail on orders metric
   PASS  🛒 Ecomm: MDE is a plausible percentage
@@ -280,10 +297,11 @@ Optional: `REDIS_URL` (multi-pod run state), `SENTRY_DSN` (error tracking), `RES
 
 ## Trust and robustness
 
-Five layers prevent wrong reports from reaching stakeholders.
+Six layers prevent wrong reports from reaching stakeholders.
 
 | Layer | What it catches |
 |-------|----------------|
+| **Offline eval harnesses** | Wrong tool outputs, missing golden Q&A answers, score regressions vs committed baseline |
 | **SQL content validation** | 0-row results, missing experiment arms, arm imbalance below 30:70, JOIN fan-out, metric values that appear to be percentages stored as rates |
 | **Claim accuracy blocking** | Narrative says "significant" but CI crosses zero; "large effect" but Cohen's d < 0.5; stated direction contradicts sign of the ATE. Auto-corrected before the analyst sees it. |
 | **Safety constraint checks** | Blocks "ship" language when SRM is detected, a guardrail is breached, or post-hoc power is below 50% (winner's curse risk) |
