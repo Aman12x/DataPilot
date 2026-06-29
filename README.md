@@ -162,7 +162,7 @@ Treatment/control comparison with covariate adjustment, subgroup HTE, guardrail 
 | Stats | scipy · numpy · scikit-learn · Prophet |
 | Eval | 4 offline harnesses · RAGAS-inspired (faithfulness + relevancy + key findings) · baseline regression |
 | Observability | Sentry · structured logging |
-| Tests | pytest (573) · Playwright E2E · offline eval gate in CI |
+| Tests | pytest (578) · Playwright E2E · offline eval gate in CI |
 
 ---
 
