@@ -7,20 +7,26 @@ const client = axios.create({
 });
 
 // On 401: attempt cookie-based refresh once, then redirect to login.
+// Auth probe routes (/auth/me, etc.) must reject quietly — no refresh or redirect.
+const AUTH_PROBE_PATHS = ["/auth/me", "/auth/refresh", "/auth/login", "/auth/guest", "/auth/register"];
+
 client.interceptors.response.use(
   (res) => res,
   async (err) => {
     const original = err.config;
     if (err.response?.status === 401 && !original._retry) {
       original._retry = true;
-      if (original.url?.includes("/auth/refresh") || original.url?.includes("/auth/login")) {
+      if (AUTH_PROBE_PATHS.some((p) => original.url?.includes(p))) {
         return Promise.reject(err);
       }
       try {
         await axios.post(`${API_BASE}/auth/refresh`, {}, { withCredentials: true });
         return client(original);
       } catch {
-        window.location.href = "/login";
+        if (!window.location.pathname.startsWith("/login")) {
+          window.location.href = "/login";
+        }
+        return Promise.reject(err);
       }
     }
     return Promise.reject(err);

@@ -4,12 +4,22 @@ import path from "path";
 const FIXTURE_CSV = path.join(process.cwd(), "e2e", "fixtures", "saas_churn.csv");
 
 test.describe("Analysis flow", () => {
+  /** Wait until Login finishes its initial /auth/me probe (avoids tab/button detach). */
+  async function waitForLoginReady(page: import("@playwright/test").Page) {
+    await page.goto("/login");
+    await page.waitForResponse(
+      (resp) => resp.url().includes("/auth/me") && resp.request().method() === "GET",
+      { timeout: 30_000 },
+    ).catch(() => { /* unauthenticated — 401 is expected */ });
+    await expect(page.getByRole("button", { name: "Continue as Guest" })).toBeVisible();
+  }
+
   test("user can register and reach the home screen", async ({ page }) => {
     const suffix = Date.now();
     const username = `e2e_user_${suffix}`;
     const email = `e2e_${suffix}@example.com`;
 
-    await page.goto("/login");
+    await waitForLoginReady(page);
     await page.getByRole("button", { name: "Create Account" }).click();
 
     await page.getByPlaceholder("john_doe").fill(username);
@@ -32,8 +42,7 @@ test.describe("Analysis flow", () => {
   });
 
   test("guest can log in, upload CSV, and start a run", async ({ page }) => {
-    await page.goto("/login");
-    await expect(page.getByRole("button", { name: "Continue as Guest" })).toBeVisible();
+    await waitForLoginReady(page);
 
     const guestResponsePromise = page.waitForResponse(
       (resp) => resp.url().includes("/auth/guest") && resp.request().method() === "POST",
@@ -74,7 +83,8 @@ test.describe("Analysis flow", () => {
       "Set ANTHROPIC_API_KEY to run the full intent-gate E2E"
     );
 
-    await page.goto("/login");
+    await waitForLoginReady(page);
+
     const guestResponsePromise = page.waitForResponse(
       (resp) => resp.url().includes("/auth/guest") && resp.request().method() === "POST",
     );
