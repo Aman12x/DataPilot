@@ -100,6 +100,11 @@ class TestNormaliseCols:
         df = _normalise_cols(df)
         assert "col" in df.columns
 
+    def test_duplicate_normalised_headers_get_suffixes(self):
+        df = pd.DataFrame(columns=["Revenue ($)", "Revenue %", "Revenue  "])
+        df = _normalise_cols(df)
+        assert list(df.columns) == ["revenue", "revenue_2", "revenue_3"]
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 # 2. _looks_like_date_col
@@ -119,6 +124,8 @@ class TestLooksLikeDateCol:
         assert _looks_like_date_col("revenue") is False
         assert _looks_like_date_col("user_id") is False
         assert _looks_like_date_col("salary") is False
+        assert _looks_like_date_col("events") is False
+        assert _looks_like_date_col("status") is False
 
 
 # ═════════════════════════════════════════════════════════════════════════════

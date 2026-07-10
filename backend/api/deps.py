@@ -53,18 +53,12 @@ def _decode_token(token: str, expected_type: str) -> dict[str, Any]:
     return payload
 
 
-_GUEST_USER = {"user_id": "guest", "username": "Guest"}
-
-
 def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> dict[str, str]:
     if credentials is None:
-        return _GUEST_USER
-    try:
-        payload = _decode_token(credentials.credentials, "access")
-    except HTTPException:
-        return _GUEST_USER
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    payload = _decode_token(credentials.credentials, "access")
     return {"user_id": payload["sub"], "username": payload.get("username", "")}
 
 

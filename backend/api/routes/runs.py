@@ -24,7 +24,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import Response
 from jose import JWTError, jwt
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 from sse_starlette.sse import EventSourceResponse
 
 from ..deps import ALGORITHM, SECRET_KEY, get_current_user
@@ -74,9 +74,11 @@ def _validate_pg_host(host: str) -> None:
     if not host:
         return
     try:
-        addr = ipaddress.ip_address(socket.gethostbyname(host))
-        if any(addr in net for net in _PRIVATE_NETS):
-            raise HTTPException(status_code=400, detail=f"Database host '{host}' is not allowed")
+        infos = socket.getaddrinfo(host, None)
+        for info in infos:
+            addr = ipaddress.ip_address(info[4][0])
+            if any(addr in net for net in _PRIVATE_NETS):
+                raise HTTPException(status_code=400, detail=f"Database host '{host}' is not allowed")
     except HTTPException:
         raise
     except Exception:
@@ -109,8 +111,8 @@ def _get_memory_store(request: Request) -> Any:
 
 
 def _user_from_token_param(token: str) -> dict[str, str]:
-    if not token or token == "guest":
-        return {"user_id": "guest", "username": "Guest"}
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
     except JWTError:
@@ -167,8 +169,15 @@ class StartRunRequest(BaseModel):
     @field_validator("analysis_mode")
     @classmethod
     def _check_mode(cls, v: str) -> str:
-        if v not in ("", "ab_test", "general"):
-            raise ValueError("analysis_mode must be 'ab_test', 'general', or '' (auto)")
+        if v not in ("", "ab_test", "general", "power_analysis"):
+            raise ValueError("analysis_mode must be 'ab_test', 'general', 'power_analysis', or '' (auto)")
+        return v
+
+    @field_validator("db_backend")
+    @classmethod
+    def _check_backend(cls, v: str) -> str:
+        if v not in ("duckdb", "postgres"):
+            raise ValueError("db_backend must be 'duckdb' or 'postgres'")
         return v
 
     @field_validator("pg_port")
@@ -177,6 +186,17 @@ class StartRunRequest(BaseModel):
         if not (1 <= v <= 65535):
             raise ValueError("pg_port out of range")
         return v
+
+    @model_validator(mode="after")
+    def _check_postgres_fields(self) -> "StartRunRequest":
+        if self.db_backend == "postgres":
+            missing = [
+                name for name in ("pg_host", "pg_dbname", "pg_user")
+                if not getattr(self, name).strip()
+            ]
+            if missing:
+                raise ValueError(f"Postgres backend requires: {', '.join(missing)}")
+        return self
 
 
 class ResumeRequest(BaseModel):
@@ -361,13 +381,21 @@ async def stream_run(
 
             # Forward Chain-of-Thought step events directly
             if item.get("type") == "step":
-                yield {"data": json.dumps(item)}
+                event = {"data": json.dumps(item)}
+                if effective_last_id != last_id:
+                    event["id"] = effective_last_id
+                yield event
                 continue
 
             if not item.get("ok"):
                 cleanup_run(run_id)
                 logger.error("run.error run=%s: %s", run_id, item.get("error"))
-                yield {"data": json.dumps({"type": "error", "message": item.get("error", "Unknown error")})}
+                event = {
+                    "data": json.dumps({"type": "error", "message": item.get("error", "Unknown error")})
+                }
+                if effective_last_id != last_id:
+                    event["id"] = effective_last_id
+                yield event
                 return
 
             interrupt_payload = _snap_to_interrupt_payload(graph, run_id)
@@ -402,7 +430,8 @@ async def stream_run(
                 # Guard against stale "ok" from an intermediate invoke (race condition):
                 # if the graph still has pending nodes, this invoke ended at a gate that
                 # is about to interrupt — keep waiting for the actual terminal invoke.
-                if final_state.next:
+                next_nodes = getattr(final_state, "next", None)
+                if isinstance(next_nodes, (list, tuple, set)) and next_nodes:
                     continue
                 state_values = final_state.values if hasattr(final_state, "values") else {}
             except Exception:
@@ -410,7 +439,7 @@ async def stream_run(
 
             cleanup_run(run_id)
             logger.info("run.done run=%s user=%s", run_id, current_user["user_id"])
-            yield {
+            done_event = {
                 "data": json.dumps({
                     "type":  "done",
                     "state": {
@@ -420,10 +449,14 @@ async def stream_run(
                         "charts":           state_values.get("charts", []),
                         "trust_indicators": state_values.get("trust_indicators", {}),
                         "analysis_mode":    state_values.get("analysis_mode", ""),
+                        "power_analysis_result": state_values.get("power_analysis_result"),
                         "deck_data":        state_values.get("deck_data") or {},
                     },
                 }, cls=_JsonEncoder)
             }
+            if effective_last_id != last_id:
+                done_event["id"] = effective_last_id
+            yield done_event
             return
 
     return EventSourceResponse(event_generator())

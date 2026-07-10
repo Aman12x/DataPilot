@@ -113,7 +113,13 @@ class _FakeGraph:
         if run_id not in self._known_runs:
             raise Exception("run not found")
         state = MagicMock()
-        state.values = {"task": "test", "narrative_draft": "hello", "recommendation": "ship it"}
+        state.values = {
+            "task": "test",
+            "narrative_draft": "hello",
+            "recommendation": "ship it",
+            "analysis_mode": "power_analysis",
+            "power_analysis_result": {"required_n_per_arm": 123, "required_total_n": 246},
+        }
         if run_id in self._gate_run_ids:
             interrupt_obj = MagicMock()
             interrupt_obj.value = {"gate": "intent", "payload": {"question": "What analysis?"}}
@@ -136,12 +142,15 @@ class _FakeMemoryStore:
 
 @asynccontextmanager
 async def _test_lifespan(app):
-    from api.run_manager import set_redis_client
+    from api.run_manager import cancel_active_runs, set_redis_client
     set_redis_client(None)   # force in-memory mode
 
     app.state.graph        = _FakeGraph()
     app.state.memory_store = _FakeMemoryStore()
-    yield
+    try:
+        yield
+    finally:
+        await cancel_active_runs()
 
 
 # ── Build app under test ──────────────────────────────────────────────────────
@@ -299,6 +308,27 @@ class TestRunCreate:
                         headers={"Authorization": f"Bearer {access}"})
         assert r.status_code == 422
 
+    def test_power_analysis_mode_accepted(self, client):
+        access, _, _ = _login(client)
+        r = client.post("/runs",
+                        json={"task": "design an experiment", "analysis_mode": "power_analysis"},
+                        headers={"Authorization": f"Bearer {access}"})
+        assert r.status_code == 201
+
+    def test_invalid_db_backend_rejected(self, client):
+        access, _, _ = _login(client)
+        r = client.post("/runs",
+                        json={"task": "analyse", "db_backend": "sqlite"},
+                        headers={"Authorization": f"Bearer {access}"})
+        assert r.status_code == 422
+
+    def test_postgres_requires_connection_fields(self, client):
+        access, _, _ = _login(client)
+        r = client.post("/runs",
+                        json={"task": "analyse", "db_backend": "postgres"},
+                        headers={"Authorization": f"Bearer {access}"})
+        assert r.status_code == 422
+
     def test_invalid_pg_port(self, client):
         access, _, _ = _login(client)
         r = client.post("/runs",
@@ -312,7 +342,8 @@ class TestRunCreate:
         access, _, _ = _login(client)
         r = client.post("/runs",
                         json={"task": "analyse", "db_backend": "postgres",
-                              "pg_host": host, "pg_port": 5432},
+                              "pg_host": host, "pg_port": 5432,
+                              "pg_dbname": "analytics", "pg_user": "readonly"},
                         headers={"Authorization": f"Bearer {access}"})
         assert r.status_code == 400
 
@@ -513,6 +544,16 @@ class TestStreamRuns:
 
         events = _sse_events(client, f"/runs/{run_id}/stream?token={access}")
         assert any(e.get("type") == "done" for e in events)
+        done = next(e for e in events if e.get("type") == "done")
+        assert done["state"]["power_analysis_result"]["required_n_per_arm"] == 123
+
+    def test_stream_invalid_token_rejected(self, client):
+        access, _, _ = _login(client)
+        hdrs = {"Authorization": f"Bearer {access}"}
+        run_id = client.post("/runs", json={"task": "analyse"}, headers=hdrs).json()["run_id"]
+
+        r = client.get(f"/runs/{run_id}/stream?token=not.a.jwt")
+        assert r.status_code == 401
 
     def test_stream_gate_event(self, client, fake_mode):
         """SSE yields {'type':'gate','gate':'intent'} when graph hits an interrupt."""

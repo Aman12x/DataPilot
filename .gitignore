@@ -1,41 +1,47 @@
-# ── Secrets ───────────────────────────────────────────────────────────────────   
-  .env                                                                               
-                                                                                     
-  # ── Generated databases ───────────────────────────────────────────────────────   
-  data/dau_experiment.db                                                             
-  memory/datapilot_memory.db                                                         
-  memory/auth.db                                                                     
-                                                                                     
-  # ── Generated cache files ─────────────────────────────────────────────────────   
-  memory/schema_cache.json                                                           
-                                                                                     
-  # ── Python ────────────────────────────────────────────────────────────────────   
-  __pycache__/                                                                       
-  *.py[cod]                                                                          
-  *.pyo                                                     
-  *.pyd
-  .Python
+# Secrets
+.env
+*.env
 
-  # ── Virtual environments ──────────────────────────────────────────────────────   
-  venv/
-  .venv/                                                                             
-  env/                                                      
-                                                                                     
-  # ── Jupyter ───────────────────────────────────────────────────────────────────
-  .ipynb_checkpoints/
-  *.ipynb
+# Generated databases and local state
+data/dau_experiment.db
+memory/*.db
+memory/*.db-shm
+memory/*.db-wal
+memory/schema_cache.json
+tmp_uploads/
 
-  # ── OS ────────────────────────────────────────────────────────────────────────   
-  .DS_Store
-  Thumbs.db                                                                          
-                                                            
-  # ── Editor ────────────────────────────────────────────────────────────────────   
-  .vscode/
-  .idea/                                                                             
-  *.swp                                                                              
-  *.swo
-                                                                                     
-  # ── Build / dist ──────────────────────────────────────────────────────────────
-  dist/
-  build/
-  *.egg-info/
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+venv/
+.venv/
+env/
+
+# JavaScript / frontend
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+frontend/playwright-report/
+frontend/test-results/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.codex/
+.claude/
+*.swp
+*.swo

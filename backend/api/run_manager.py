@@ -30,6 +30,7 @@ REDIS_URL = os.getenv("REDIS_URL", "")
 # ── In-memory fallback ────────────────────────────────────────────────────────
 _queues:     dict[str, asyncio.Queue] = {}
 _run_owners: dict[str, str]           = {}
+_run_tasks:  dict[str, set[asyncio.Task]] = {}
 _run_errors: OrderedDict[str, str]    = OrderedDict()  # run_id → error (capped, survives cleanup)
 _RUN_ERRORS_MAX = 1000
 
@@ -117,9 +118,37 @@ async def read_result(run_id: str, last_id: str = "$") -> dict | None:
             return None
 
 
-def cleanup_run(run_id: str) -> None:
+def cleanup_run(run_id: str, *, remove_owner: bool = False) -> None:
     _queues.pop(run_id, None)
-    _run_owners.pop(run_id, None)
+    if remove_owner:
+        _run_owners.pop(run_id, None)
+
+
+def _track_task(run_id: str, task: asyncio.Task) -> None:
+    tasks = _run_tasks.setdefault(run_id, set())
+    tasks.add(task)
+
+    def _forget(done_task: asyncio.Task) -> None:
+        run_tasks = _run_tasks.get(run_id)
+        if run_tasks is None:
+            return
+        run_tasks.discard(done_task)
+        if not run_tasks:
+            _run_tasks.pop(run_id, None)
+
+    task.add_done_callback(_forget)
+
+
+async def cancel_active_runs() -> None:
+    """Cancel in-process graph tasks during shutdown/test teardown."""
+    tasks = [task for run_tasks in _run_tasks.values() for task in run_tasks if not task.done()]
+    if not tasks:
+        return
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+    _run_tasks.clear()
+    _queues.clear()
 
 
 def _cache_error(run_id: str, msg: str) -> None:
@@ -285,13 +314,13 @@ async def start_run(graph: Any, run_id: str, initial_state: dict, user_id: str) 
     await set_owner(run_id, user_id)
     if not _redis:
         _queues[run_id] = asyncio.Queue()
-    asyncio.create_task(_invoke(graph, initial_state, run_id))
+    _track_task(run_id, asyncio.create_task(_invoke(graph, initial_state, run_id)))
 
 
 async def resume_run(graph: Any, run_id: str, resume_value: Any) -> None:
     if not _redis and run_id not in _queues:
         _queues[run_id] = asyncio.Queue()
-    asyncio.create_task(_invoke(graph, Command(resume=resume_value), run_id))
+    _track_task(run_id, asyncio.create_task(_invoke(graph, Command(resume=resume_value), run_id)))
 
 
 _INVOKE_TIMEOUT = int(os.getenv("GRAPH_INVOKE_TIMEOUT", "600"))  # 10 min default

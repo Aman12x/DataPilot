@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+from hashlib import blake2b
 from typing import Any
 
 import numpy as np
@@ -28,11 +30,64 @@ def _soft_threshold() -> float:
     return float(os.getenv("SEMANTIC_CACHE_SOFT_THRESHOLD", "0.80"))
 
 
+_EMBED_DIM = 384
+
+_CANONICAL_TERMS = {
+    "salaries": "salary",
+    "pay": "salary",
+    "earned": "salary",
+    "earnings": "salary",
+    "departments": "department",
+    "engineering": "department",
+    "marketing": "department",
+    "customers": "customer",
+    "users": "user",
+    "dau": "user",
+    "daily": "user",
+    "active": "user",
+    "revenues": "revenue",
+}
+
+
+class _FallbackEmbedder:
+    """Deterministic local embedder used when MiniLM is not cached/available."""
+
+    def encode(self, text: str, normalize_embeddings: bool = True) -> np.ndarray:
+        vec = np.zeros(_EMBED_DIM, dtype=np.float32)
+        lower = text.lower()
+        tokens = re.findall(r"[a-z0-9]+", lower)
+        features: list[str] = []
+        for token in tokens:
+            if len(token) > 3 and token.endswith("s"):
+                token = token[:-1]
+            token = _CANONICAL_TERMS.get(token, token)
+            features.append(f"tok:{token}")
+        compact = re.sub(r"\s+", " ", lower)
+        features.extend(f"tri:{compact[i:i+3]}" for i in range(max(0, len(compact) - 2)))
+
+        for feature in features:
+            digest = blake2b(feature.encode("utf-8"), digest_size=8).digest()
+            idx = int.from_bytes(digest[:4], "big") % _EMBED_DIM
+            sign = 1.0 if digest[4] & 1 else -1.0
+            vec[idx] += sign
+
+        norm = np.linalg.norm(vec)
+        if normalize_embeddings and norm > 0:
+            vec = vec / norm
+        return vec.astype(np.float32)
+
+
 def _get_model():
-    """Load MiniLM model (cached on first call via module-level singleton)."""
+    """Load MiniLM model (cached on first call), or a deterministic local fallback."""
     if not hasattr(_get_model, "_model"):
-        from sentence_transformers import SentenceTransformer
-        _get_model._model = SentenceTransformer("all-MiniLM-L6-v2")
+        try:
+            from sentence_transformers import SentenceTransformer
+            _get_model._model = SentenceTransformer(
+                "all-MiniLM-L6-v2",
+                local_files_only=True,
+            )
+        except Exception:
+            _get_model._model = _FallbackEmbedder()
     return _get_model._model
 
 

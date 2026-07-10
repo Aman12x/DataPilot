@@ -15,7 +15,7 @@ export const API_BASE = import.meta.env.VITE_API_URL ?? "/api";
 
 const client = axios.create({ baseURL: API_BASE });
 
-// Attach access token to every request (skip for guest sessions).
+// Attach access token to every request.
 client.interceptors.request.use((config) => {
   const token = localStorage.getItem("access_token");
   if (token && token !== "guest") config.headers.Authorization = `Bearer ${token}`;

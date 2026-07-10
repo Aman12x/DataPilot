@@ -83,6 +83,7 @@ export function useSSE(runId: string | null, reconnectTrigger: number = 0) {
   // True once a gate event has been received on the *current* connection.
   // Suppresses the onerror that fires when server intentionally closes after a gate.
   const gateReceivedRef = useRef(false);
+  const lastEventIdRef = useRef<string>("");
 
   // Reset all state whenever the run changes (new run or start over).
   useEffect(() => {
@@ -90,6 +91,7 @@ export function useSSE(runId: string | null, reconnectTrigger: number = 0) {
     setDone(null);
     setError("");
     setSteps([]);
+    lastEventIdRef.current = "";
   }, [runId]);
 
   useEffect(() => {
@@ -102,9 +104,12 @@ export function useSSE(runId: string | null, reconnectTrigger: number = 0) {
       setError("Not authenticated. Please log in.");
       return;
     }
-    const es = new EventSource(`${API_BASE}/runs/${runId}/stream?token=${encodeURIComponent(token)}`);
+    const params = new URLSearchParams({ token });
+    if (lastEventIdRef.current) params.set("last_id", lastEventIdRef.current);
+    const es = new EventSource(`${API_BASE}/runs/${runId}/stream?${params.toString()}`);
 
     es.onmessage = (e) => {
+      if (e.lastEventId) lastEventIdRef.current = e.lastEventId;
       let msg: unknown;
       try {
         msg = JSON.parse(e.data);

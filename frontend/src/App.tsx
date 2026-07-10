@@ -8,7 +8,10 @@ import History from "./pages/History";
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const location = useLocation();
   const token = localStorage.getItem("access_token");
-  if (!token) return <Navigate to="/login" state={{ from: location }} replace />;
+  if (!token || token === "guest") {
+    if (token === "guest") localStorage.removeItem("access_token");
+    return <Navigate to="/login" state={{ from: location }} replace />;
+  }
   return <>{children}</>;
 }
 

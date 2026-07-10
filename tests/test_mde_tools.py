@@ -7,7 +7,10 @@ Ground truth from CLAUDE.md:
 """
 
 import pytest
+import pandas as pd
 
+from config.analysis_config import MetricConfig
+from agents.analyze.nodes import run_power_analysis_node
 from tools.mde_tools import compute_mde, compute_post_hoc_power, business_impact_statement
 
 
@@ -114,3 +117,38 @@ def test_compute_mde_no_post_hoc_power_without_effect():
         baseline_std=0.10,
     )
     assert result.post_hoc_power is None
+
+
+def test_run_power_analysis_uses_db_query(monkeypatch):
+    """Power-analysis node should use DBConnection.query and return structured output."""
+    metric_config = MetricConfig(
+        primary_metric="conversion_rate",
+        metric_source_col="converted",
+        covariate="sessions",
+        metric_direction="higher_is_better",
+        guardrail_metrics=["refund_rate"],
+        segment_cols=["device"],
+    )
+
+    class FakeDB:
+        def query(self, sql: str):
+            assert "AVG(CAST(converted AS FLOAT))" in sql
+            return pd.DataFrame([{
+                "baseline_mean": 0.20,
+                "baseline_std": 0.40,
+                "total_users": 10_000,
+                "total_days": 20,
+            }])
+
+    monkeypatch.setattr("agents.analyze.nodes._db_conn", lambda _state: FakeDB())
+    result = run_power_analysis_node({
+        "metric_config": metric_config,
+        "metric": "conversion_rate",
+        "power_mde_target_pct": 5.0,
+    })
+
+    pa = result["power_analysis_result"]
+    assert pa.required_n_per_arm > 0
+    assert pa.required_total_n == pa.required_n_per_arm * 2
+    assert pa.daily_traffic == 500.0
+    assert pa.guardrails_to_watch == ["refund_rate"]

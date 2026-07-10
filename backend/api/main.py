@@ -161,7 +161,7 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.warning("Could not pre-warm embedding model: %s", exc)
 
-    asyncio.create_task(_background_init())
+    _background_task = asyncio.create_task(_background_init())
 
     # ── Upload TTL sweeper ─────────────────────────────────────────────────────
     _UPLOAD_TTL_HOURS   = float(os.getenv("UPLOAD_TTL_HOURS", "24"))
@@ -193,7 +193,11 @@ async def lifespan(app: FastAPI):
     yield
 
     # ── Cleanup ───────────────────────────────────────────────────────────────
+    from .run_manager import cancel_active_runs
+    await cancel_active_runs()
     _sweep_task.cancel()
+    _background_task.cancel()
+    await asyncio.gather(_sweep_task, _background_task, return_exceptions=True)
     if redis_client:
         await redis_client.aclose()
     logger.info("DataPilot backend shut down")

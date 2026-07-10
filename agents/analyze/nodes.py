@@ -111,7 +111,7 @@ def _anthropic_client() -> anthropic.Anthropic:
 
 
 def _model() -> str:
-    return os.getenv("MODEL", "claude-sonnet-4-20250514")
+    return os.getenv("MODEL") or _fast_model()
 
 
 def _fast_model() -> str:
@@ -1853,7 +1853,7 @@ SELECT AVG(CAST({mc.metric_source_col} AS FLOAT))    AS baseline_mean,
        COUNT(DISTINCT {mc.date_col})                  AS total_days
 FROM {mc.events_table}
 """.strip()
-        stats_df = conn.execute(stats_sql)
+        stats_df = conn.query(stats_sql)
     except Exception as exc:
         logger.warning("run_power_analysis: DB stats query failed: %s", exc)
         return {}

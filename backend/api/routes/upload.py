@@ -60,12 +60,20 @@ def _normalise_cols(df: pd.DataFrame) -> pd.DataFrame:
         c = re.sub(r"[^\w]", "_", c)   # parens, spaces, dots → _
         c = re.sub(r"_+", "_", c).strip("_")  # collapse runs, trim edges
         return c or "col"
-    df.columns = [_clean(c) for c in df.columns]
+    seen: dict[str, int] = {}
+    cols: list[str] = []
+    for raw in df.columns:
+        base = _clean(str(raw))
+        count = seen.get(base, 0) + 1
+        seen[base] = count
+        cols.append(base if count == 1 else f"{base}_{count}")
+    df.columns = cols
     return df
 
 
 def _looks_like_date_col(col_name: str) -> bool:
-    return any(k in col_name for k in _DATE_KEYWORDS)
+    tokens = {t for t in re.split(r"_+", col_name.lower()) if t}
+    return any(k in tokens for k in _DATE_KEYWORDS)
 
 
 def _infer_tables(df: pd.DataFrame) -> dict[str, pd.DataFrame]:

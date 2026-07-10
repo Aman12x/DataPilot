@@ -12,6 +12,8 @@ langgraph-checkpoint-sqlite==3.0.3
 openpyxl>=3.1
 # Redis (optional — set REDIS_URL to activate multi-pod run state + rate limiting)
 redis>=5.0
+# PostgreSQL external-database support and integration tests
+psycopg2-binary>=2.9
 # Optional — set DATABASE_URL to activate:
 # langgraph-checkpoint-postgres
 

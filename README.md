@@ -152,7 +152,7 @@ Treatment/control comparison with covariate adjustment, subgroup HTE, guardrail 
 | Frontend | React 18 + TypeScript + Vite |
 | Backend | FastAPI + uvicorn |
 | Agent graph | LangGraph 1.1 (SqliteSaver / PostgresSaver) |
-| LLM | Claude Sonnet (claude-sonnet-4-20250514) |
+| LLM | Anthropic Claude via `MODEL`, defaulting to `FAST_MODEL` (`claude-haiku-4-5-20251001`) |
 | Query engine | DuckDB (upload/local) · PostgreSQL (external) |
 | Auth | JWT HS256 + bcrypt + refresh token revocation |
 | Semantic cache | MiniLM (all-MiniLM-L6-v2) + SQLite |
