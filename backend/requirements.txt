@@ -74,7 +74,7 @@ orjson==3.11.7
 ormsgpack==1.12.2
 packaging==25.0
 pandas==2.3.3
-pillow==12.1.1
+pillow==12.3.0
 pluggy==1.6.0
 prophet==1.3.0
 protobuf==6.33.6
