@@ -1,27 +1,46 @@
 # DataPilot — convenience targets
-# Always use `python -m` to stay inside the active venv.
+# Uses python3 by default; override with PYTHON=python make eval
 
-.PHONY: app eval test data clean
+PYTHON ?= python3
+
+.PHONY: app eval eval-all eval-full eval-baseline test data clean e2e
 
 ## Start the Streamlit UI
 app:
-	python -m streamlit run ui/app.py
+	$(PYTHON) -m streamlit run ui/app.py
 
-## Run the offline eval harness (no API key needed for 9/11 criteria)
+## Run all fast offline evals (no API key)
 eval:
-	python evals/analyze_eval.py --skip-narrative
+	$(PYTHON) data/generate_data.py
+	$(PYTHON) evals/analyze_eval.py --skip-narrative
+	$(PYTHON) evals/generalisability_eval.py
+	$(PYTHON) evals/transactions_eval.py
+	$(PYTHON) evals/fixture_eval.py
+
+## Run all offline evals + baseline regression gate
+eval-all:
+	$(PYTHON) evals/compare_baseline.py
+
+## Update committed baseline scores (run after intentional eval improvements)
+eval-baseline:
+	$(PYTHON) evals/compare_baseline.py --update
 
 ## Run the offline eval with LLM narrative (requires ANTHROPIC_API_KEY)
 eval-full:
-	python evals/analyze_eval.py
+	$(PYTHON) data/generate_data.py
+	$(PYTHON) evals/analyze_eval.py
 
 ## Run the full unit test suite
 test:
-	python -m pytest tests/ -v
+	$(PYTHON) -m pytest tests/ -v
+
+## Run Playwright E2E (requires backend deps + frontend npm ci)
+e2e:
+	cd frontend && npm run test:e2e
 
 ## Regenerate the DuckDB dataset from scratch
 data:
-	python data/generate_data.py
+	$(PYTHON) data/generate_data.py
 
 ## Delete generated files so the next run starts clean
 clean:

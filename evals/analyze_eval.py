@@ -420,18 +420,25 @@ def main() -> int:
     args = parser.parse_args()
 
     if not os.path.exists(args.db):
-        print(f"ERROR: DuckDB not found at '{args.db}'.")
-        print("Run:  python data/generate_data.py")
+        msg = f"ERROR: DuckDB not found at '{args.db}'.\nRun:  python data/generate_data.py"
+        if args.json_out:
+            print(msg, file=sys.stderr)
+        else:
+            print(msg)
         return 2
 
-    print(f"Running eval against: {args.db}")
-    print()
+    if not args.json_out:
+        print(f"Running eval against: {args.db}")
+        print()
 
     try:
         state = _run_tools(args.db, skip_narrative=args.skip_narrative)
     except Exception:
-        print("ERROR during tool execution:")
-        traceback.print_exc()
+        if args.json_out:
+            traceback.print_exc(file=sys.stderr)
+        else:
+            print("ERROR during tool execution:")
+            traceback.print_exc()
         return 2
 
     result = score(state, skip_narrative=args.skip_narrative)
@@ -462,7 +469,11 @@ def main() -> int:
         eval_score=result["score"],
     )
     update_eval_score(run_id, result["score"])
-    print(f"\nEval run logged to memory store (run_id: {run_id}, score: {result['score']:.2f})")
+    log_msg = f"\nEval run logged to memory store (run_id: {run_id}, score: {result['score']:.2f})"
+    if args.json_out:
+        print(log_msg, file=sys.stderr)
+    else:
+        print(log_msg)
 
     return 0 if result["score"] >= 0.80 else 1
 

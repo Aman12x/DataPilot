@@ -19,19 +19,17 @@ import pandas as pd
 # DuckDB already enforces read_only=True at the driver level; this adds a
 # defence-in-depth check that also covers PostgreSQL connections.
 _MUTATION_RE = re.compile(
-    r"\b(INSERT|UPDATE|DELETE|DROP|TRUNCATE|ALTER|CREATE|REPLACE|MERGE)\b",
+    r"\b(INSERT|UPDATE|DELETE|DROP|TRUNCATE|ALTER|CREATE|REPLACE|MERGE|COPY|GRANT|REVOKE|CALL|DO|ATTACH|DETACH)\b",
     re.IGNORECASE,
 )
 
+# DuckDB table functions that can read arbitrary host files.
+_FILE_READ_RE = re.compile(
+    r"\b(read_csv|read_csv_auto|read_parquet|read_json|read_json_auto|glob|read_blob|read_text)\s*\(",
+    re.IGNORECASE,
+)
 
-def _quote_ident(name: str) -> str:
-    """Quote a SQL identifier for DuckDB/Postgres."""
-    return '"' + name.replace('"', '""') + '"'
-
-
-def _quote_literal(value: str) -> str:
-    """Quote a string literal for metadata helpers that do not support params."""
-    return "'" + value.replace("'", "''") + "'"
+_MAX_SQL_LIMIT = int(os.getenv("SQL_MAX_ROWS", "50000"))
 
 
 def _strip_leading_sql_comments(sql: str) -> str:
@@ -49,6 +47,46 @@ def _strip_leading_sql_comments(sql: str) -> str:
             rest = rest[end + 2:].lstrip()
             continue
         return rest
+
+
+def validate_sql(sql: str) -> None:
+    """
+    Defence-in-depth checks before executing analyst/LLM SQL.
+    Raises ValueError when the statement looks unsafe or out of scope.
+    """
+    stripped = sql.strip()
+    if not stripped:
+        raise ValueError("Empty SQL statement")
+
+    if ";" in stripped.rstrip(";"):
+        raise ValueError("Multi-statement SQL is not permitted")
+
+    first_sql = _strip_leading_sql_comments(stripped)
+    upper = first_sql.upper()
+    if not (upper.startswith("SELECT") or upper.startswith("WITH")):
+        raise ValueError("Only SELECT/WITH queries are permitted")
+
+    if _MUTATION_RE.search(stripped):
+        raise ValueError("Mutation or privileged SQL is not permitted")
+
+    if _FILE_READ_RE.search(stripped):
+        raise ValueError("File-read SQL functions are not permitted")
+
+
+def _ensure_limit(sql: str) -> str:
+    """Append LIMIT when missing (after validate_sql would have rejected — safety net)."""
+    if re.search(r"\bLIMIT\s+\d+", sql, re.IGNORECASE):
+        return sql
+    return f"{sql.rstrip()} LIMIT {_MAX_SQL_LIMIT}"
+
+
+_SAFE_IDENT_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+
+def _quote_ident(name: str) -> str:
+    if not _SAFE_IDENT_RE.match(name):
+        raise ValueError(f"Unsafe SQL identifier: {name!r}")
+    return f'"{name}"'
 
 
 # Schema comments: human-readable column descriptions injected into inspect_schema() output.
@@ -133,14 +171,8 @@ class DBConnection:
 
     def query(self, sql: str) -> pd.DataFrame:
         """Execute SQL and return a DataFrame. Only SELECT is permitted."""
-        first_sql = _strip_leading_sql_comments(sql)
-        if not first_sql.upper().startswith(("SELECT", "WITH")):
-            raise ValueError("Only SELECT/WITH queries are permitted.")
-        if _MUTATION_RE.search(sql):
-            raise ValueError(
-                "Mutation SQL is not permitted — only SELECT statements are allowed. "
-                f"Blocked: {sql[:120]!r}"
-            )
+        validate_sql(sql)
+        sql = _ensure_limit(sql)
         if self.backend == "duckdb":
             return self._query_duckdb(sql)
         return self._query_postgres(sql)
@@ -152,7 +184,7 @@ class DBConnection:
         finally:
             con.close()
 
-    def _query_postgres(self, sql: str, params: tuple = ()) -> pd.DataFrame:
+    def _query_postgres(self, sql: str) -> pd.DataFrame:
         try:
             import psycopg2
         except ImportError as e:
@@ -167,14 +199,9 @@ class DBConnection:
             user=kw["user"],
             password=kw["password"],
             sslmode=kw.get("sslmode", "prefer"),
-            options=kw.get(
-                "options",
-                "-c default_transaction_read_only=on -c statement_timeout=30000",
-            ),
         )
         try:
-            conn.set_session(readonly=True)
-            return pd.read_sql(sql, conn, params=params or None)
+            return pd.read_sql(sql, conn)
         finally:
             conn.close()
 
@@ -257,7 +284,7 @@ class DBConnection:
     def _get_columns_duckdb(self, table: str) -> list[tuple[str, str]]:
         con = duckdb.connect(self._path, read_only=True)
         try:
-            result = con.execute(f"PRAGMA table_info({_quote_literal(table)})").fetchall()
+            result = con.execute(f"PRAGMA table_info('{table}')").fetchall()
             # PRAGMA columns: cid, name, type, notnull, dflt_value, pk
             return [(row[1], row[2]) for row in result]
         finally:
@@ -284,19 +311,18 @@ class DBConnection:
             con = duckdb.connect(self._path, read_only=True)
             try:
                 cols = self._get_columns_duckdb(table)
-                table_ident = _quote_ident(table)
-                n_rows = con.execute(f"SELECT COUNT(*) FROM {table_ident}").fetchone()[0]  # type: ignore[index]
+                n_rows = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]  # type: ignore[index]
                 col_profiles: dict[str, dict] = {}
                 for col_name, _ in cols:
                     try:
                         n_distinct = con.execute(
-                            f"SELECT COUNT(DISTINCT {_quote_ident(col_name)}) FROM {table_ident}"
+                            f"SELECT COUNT(DISTINCT {col_name}) FROM {table}"
                         ).fetchone()[0]  # type: ignore[index]
                         samples: list[str] = []
                         if n_distinct <= self._PROFILE_SAMPLE_CARDINALITY:
                             rows = con.execute(
-                                f"SELECT DISTINCT CAST({_quote_ident(col_name)} AS VARCHAR) "
-                                f"FROM {table_ident} WHERE {_quote_ident(col_name)} IS NOT NULL "
+                                f"SELECT DISTINCT CAST({col_name} AS VARCHAR) "
+                                f"FROM {table} WHERE {col_name} IS NOT NULL "
                                 f"ORDER BY 1 LIMIT {self._PROFILE_MAX_SAMPLES}"
                             ).fetchall()
                             samples = [r[0] for r in rows if r[0] is not None]
@@ -317,11 +343,12 @@ class DBConnection:
         return df["table_name"].tolist()
 
     def _get_columns_postgres(self, table: str) -> list[tuple[str, str]]:
+        if not _SAFE_IDENT_RE.match(table):
+            raise ValueError(f"Unsafe table name: {table!r}")
         df = self._query_postgres(
             "SELECT column_name, data_type FROM information_schema.columns "
-            "WHERE table_schema = 'public' AND table_name = %s "
-            "ORDER BY ordinal_position",
-            (table,),
+            f"WHERE table_schema = 'public' AND table_name = '{table}' "
+            "ORDER BY ordinal_position"
         )
         return list(zip(df["column_name"], df["data_type"]))
 
@@ -344,11 +371,12 @@ class DBConnection:
         when the column looks high-cardinality.
         """
         try:
-            # Fetch one more than the limit so we know when to give up
+            safe_table = _quote_ident(table)
+            safe_col = _quote_ident(col)
             df = self._query_postgres(
-                f"SELECT DISTINCT {_quote_ident(col)}::TEXT AS v "
-                f"FROM {_quote_ident(table)} "
-                f"WHERE {_quote_ident(col)} IS NOT NULL "
+                f"SELECT DISTINCT {safe_col}::TEXT AS v "
+                f"FROM {safe_table} "
+                f"WHERE {safe_col} IS NOT NULL "
                 f"ORDER BY 1 LIMIT {max_cardinality + 1}"
             )
             vals = df["v"].dropna().astype(str).tolist()

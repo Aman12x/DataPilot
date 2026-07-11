@@ -128,13 +128,16 @@ def check_cache(
     task: str,
     node_name: str,
     dataset_fingerprint: str = "",
+    user_id: str | None = None,
     path: str | None = None,
 ) -> dict[str, Any] | None:
     """
-    Look up the semantic cache for a (task, node_name, dataset_fingerprint) tuple.
+    Look up the semantic cache for a (task, node_name, dataset_fingerprint, user_id) tuple.
 
     dataset_fingerprint scopes the cache to the specific dataset being analysed
     (e.g. the upload_id path for CSV uploads, or empty string for the demo DB).
+    user_id scopes the cache per analyst so one user's results are never served
+    to another user, even on the shared demo DB.
     This prevents cross-dataset cache poisoning where an identical task string
     run against different data returns a cached result from the wrong dataset.
 
@@ -148,20 +151,30 @@ def check_cache(
     init_db(path)
     _ensure_cache_columns(path)
 
+    if not user_id:
+        return None
+
     query_vec = embed(task)
+
+    params: list[Any] = [node_name, dataset_fingerprint]
+    user_clause = ""
+    if user_id:
+        user_clause = "AND user_id = ?"
+        params.append(user_id)
 
     with _connect(path) as con:
         rows = con.execute(
-            """
+            f"""
             SELECT task_embedding, cached_result
             FROM   runs
-            WHERE  cache_node_name    = ?
+            WHERE  cache_node_name     = ?
               AND  dataset_fingerprint = ?
-              AND  task_embedding     IS NOT NULL
-              AND  cached_result      IS NOT NULL
+              {user_clause}
+              AND  task_embedding      IS NOT NULL
+              AND  cached_result       IS NOT NULL
             ORDER  BY timestamp DESC
             """,
-            (node_name, dataset_fingerprint),
+            tuple(params),
         ).fetchall()
 
     best_sim    = 0.0

@@ -140,7 +140,7 @@ def test_run_power_analysis_uses_db_query(monkeypatch):
                 "total_days": 20,
             }])
 
-    monkeypatch.setattr("agents.analyze.nodes._db_conn", lambda _state: FakeDB())
+    monkeypatch.setattr("agents.analyze.nodes_analysis._db_conn", lambda _state: FakeDB())
     result = run_power_analysis_node({
         "metric_config": metric_config,
         "metric": "conversion_rate",

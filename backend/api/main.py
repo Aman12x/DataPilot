@@ -20,6 +20,9 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
 
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if _PROJECT_ROOT not in sys.path:
@@ -59,7 +62,7 @@ if _SENTRY_DSN:
 def _make_sqlite_checkpointer():
     import sqlite3
     from langgraph.checkpoint.sqlite import SqliteSaver
-    from agents.analyze.graph import _PickleSerde
+    from agents.analyze.checkpoint_serde import SafeCheckpointSerde
 
     db_path = os.getenv("GRAPH_DB_PATH", "memory/graph.db")
     os.makedirs(os.path.dirname(db_path) if os.path.dirname(db_path) else ".", exist_ok=True)
@@ -69,7 +72,7 @@ def _make_sqlite_checkpointer():
     conn.execute("PRAGMA busy_timeout=5000")
     conn.commit()
     logger.info("Using SQLite checkpointer at %s (WAL mode)", db_path)
-    return SqliteSaver(conn, serde=_PickleSerde())
+    return SqliteSaver(conn, serde=SafeCheckpointSerde())
 
 
 async def _make_postgres_checkpointer(database_url: str):
@@ -205,14 +208,46 @@ async def lifespan(app: FastAPI):
 
 # ── App ───────────────────────────────────────────────────────────────────────
 
+_ENV = os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("ENV", "development")
+_IS_PRODUCTION = _ENV.lower() in ("production", "prod")
+
 app = FastAPI(title="DataPilot API", version="1.0.0", lifespan=lifespan)
 
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next) -> Response:
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        if _IS_PRODUCTION:
+            response.headers.setdefault(
+                "Strict-Transport-Security",
+                "max-age=31536000; includeSubDomains",
+            )
+        return response
+
+
+app.add_middleware(SecurityHeadersMiddleware)
+
 # CORS: in prod set CORS_ORIGINS=https://your-frontend.railway.app (comma-separated).
-# Without it the API is open to all origins — fine for dev, not for prod.
-_cors_raw = os.getenv("CORS_ORIGINS", "")
-_origins  = [o.strip() for o in _cors_raw.split(",") if o.strip()]
+# Falls back to APP_URL (frontend public URL) when CORS_ORIGINS is unset.
+_cors_raw = os.getenv("CORS_ORIGINS", "").strip()
+if not _cors_raw:
+    _app_url = os.getenv("APP_URL", "").strip()
+    if _app_url:
+        _cors_raw = _app_url
+_origins = [o.strip().rstrip("/") for o in _cors_raw.split(",") if o.strip()]
 _wildcard = not _origins
 if _wildcard:
+    if _IS_PRODUCTION:
+        raise RuntimeError(
+            "CORS_ORIGINS must be set in production. "
+            "On Railway, add to the backend service: "
+            "CORS_ORIGINS=https://<your-frontend>.up.railway.app "
+            "(or set APP_URL to the same frontend URL)."
+        )
     logger.warning("CORS_ORIGINS not set — all origins allowed. Set in production.")
 
 app.add_middleware(
@@ -232,8 +267,3 @@ app.include_router(auth_router)
 app.include_router(runs_router)
 app.include_router(upload_router)
 app.include_router(samples_router)
-
-
-@app.get("/health")
-def health():
-    return {"status": "ok"}

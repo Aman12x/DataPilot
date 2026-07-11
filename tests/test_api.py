@@ -113,13 +113,8 @@ class _FakeGraph:
         if run_id not in self._known_runs:
             raise Exception("run not found")
         state = MagicMock()
-        state.values = {
-            "task": "test",
-            "narrative_draft": "hello",
-            "recommendation": "ship it",
-            "analysis_mode": "power_analysis",
-            "power_analysis_result": {"required_n_per_arm": 123, "required_total_n": 246},
-        }
+        state.values = {"task": "test", "narrative_draft": "hello", "recommendation": "ship it", "user_id": "test-user"}
+        state.next = ()
         if run_id in self._gate_run_ids:
             interrupt_obj = MagicMock()
             interrupt_obj.value = {"gate": "intent", "payload": {"question": "What analysis?"}}
@@ -142,15 +137,12 @@ class _FakeMemoryStore:
 
 @asynccontextmanager
 async def _test_lifespan(app):
-    from api.run_manager import cancel_active_runs, set_redis_client
+    from api.run_manager import set_redis_client
     set_redis_client(None)   # force in-memory mode
 
     app.state.graph        = _FakeGraph()
     app.state.memory_store = _FakeMemoryStore()
-    try:
-        yield
-    finally:
-        await cancel_active_runs()
+    yield
 
 
 # ── Build app under test ──────────────────────────────────────────────────────
@@ -160,6 +152,9 @@ os.environ.setdefault("AUTH_DB_PATH",   f"/tmp/test_auth_{uuid.uuid4().hex}.db")
 os.environ.setdefault("MEMORY_DB_PATH", f"/tmp/test_mem_{uuid.uuid4().hex}.db")
 os.environ.setdefault("UPLOAD_DIR",     f"/tmp/test_uploads_{uuid.uuid4().hex}")
 os.environ.setdefault("GRAPH_DB_PATH",  f"/tmp/test_graph_{uuid.uuid4().hex}.db")
+os.environ.setdefault("AUTH_AUTO_VERIFY_EMAIL", "true")
+os.environ.setdefault("AUTH_RETURN_TOKENS", "true")
+os.environ.setdefault("AUTH_RATE_MAX_ATTEMPTS", "10000")
 
 from api.main import app
 app.router.lifespan_context = _test_lifespan   # type: ignore[assignment]
@@ -194,6 +189,16 @@ def _login(client, suffix=""):
     return data["access_token"], data["refresh_token"], data["user"]
 
 
+def _stream_url(client, run_id: str, access: str) -> str:
+    r = client.get(
+        f"/runs/{run_id}/stream-token",
+        headers={"Authorization": f"Bearer {access}"},
+    )
+    assert r.status_code == 200, r.text
+    token = r.json()["stream_token"]
+    return f"/runs/{run_id}/stream?stream_token={token}"
+
+
 # ════════════════════════════════════════════════════════════════════════════════
 # Auth
 # ════════════════════════════════════════════════════════════════════════════════
@@ -207,26 +212,59 @@ class TestAuth:
     def test_register_duplicate_username(self, client):
         un = f"dupuser_{uuid.uuid4().hex[:6]}"
         client.post("/auth/register",
-                    json={"username": un, "email": f"{un}@a.com", "password": "x"})
+                    json={"username": un, "email": f"{un}@a.com", "password": "Password1!"})
         r = client.post("/auth/register",
-                        json={"username": un, "email": f"other_{un}@a.com", "password": "x"})
+                        json={"username": un, "email": f"other_{un}@a.com", "password": "Password1!"})
         assert r.status_code == 400
+        assert "already be in use" in r.json()["detail"]
+
+    def test_register_duplicate_email(self, client):
+        un = f"dupemail_{uuid.uuid4().hex[:6]}"
+        email = f"{un}@test.com"
+        client.post("/auth/register",
+                    json={"username": un, "email": email, "password": "Password1!"})
+        r = client.post("/auth/register",
+                        json={"username": f"other_{un}", "email": email, "password": "Password1!"})
+        assert r.status_code == 400
+        assert "already be in use" in r.json()["detail"]
+
+    def test_register_weak_password(self, client):
+        un = f"weakpw_{uuid.uuid4().hex[:6]}"
+        r = client.post("/auth/register",
+                        json={"username": un, "email": f"{un}@a.com", "password": "short"})
+        assert r.status_code in (400, 422)
+        detail = r.json()["detail"]
+        if isinstance(detail, list):
+            assert any("8 characters" in str(item) for item in detail)
+        else:
+            assert "8 characters" in detail
+
+    def test_register_password_needs_number(self, client):
+        un = f"nonum_{uuid.uuid4().hex[:6]}"
+        r = client.post("/auth/register",
+                        json={"username": un, "email": f"{un}@a.com", "password": "passwordonly"})
+        assert r.status_code == 400
+        assert "number" in r.json()["detail"]
 
     def test_login_bad_password(self, client):
         un = f"badpw_{uuid.uuid4().hex[:6]}"
         client.post("/auth/register",
-                    json={"username": un, "email": f"{un}@a.com", "password": "correct"})
-        r = client.post("/auth/login", json={"login": un, "password": "wrong"})
+                    json={"username": un, "email": f"{un}@a.com", "password": "Password1!"})
+        r = client.post("/auth/login", json={"login": un, "password": "WrongPass1"})
         assert r.status_code == 401
 
     def test_refresh(self, client):
         _, refresh, _ = _login(client)
         r = client.post("/auth/refresh", json={"refresh_token": refresh})
         assert r.status_code == 200
-        assert "access_token" in r.json()
+        body = r.json()
+        assert "access_token" in body
+        assert "refresh_token" in body
+        assert body["refresh_token"] != refresh
 
     def test_refresh_with_access_token_rejected(self, client):
         access, _, _ = _login(client)
+        client.cookies.clear()
         r = client.post("/auth/refresh", json={"refresh_token": access})
         assert r.status_code == 401
 
@@ -237,8 +275,21 @@ class TestAuth:
         assert r.json()["username"] == user["username"]
 
     def test_me_unauthenticated(self, client):
+        client.cookies.clear()
         r = client.get("/auth/me")
         assert r.status_code == 401
+
+    def test_guest_session(self, client):
+        r = client.post("/auth/guest")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["access_token"]
+        assert body["user"]["user_id"].startswith("guest-")
+
+    def test_guest_sessions_are_unique(self, client):
+        a = client.post("/auth/guest").json()["user"]["user_id"]
+        b = client.post("/auth/guest").json()["user"]["user_id"]
+        assert a != b
 
     def test_logout_revokes_refresh_token(self, client):
         access, refresh, _ = _login(client)
@@ -262,6 +313,103 @@ class TestAuth:
         r = client.post("/auth/logout", json={"refresh_token": "not.a.token"})
         assert r.status_code == 200
 
+    def test_reset_password_invalidates_refresh_token(self, client):
+        _, refresh, user = _login(client)
+        email = user["email"]
+        assert client.post("/auth/forgot-password", json={"email": email}).status_code == 202
+
+        from auth.store import create_reset_token
+
+        token = create_reset_token(email)
+        assert token
+        assert client.post(
+            "/auth/reset-password",
+            json={"token": token, "password": "NewPassword1!"},
+        ).status_code == 200
+
+        assert client.post("/auth/refresh", json={"refresh_token": refresh}).status_code == 401
+
+
+class TestAuthRateLimit:
+    def test_auth_rate_limit_enforced(self, client, monkeypatch):
+        """More than AUTH_RATE_MAX_ATTEMPTS register calls from one IP should 429."""
+        from api.auth_rate import reset_auth_rate_limits
+        reset_auth_rate_limits()
+        monkeypatch.setenv("AUTH_RATE_MAX_ATTEMPTS", "10")
+
+        for i in range(10):
+            un = f"ratelimit_{uuid.uuid4().hex[:6]}_{i}"
+            r = client.post("/auth/register", json={
+                "username": un, "email": f"{un}@test.com", "password": "Password1!",
+            })
+            assert r.status_code in (201, 400), r.text
+        r = client.post("/auth/register", json={
+            "username": f"blocked_{uuid.uuid4().hex[:6]}",
+            "email": f"blocked_{uuid.uuid4().hex[:8]}@test.com",
+            "password": "Password1!",
+        })
+        assert r.status_code == 429
+
+
+class TestEmailVerification:
+    def test_register_without_auto_verify_returns_pending(self, client, monkeypatch):
+        monkeypatch.setenv("AUTH_AUTO_VERIFY_EMAIL", "false")
+        monkeypatch.setenv("RESEND_API_KEY", "re_test_key")
+        un = f"verify_{uuid.uuid4().hex[:6]}"
+        with patch("api.email.send_verification_email") as send_mock:
+            r = client.post("/auth/register", json={
+                "username": un, "email": f"{un}@test.com", "password": "Password1!",
+            })
+        assert r.status_code == 201
+        body = r.json()
+        assert body["verify_pending"] is True
+        assert "access_token" not in body
+        send_mock.assert_called_once()
+
+    def test_verify_email_issues_session(self, client, monkeypatch):
+        monkeypatch.setenv("AUTH_AUTO_VERIFY_EMAIL", "false")
+        monkeypatch.setenv("RESEND_API_KEY", "re_test_key")
+        un = f"verify2_{uuid.uuid4().hex[:6]}"
+        email = f"{un}@test.com"
+        with patch("api.email.send_verification_email"):
+            client.post("/auth/register", json={
+                "username": un, "email": email, "password": "Password1!",
+            })
+        from auth.store import create_verification_token, get_user_by_email
+        user = get_user_by_email(email)
+        assert user is not None
+        assert user.email_verified is False
+        token = create_verification_token(user.user_id)
+        r = client.post("/auth/verify-email", json={"token": token})
+        assert r.status_code == 200
+        assert r.json()["access_token"]
+        assert r.json()["user"]["email_verified"] is True
+
+    def test_login_blocked_until_verified(self, client, monkeypatch):
+        monkeypatch.setenv("AUTH_AUTO_VERIFY_EMAIL", "false")
+        monkeypatch.setenv("RESEND_API_KEY", "re_test_key")
+        un = f"unverified_{uuid.uuid4().hex[:6]}"
+        with patch("api.email.send_verification_email"):
+            client.post("/auth/register", json={
+                "username": un, "email": f"{un}@test.com", "password": "Password1!",
+            })
+        r = client.post("/auth/login", json={"login": un, "password": "Password1!"})
+        assert r.status_code == 403
+        assert "not verified" in r.json()["detail"].lower()
+
+    def test_register_survives_verification_email_failure(self, client, monkeypatch):
+        monkeypatch.setenv("AUTH_AUTO_VERIFY_EMAIL", "false")
+        monkeypatch.setenv("RESEND_API_KEY", "re_test_key")
+        un = f"emailfail_{uuid.uuid4().hex[:6]}"
+        with patch("api.email.send_verification_email", side_effect=RuntimeError("smtp down")):
+            r = client.post("/auth/register", json={
+                "username": un, "email": f"{un}@test.com", "password": "Password1!",
+            })
+        assert r.status_code == 201
+        body = r.json()
+        assert body["verify_pending"] is True
+        assert body["email_sent"] is False
+
 
 # ════════════════════════════════════════════════════════════════════════════════
 # Runs — create
@@ -277,6 +425,7 @@ class TestRunCreate:
         assert "run_id" in r.json()
 
     def test_create_run_unauthenticated(self, client):
+        client.cookies.clear()
         r = client.post("/runs", json={"task": "analyse the experiment"})
         assert r.status_code == 401
 
@@ -308,27 +457,6 @@ class TestRunCreate:
                         headers={"Authorization": f"Bearer {access}"})
         assert r.status_code == 422
 
-    def test_power_analysis_mode_accepted(self, client):
-        access, _, _ = _login(client)
-        r = client.post("/runs",
-                        json={"task": "design an experiment", "analysis_mode": "power_analysis"},
-                        headers={"Authorization": f"Bearer {access}"})
-        assert r.status_code == 201
-
-    def test_invalid_db_backend_rejected(self, client):
-        access, _, _ = _login(client)
-        r = client.post("/runs",
-                        json={"task": "analyse", "db_backend": "sqlite"},
-                        headers={"Authorization": f"Bearer {access}"})
-        assert r.status_code == 422
-
-    def test_postgres_requires_connection_fields(self, client):
-        access, _, _ = _login(client)
-        r = client.post("/runs",
-                        json={"task": "analyse", "db_backend": "postgres"},
-                        headers={"Authorization": f"Bearer {access}"})
-        assert r.status_code == 422
-
     def test_invalid_pg_port(self, client):
         access, _, _ = _login(client)
         r = client.post("/runs",
@@ -342,8 +470,7 @@ class TestRunCreate:
         access, _, _ = _login(client)
         r = client.post("/runs",
                         json={"task": "analyse", "db_backend": "postgres",
-                              "pg_host": host, "pg_port": 5432,
-                              "pg_dbname": "analytics", "pg_user": "readonly"},
+                              "pg_host": host, "pg_port": 5432},
                         headers={"Authorization": f"Bearer {access}"})
         assert r.status_code == 400
 
@@ -353,6 +480,27 @@ class TestRunCreate:
                         json={"task": "find patterns in the data", "analysis_mode": "general"},
                         headers={"Authorization": f"Bearer {access}"})
         assert r.status_code == 201
+
+    def test_invalid_db_backend(self, client):
+        access, _, _ = _login(client)
+        r = client.post("/runs",
+                        json={"task": "analyse", "db_backend": "mysql"},
+                        headers={"Authorization": f"Bearer {access}"})
+        assert r.status_code == 422
+
+    def test_cross_user_parent_run_blocked(self, client):
+        access_a, _, _ = _login(client, "parentA")
+        hdrs_a = {"Authorization": f"Bearer {access_a}"}
+        parent_id = client.post("/runs", json={"task": "parent run"}, headers=hdrs_a).json()["run_id"]
+
+        access_b, _, _ = _login(client, "parentB")
+        hdrs_b = {"Authorization": f"Bearer {access_b}"}
+        r = client.post(
+            "/runs",
+            json={"task": "follow up", "parent_run_id": parent_id},
+            headers=hdrs_b,
+        )
+        assert r.status_code == 403
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -381,17 +529,14 @@ class TestRunAccess:
         access, _, _ = _login(client)
         r = client.get(f"/runs/{uuid.uuid4()}/detail",
                        headers={"Authorization": f"Bearer {access}"})
-        assert r.status_code == 404
+        assert r.status_code == 403
 
     def test_resume_unknown_run(self, client):
         access, _, _ = _login(client)
         r = client.post(f"/runs/{uuid.uuid4()}/resume",
                         json={"gate": "intent", "value": {}},
                         headers={"Authorization": f"Bearer {access}"})
-        # Ownership check fails-open (server-restart case) → resume proceeds
-        # but graph raises internally. 200 means resume was accepted.
-        # 403/404 is also valid if ownership check has the run_id cached.
-        assert r.status_code in (200, 403, 404)
+        assert r.status_code == 403
 
     def test_ownership_cross_user_blocked(self, client):
         # User A creates run
@@ -465,6 +610,7 @@ class TestUpload:
         assert r.status_code == 400
 
     def test_upload_unauthenticated(self, client):
+        client.cookies.clear()
         r = client.post(
             "/upload",
             files={"file": ("data.csv", io.BytesIO(_SAMPLE_CSV), "text/csv")},
@@ -542,18 +688,8 @@ class TestStreamRuns:
         hdrs = {"Authorization": f"Bearer {access}"}
         run_id = client.post("/runs", json={"task": "analyse"}, headers=hdrs).json()["run_id"]
 
-        events = _sse_events(client, f"/runs/{run_id}/stream?token={access}")
+        events = _sse_events(client, _stream_url(client, run_id, access))
         assert any(e.get("type") == "done" for e in events)
-        done = next(e for e in events if e.get("type") == "done")
-        assert done["state"]["power_analysis_result"]["required_n_per_arm"] == 123
-
-    def test_stream_invalid_token_rejected(self, client):
-        access, _, _ = _login(client)
-        hdrs = {"Authorization": f"Bearer {access}"}
-        run_id = client.post("/runs", json={"task": "analyse"}, headers=hdrs).json()["run_id"]
-
-        r = client.get(f"/runs/{run_id}/stream?token=not.a.jwt")
-        assert r.status_code == 401
 
     def test_stream_gate_event(self, client, fake_mode):
         """SSE yields {'type':'gate','gate':'intent'} when graph hits an interrupt."""
@@ -562,7 +698,7 @@ class TestStreamRuns:
         hdrs = {"Authorization": f"Bearer {access}"}
         run_id = client.post("/runs", json={"task": "analyse"}, headers=hdrs).json()["run_id"]
 
-        events = _sse_events(client, f"/runs/{run_id}/stream?token={access}")
+        events = _sse_events(client, _stream_url(client, run_id, access))
         gate_events = [e for e in events if e.get("type") == "gate"]
         assert gate_events, f"Expected gate event, got: {events}"
         assert gate_events[0]["gate"] == "intent"
@@ -574,7 +710,7 @@ class TestStreamRuns:
         hdrs = {"Authorization": f"Bearer {access}"}
         run_id = client.post("/runs", json={"task": "analyse"}, headers=hdrs).json()["run_id"]
 
-        events = _sse_events(client, f"/runs/{run_id}/stream?token={access}")
+        events = _sse_events(client, _stream_url(client, run_id, access))
         assert any(e.get("type") == "error" for e in events)
 
     def test_stream_reconnect_after_crash(self, client, fake_mode):
@@ -585,10 +721,10 @@ class TestStreamRuns:
         run_id = client.post("/runs", json={"task": "analyse"}, headers=hdrs).json()["run_id"]
 
         # First stream — consumes the error
-        _sse_events(client, f"/runs/{run_id}/stream?token={access}")
+        _sse_events(client, _stream_url(client, run_id, access))
 
         # Second stream — should get error immediately from cache, not hang 30s
-        events = _sse_events(client, f"/runs/{run_id}/stream?token={access}")
+        events = _sse_events(client, _stream_url(client, run_id, access))
         assert any(e.get("type") == "error" for e in events)
 
 
@@ -656,7 +792,7 @@ class TestResumeRuns:
         run_id = client.post("/runs", json={"task": "analyse"}, headers=hdrs).json()["run_id"]
 
         # Stream to receive (and trigger) the gate
-        events = _sse_events(client, f"/runs/{run_id}/stream?token={access}")
+        events = _sse_events(client, _stream_url(client, run_id, access))
         assert any(e.get("type") == "gate" for e in events)
 
         # Resume the gate

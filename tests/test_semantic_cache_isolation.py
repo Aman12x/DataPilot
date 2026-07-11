@@ -50,15 +50,18 @@ def _make_db() -> str:
     return path
 
 
-def _insert_run(path: str, run_id: str) -> None:
+TEST_USER_ID = "test_user"
+
+
+def _insert_run(path: str, run_id: str, user_id: str = TEST_USER_ID) -> None:
     """Insert a minimal run row so store_cache UPDATE can find it."""
     init_db(path)
     _ensure_cache_columns(path)
     with sqlite3.connect(path) as con:
         con.execute(
             """INSERT OR IGNORE INTO runs (run_id, user_id, task, timestamp, analysis_mode)
-               VALUES (?, 'test_user', 'test task', datetime('now'), 'general')""",
-            (run_id,),
+               VALUES (?, ?, 'test task', datetime('now'), 'general')""",
+            (run_id, user_id),
         )
 
 
@@ -250,6 +253,18 @@ class TestCacheIsolationDeterministic:
             assert res_cross["result"]["answer"] != "result_A", \
                 "Cross-dataset contamination: fp_b returned result_A!"
 
+    def test_different_users_same_fingerprint_are_isolated(self, tmp_path):
+        """Same task + fingerprint but different user_id must not share cache."""
+        path = str(tmp_path / "test.db")
+        fp = "uploads/user1/shared.db"
+
+        run_a = str(uuid.uuid4())
+        _insert_run(path, run_a, user_id="user_a")
+        _direct_store(path, run_a, self.VEC, {"answer": "from_a"}, "generate_sql", fp)
+
+        hit = check_cache("task", "generate_sql", dataset_fingerprint=fp, user_id="user_b", path=path)
+        assert hit is None, "User B must not receive User A's cached result"
+
     def test_node_name_scopes_cache(self, tmp_path):
         """Two different node names sharing the same fingerprint must not collide."""
         path = str(tmp_path / "test.db")
@@ -318,7 +333,9 @@ class TestStoreCacheIntegration:
 
         store_cache(self.TASK_A, "generate_sql", payload, run_id, dataset_fingerprint=fp, path=path)
 
-        hit = check_cache(self.TASK_A, "generate_sql", dataset_fingerprint=fp, path=path)
+        hit = check_cache(
+            self.TASK_A, "generate_sql", dataset_fingerprint=fp, user_id=TEST_USER_ID, path=path
+        )
         assert hit is not None, "Exact re-query should hit"
         assert hit["hit_type"] == "hard"
         assert hit["result"] == payload
@@ -334,7 +351,9 @@ class TestStoreCacheIntegration:
         store_cache(self.TASK_A, "generate_sql", payload, run_id, dataset_fingerprint=fp_a, path=path)
 
         # Same task, different dataset → should miss
-        hit = check_cache(self.TASK_A, "generate_sql", dataset_fingerprint=fp_b, path=path)
+        hit = check_cache(
+            self.TASK_A, "generate_sql", dataset_fingerprint=fp_b, user_id=TEST_USER_ID, path=path
+        )
         assert hit is None, \
             "Same task against different fingerprint must be a cache MISS (cross-dataset isolation)"
 
@@ -349,7 +368,9 @@ class TestStoreCacheIntegration:
         store_cache(self.TASK_A, "generate_sql", payload, run_id, dataset_fingerprint=fp, path=path)
 
         paraphrase = "Average revenue by customer"  # semantically same
-        hit = check_cache(paraphrase, "generate_sql", dataset_fingerprint=fp, path=path)
+        hit = check_cache(
+            paraphrase, "generate_sql", dataset_fingerprint=fp, user_id=TEST_USER_ID, path=path
+        )
         # Should at least produce a soft hit
         assert hit is not None, "Semantically similar task should produce a cache hit"
 
@@ -363,7 +384,9 @@ class TestStoreCacheIntegration:
 
         store_cache(self.TASK_A, "generate_sql", payload, run_id, dataset_fingerprint=fp, path=path)
 
-        hit = check_cache(self.TASK_B, "generate_sql", dataset_fingerprint=fp, path=path)
+        hit = check_cache(
+            self.TASK_B, "generate_sql", dataset_fingerprint=fp, user_id=TEST_USER_ID, path=path
+        )
         assert hit is None or hit["hit_type"] == "soft", \
             "Unrelated task should not produce a hard cache hit"
 

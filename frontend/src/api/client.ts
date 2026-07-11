@@ -1,45 +1,32 @@
 import axios from "axios";
+import { API_BASE } from "../config";
 
-// In dev: Vite proxies /api → localhost:8000 (see vite.config.ts).
-// In prod: VITE_API_URL must be set at build time to the backend's public URL,
-//          e.g. https://datapilot-backend.up.railway.app
-if (import.meta.env.PROD && !import.meta.env.VITE_API_URL) {
-  throw new Error(
-    "[DataPilot] VITE_API_URL is not set. " +
-    "Add it as a Railway environment variable on the frontend service " +
-    "and redeploy so it is baked into the production bundle."
-  );
-}
-
-export const API_BASE = import.meta.env.VITE_API_URL ?? "/api";
-
-const client = axios.create({ baseURL: API_BASE });
-
-// Attach access token to every request.
-client.interceptors.request.use((config) => {
-  const token = localStorage.getItem("access_token");
-  if (token && token !== "guest") config.headers.Authorization = `Bearer ${token}`;
-  return config;
+const client = axios.create({
+  baseURL: API_BASE,
+  withCredentials: true,
 });
 
-// On 401: attempt refresh once, then redirect to login.
+// On 401: attempt cookie-based refresh once, then redirect to login.
+// Auth probe routes (/auth/me, etc.) must reject quietly — no refresh or redirect.
+const AUTH_PROBE_PATHS = ["/auth/me", "/auth/refresh", "/auth/login", "/auth/guest", "/auth/register"];
+
 client.interceptors.response.use(
   (res) => res,
   async (err) => {
     const original = err.config;
     if (err.response?.status === 401 && !original._retry) {
       original._retry = true;
+      if (AUTH_PROBE_PATHS.some((p) => original.url?.includes(p))) {
+        return Promise.reject(err);
+      }
       try {
-        const refresh_token = localStorage.getItem("refresh_token");
-        if (!refresh_token) throw new Error("No refresh token");
-        const { data } = await axios.post(`${API_BASE}/auth/refresh`, { refresh_token });
-        localStorage.setItem("access_token", data.access_token);
-        original.headers.Authorization = `Bearer ${data.access_token}`;
+        await axios.post(`${API_BASE}/auth/refresh`, {}, { withCredentials: true });
         return client(original);
       } catch {
-        localStorage.removeItem("access_token");
-        localStorage.removeItem("refresh_token");
-        window.location.href = "/login";
+        if (!window.location.pathname.startsWith("/login")) {
+          window.location.href = "/login";
+        }
+        return Promise.reject(err);
       }
     }
     return Promise.reject(err);
@@ -47,6 +34,7 @@ client.interceptors.response.use(
 );
 
 export default client;
+export { API_BASE };
 
 export interface UploadResult {
   upload_id: string;
@@ -56,12 +44,7 @@ export interface UploadResult {
 }
 
 export async function logout(): Promise<void> {
-  const refresh_token = localStorage.getItem("refresh_token");
-  if (refresh_token) {
-    try { await client.post("/auth/logout", { refresh_token }); } catch { /* ignore */ }
-  }
-  localStorage.removeItem("access_token");
-  localStorage.removeItem("refresh_token");
+  try { await client.post("/auth/logout", {}); } catch { /* ignore */ }
 }
 
 export async function uploadFile(file: File): Promise<UploadResult> {
@@ -71,4 +54,27 @@ export async function uploadFile(file: File): Promise<UploadResult> {
     headers: { "Content-Type": "multipart/form-data" },
   });
   return res.data;
+}
+
+export async function checkAuth(): Promise<boolean> {
+  try {
+    await client.get("/auth/me");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Lightweight connectivity check — no auth required. */
+export async function pingBackend(): Promise<{ ok: boolean; detail: string }> {
+  try {
+    const r = await axios.get(`${API_BASE}/health`, { timeout: 10_000 });
+    return { ok: r.status === 200, detail: "Backend is reachable." };
+  } catch {
+    return {
+      ok: false,
+      detail: `Cannot reach backend at ${API_BASE}. Set VITE_API_URL on the frontend service `
+        + "and CORS_ORIGINS on the backend, then redeploy both.",
+    };
+  }
 }

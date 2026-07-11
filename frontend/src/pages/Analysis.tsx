@@ -43,12 +43,12 @@ function ModeSelect({ onSelect, username, onHistory, onSignOut }: {
     <div style={ms.page}>
       <div style={ms.orb1} /><div style={ms.orb2} />
 
-      <div style={ms.topBar}>
-        <span style={ms.logo}>✦ DataPilot</span>
+      <div style={ms.topBar} className="dp-topbar">
+        <span style={ms.logo} className="dp-logo">✦ DataPilot</span>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           {username && <span style={ms.username}>{username}</span>}
-          <button style={ms.navBtn} onClick={onHistory}>History</button>
-          <button style={ms.signOutBtn} onClick={onSignOut}>Sign out</button>
+          <button className="dp-btn dp-btn-ghost" style={{ padding: "6px 14px" }} onClick={onHistory}>History</button>
+          <button className="dp-btn dp-btn-link" onClick={onSignOut}>Sign out</button>
         </div>
       </div>
 
@@ -57,9 +57,12 @@ function ModeSelect({ onSelect, username, onHistory, onSignOut }: {
         <p style={ms.heroSub}>Choose your analysis type to get started</p>
       </div>
 
-      <div style={ms.cards} className="slide-up">
-
-        <button style={{ ...ms.card, ...ms.cardGeneral }} onClick={() => onSelect("general")}>
+      <div style={ms.cards} className="slide-up mode-cards">
+        <button
+          className="dp-card dp-card-interactive dp-card-general"
+          style={{ ...ms.card, ...ms.cardGeneral, border: undefined }}
+          onClick={() => onSelect("general")}
+        >
           <div style={ms.cardIcon}>💡</div>
           <div style={ms.cardTitle}>Explore & Understand</div>
           <div style={ms.cardDesc}>Find patterns, trends, and insights in any dataset</div>
@@ -74,7 +77,11 @@ function ModeSelect({ onSelect, username, onHistory, onSignOut }: {
         </button>
 
         {!showAbSub ? (
-          <button style={{ ...ms.card, ...ms.cardAB }} onClick={() => setShowAbSub(true)}>
+          <button
+            className="dp-card dp-card-interactive dp-card-ab"
+            style={{ ...ms.card, ...ms.cardAB, border: undefined }}
+            onClick={() => setShowAbSub(true)}
+          >
             <div style={ms.cardIcon}>🧪</div>
             <div style={ms.cardTitle}>A/B Testing</div>
             <div style={ms.cardDesc}>Design experiments or analyse results from running tests</div>
@@ -88,14 +95,14 @@ function ModeSelect({ onSelect, username, onHistory, onSignOut }: {
             <div style={{ ...ms.cta, background: "#89b4fa", color: "#1e1e2e" }}>Select →</div>
           </button>
         ) : (
-          <div style={{ ...ms.card, ...ms.cardAB, cursor: "default" }}>
+          <div className="dp-card dp-card-ab" style={{ ...ms.card, ...ms.cardAB, cursor: "default", border: undefined }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-              <button style={ms.backSubBtn} onClick={() => setShowAbSub(false)}>← Back</button>
+            <button className="dp-btn dp-btn-link" style={ms.backSubBtn} onClick={() => setShowAbSub(false)}>← Back</button>
               <span style={{ color: "#89b4fa", fontWeight: 700, fontSize: 15 }}>🧪 A/B Testing</span>
             </div>
             <p style={{ color: "#585b70", fontSize: 13, margin: "4px 0 16px" }}>Choose what you want to do:</p>
 
-            <button style={ms.subCard} onClick={() => onSelect("power_analysis")}>
+            <button className="dp-sample-card" style={ms.subCard} onClick={() => onSelect("power_analysis")}>
               <div style={{ fontSize: 20 }}>📐</div>
               <div>
                 <div style={{ color: "#cdd6f4", fontWeight: 700, fontSize: 14 }}>Design Experiment</div>
@@ -104,7 +111,7 @@ function ModeSelect({ onSelect, username, onHistory, onSignOut }: {
               <span style={{ color: "#89b4fa", marginLeft: "auto", fontSize: 16 }}>→</span>
             </button>
 
-            <button style={{ ...ms.subCard, marginTop: 8 }} onClick={() => onSelect("ab_test")}>
+            <button className="dp-sample-card" style={{ ...ms.subCard, marginTop: 8 }} onClick={() => onSelect("ab_test")}>
               <div style={{ fontSize: 20 }}>📊</div>
               <div>
                 <div style={{ color: "#cdd6f4", fontWeight: 700, fontSize: 14 }}>Interpret Results</div>
@@ -227,13 +234,13 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
   return (
     <div style={s.page} className="fade-in">
       <div style={s.header}>
-        <button style={s.backBtn} onClick={onBack}>← Back</button>
+        <button className="dp-btn dp-btn-link" style={s.backBtn} onClick={onBack}>← Back</button>
         <span style={{ ...s.modeBadge, borderColor: meta.accent + "44", color: meta.accent, background: meta.accent + "11" }}>
           {meta.badge}
         </span>
       </div>
 
-      <div style={s.inputCard} className="slide-up">
+      <div style={s.inputCard} className="dp-card slide-up">
         <h2 style={s.heading}>{meta.heading}</h2>
         <p style={s.sub}>{meta.sub}</p>
 
@@ -244,6 +251,7 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
               {samples.map(s2 => (
                 <button
                   key={s2.name}
+                  className="dp-sample-card"
                   style={{ ...s.sampleCard, ...(loadingSample === s2.name ? s.sampleLoading : {}), borderColor: meta.accent + "33" }}
                   onClick={() => loadSample(s2)}
                   disabled={!!loadingSample}
@@ -262,7 +270,8 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
         )}
 
         <textarea
-          style={s.taskInput}
+          className="dp-textarea"
+          style={{ ...s.taskInput, border: undefined, background: undefined, padding: undefined, borderRadius: undefined }}
           value={task}
           onChange={(e) => setTask(e.target.value)}
           placeholder={meta.placeholder}
@@ -360,11 +369,11 @@ function GateBar({ task, mode, onStartOver }: { task: string; mode: string; onSt
   const accent = mode === "general" ? "#cba6f7" : "#89b4fa";
   const label  = mode === "general" ? "💡 Explore" : mode === "power_analysis" ? "📐 Design" : "🧪 A/B Test";
   return (
-    <div style={gb.bar}>
+    <div className="dp-gate-bar">
       <div style={gb.inner}>
         <span style={{ ...gb.badge, color: accent, background: accent + "11", borderColor: accent + "33" }}>{label}</span>
-        <span style={gb.task}>"{truncated}"</span>
-        <button style={gb.startOver} onClick={onStartOver}>✕ Start over</button>
+        <span style={gb.task} title={task}>"{truncated}"</span>
+        <button className="dp-btn dp-btn-ghost" style={{ ...gb.startOver, padding: "5px 12px" }} onClick={onStartOver}>✕ Start over</button>
       </div>
     </div>
   );
@@ -522,10 +531,16 @@ function FinishedView({ state, runId, steps, onNewAnalysis, onFollowUp }: {
   const hasCharts  = state.charts && state.charts.length > 0;
   const hasTrust   = state.trust_indicators && state.trust_indicators.confidence_level;
 
-  const downloadPdf = () => {
-    const token  = localStorage.getItem("access_token") ?? "";
-    const params = new URLSearchParams({ token, narrative: sanitiseNarrative(state.narrative_draft), recommendation: state.recommendation });
-    window.open(`${API_BASE}/runs/${runId}/pdf?${params}`, "_blank");
+  const downloadPdf = async () => {
+    try {
+      const { data } = await client.get<{ pdf_token: string }>(`/runs/${runId}/pdf-token`);
+      window.open(
+        `${API_BASE}/runs/${runId}/pdf?pdf_token=${encodeURIComponent(data.pdf_token)}`,
+        "_blank"
+      );
+    } catch {
+      alert("Could not generate PDF.");
+    }
   };
 
   const downloadCsv = () => {
@@ -758,7 +773,7 @@ function ActiveRun({
             {processingLabel}
           </div>
         )}
-        <div style={s.progressCard}>
+        <div style={s.progressCard} className="dp-card">
           <PipelineProgress gate={gate?.gate ?? null} lastGate={lastGate} analysisMode={analysisMode} />
         </div>
         <ChainOfThought steps={steps} isRunning={isRunning} />

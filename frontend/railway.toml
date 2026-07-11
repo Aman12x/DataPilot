@@ -4,3 +4,10 @@ dockerfilePath = "Dockerfile"
 
 [deploy]
 healthcheckPath = "/"
+
+# Required on the FRONTEND service (runtime — injected into config.js at start):
+#   VITE_API_URL=https://<your-backend>.up.railway.app
+#
+# Required on the BACKEND service:
+#   CORS_ORIGINS=https://<your-frontend>.up.railway.app
+#   (or APP_URL set to the same frontend URL)

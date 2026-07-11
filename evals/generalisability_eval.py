@@ -17,6 +17,7 @@ Exit code: 0 if score >= 0.80, 1 otherwise.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import traceback
@@ -161,6 +162,26 @@ def crit_ecomm_ttest_runs(verbose: bool) -> bool:
     return result is not None and hasattr(result, "t_stat")
 
 
+def crit_clinical_treatment_higher_mean(verbose: bool) -> bool:
+    """Treatment group mean recovery score exceeds control (ground truth direction)."""
+    df = _clinical_df()
+    ctrl_mean = df[df["variant"] == "control"]["recovery_score"].mean()
+    trt_mean  = df[df["variant"] == "treatment"]["recovery_score"].mean()
+    if verbose:
+        print(f"    control={ctrl_mean:.2f} treatment={trt_mean:.2f}")
+    return trt_mean > ctrl_mean
+
+
+def crit_ecomm_treatment_higher_revenue(verbose: bool) -> bool:
+    """Treatment group mean revenue exceeds control."""
+    df = _ecomm_df()
+    ctrl_mean = df[df["variant"] == "control"]["revenue_usd"].mean()
+    trt_mean  = df[df["variant"] == "treatment"]["revenue_usd"].mean()
+    if verbose:
+        print(f"    control={ctrl_mean:.2f} treatment={trt_mean:.2f}")
+    return trt_mean > ctrl_mean
+
+
 def crit_ecomm_cuped_variance_reduced(verbose: bool) -> bool:
     """CUPED reduces variance on ecommerce data using session_duration as covariate."""
     df = _ecomm_df()
@@ -174,8 +195,8 @@ def crit_ecomm_cuped_variance_reduced(verbose: bool) -> bool:
     )
     if verbose:
         print(f"    variance_reduction={result.variance_reduction_pct:.1f}%")
-    # CUPED should reduce variance (>0%) on correlated covariate
-    return result is not None and result.variance_reduction_pct >= 0
+    # Correlated covariate should reduce variance (may be small on this sample)
+    return result is not None and result.variance_reduction_pct > 0
 
 
 def crit_ecomm_hte_device_or_segment(verbose: bool) -> bool:
@@ -227,13 +248,15 @@ CRITERIA: list[tuple[str, str, Callable]] = [
     # Clinical trial
     ("clinical_ttest_runs",        "🏥 Clinical: t-test executes on recovery scores",          crit_clinical_ttest_runs),
     ("clinical_ttest_significant", "🏥 Clinical: treatment has significantly higher recovery",  crit_clinical_ttest_significant),
+    ("clinical_treatment_higher",  "🏥 Clinical: treatment mean recovery > control",            crit_clinical_treatment_higher_mean),
     ("clinical_cuped_runs",        "🏥 Clinical: CUPED runs with baseline_severity covariate",  crit_clinical_cuped_runs),
     ("clinical_hte_segment",       "🏥 Clinical: HTE finds subgroup differential",              crit_clinical_hte_finds_segment),
     ("clinical_guardrails",        "🏥 Clinical: guardrail check on side_effect_count",         crit_clinical_guardrails_run),
     ("clinical_mde",               "🏥 Clinical: MDE calculation completes",                   crit_clinical_mde_runs),
     # E-commerce A/B
     ("ecomm_ttest_runs",           "🛒 Ecomm: t-test executes on revenue_usd",                 crit_ecomm_ttest_runs),
-    ("ecomm_cuped_variance",       "🛒 Ecomm: CUPED runs with session_duration covariate",     crit_ecomm_cuped_variance_reduced),
+    ("ecomm_treatment_higher",     "🛒 Ecomm: treatment mean revenue > control",               crit_ecomm_treatment_higher_revenue),
+    ("ecomm_cuped_variance",       "🛒 Ecomm: CUPED variance reduction > 0%",                   crit_ecomm_cuped_variance_reduced),
     ("ecomm_hte_segment",          "🛒 Ecomm: HTE finds device/segment differential",          crit_ecomm_hte_device_or_segment),
     ("ecomm_guardrails",           "🛒 Ecomm: guardrail check on orders metric",               crit_ecomm_guardrails_run),
     ("ecomm_mde_reasonable",       "🛒 Ecomm: MDE is a plausible percentage",                  crit_ecomm_mde_reasonable),
@@ -244,34 +267,50 @@ CRITERIA: list[tuple[str, str, Callable]] = [
 # Runner
 # ══════════════════════════════════════════════════════════════════════════════
 
-def run_eval(verbose: bool = False) -> tuple[int, int]:
+def run_eval(verbose: bool = False, quiet: bool = False) -> dict[str, Any]:
+    results: dict[str, dict[str, Any]] = {}
     passed = failed = 0
     for key, label, fn in CRITERIA:
         try:
-            ok = fn(verbose)
+            ok = bool(fn(verbose))
         except Exception:
             ok = False
             if verbose:
                 traceback.print_exc()
-        icon = "  PASS" if ok else "  FAIL"
-        print(f"{icon}  {label}")
+        results[key] = {"description": label, "passed": ok}
+        if not quiet:
+            icon = "  PASS" if ok else "  FAIL"
+            print(f"{icon}  {label}")
         if ok:
             passed += 1
         else:
             failed += 1
-    return passed, failed
+    total = passed + failed
+    return {
+        "criteria": results,
+        "score": passed / total if total else 0.0,
+        "n_pass": passed,
+        "n_total": total,
+    }
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Cross-domain generalisability eval")
     parser.add_argument("--verbose", action="store_true", help="Print intermediate values")
+    parser.add_argument("--json", dest="json_out", action="store_true", help="Print JSON result")
     args = parser.parse_args()
 
-    total   = len(CRITERIA)
-    passed, failed = run_eval(verbose=args.verbose)
-    pct     = passed / total * 100
+    if not args.json_out:
+        print("Running generalisability eval...")
+    result = run_eval(verbose=args.verbose, quiet=args.json_out)
+    pct = result["score"] * 100
 
-    print(f"\nScore: {passed}/{total} = {pct:.0f}%", "✅" if pct >= 80 else "❌")
+    if args.json_out:
+        print(json.dumps(result, indent=2))
+    else:
+        print(f"\nScore: {result['n_pass']}/{result['n_total']} = {pct:.0f}%",
+              "✅" if pct >= 80 else "❌")
+
     sys.exit(0 if pct >= 80 else 1)
 
 

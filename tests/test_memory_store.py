@@ -114,11 +114,11 @@ def test_cache_hard_hit(tmp_path, monkeypatch):
     monkeypatch.setenv("SEMANTIC_CACHE_SOFT_THRESHOLD", "0.50")
 
     task = "why did DAU drop on android?"
-    run_id = log_run(task, path=db)
+    uid = "test-user"
+    run_id = log_run(task, path=db, user_id=uid)
     store_cache(task, "generate_sql", {"sql": "SELECT 1"}, run_id, path=db)
 
-    # Same task → should be a hard hit
-    hit = check_cache(task, "generate_sql", path=db)
+    hit = check_cache(task, "generate_sql", path=db, user_id=uid)
     assert hit is not None
     assert hit["hit_type"] == "hard"
     assert hit["result"] == {"sql": "SELECT 1"}
