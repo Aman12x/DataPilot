@@ -4,8 +4,6 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.join(__dirname, "..");
-const pythonBin = process.env.PYTHON ?? "python3";
 
 export default defineConfig({
   testDir: "./e2e",
@@ -20,26 +18,12 @@ export default defineConfig({
     trace: "on-first-retry",
   },
   projects: [{ name: "chromium", use: { browserName: "chromium" } }],
-  webServer: [
-    {
-      command:
-        `cd ${repoRoot} && ENV=development ` +
-        `SECRET_KEY=e2e-test-secret-key-for-playwright ` +
-        `CORS_ORIGINS=http://127.0.0.1:5173 ` +
-        `AUTH_DB_PATH=/tmp/datapilot-e2e-auth.db ` +
-        `MEMORY_DB_PATH=/tmp/datapilot-e2e-mem.db ` +
-        `UPLOAD_DIR=/tmp/datapilot-e2e-uploads ` +
-        `GRAPH_DB_PATH=/tmp/datapilot-e2e-graph.db ` +
-        `PYTHONPATH=. ${pythonBin} -m uvicorn backend.api.main:app --host 127.0.0.1 --port 8000`,
-      url: "http://127.0.0.1:8000/health",
-      timeout: 180_000,
-      reuseExistingServer: !process.env.CI,
-    },
-    {
-      // Same-origin via Vite proxy — HttpOnly auth cookies work without CORS.
-      command: "npm run dev -- --host 127.0.0.1 --port 5173",
-      url: "http://127.0.0.1:5173",
-      reuseExistingServer: !process.env.CI,
-    },
-  ],
+  webServer: {
+    // Same-origin via Vite proxy — HttpOnly auth cookies work without CORS.
+    // The launcher waits for backend /health before starting Vite.
+    command: `node ${path.join(__dirname, "e2e", "start-e2e-servers.mjs")}`,
+    url: "http://127.0.0.1:5173",
+    timeout: 180_000,
+    reuseExistingServer: false,
+  },
 });

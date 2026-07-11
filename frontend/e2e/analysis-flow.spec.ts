@@ -38,7 +38,7 @@ test.describe("Analysis flow", () => {
     ).toBeTruthy();
 
     await expect(page).toHaveURL("/");
-    await expect(page.getByText(/Loading DataPilot|Explore/i)).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByRole("button", { name: /Explore & Understand/i })).toBeVisible({ timeout: 15_000 });
   });
 
   test("guest can log in, upload CSV, and start a run", async ({ page }) => {
