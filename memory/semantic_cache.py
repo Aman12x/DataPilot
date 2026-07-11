@@ -33,19 +33,58 @@ def _soft_threshold() -> float:
 _EMBED_DIM = 384
 
 _CANONICAL_TERMS = {
+    "average": "average",
+    "avg": "average",
+    "mean": "average",
+    "breakdown": "breakdown",
+    "breakdowns": "breakdown",
+    "group": "breakdown",
+    "grouped": "breakdown",
+    "groups": "breakdown",
     "salaries": "salary",
+    "salary": "salary",
     "pay": "salary",
     "earned": "salary",
+    "earn": "salary",
     "earnings": "salary",
     "departments": "department",
+    "department": "department",
     "engineering": "department",
     "marketing": "department",
     "customers": "customer",
+    "customer": "customer",
     "users": "user",
+    "user": "user",
     "dau": "user",
     "daily": "user",
     "active": "user",
     "revenues": "revenue",
+    "revenue": "revenue",
+    "sales": "revenue",
+    "income": "revenue",
+    "forecast": "weather",
+    "weather": "weather",
+    "rain": "weather",
+    "temperatures": "weather",
+    "temperature": "weather",
+    "umbrella": "weather",
+    "patient": "health",
+    "patients": "health",
+    "readmission": "health",
+    "readmissions": "health",
+    "diabetes": "health",
+    "cohort": "health",
+    "cohorts": "health",
+    "android": "android",
+    "analyse": "analyze",
+    "analyze": "analyze",
+}
+
+_FALLBACK_STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "by", "can", "for", "from",
+    "had", "has", "have", "i", "in", "is", "it", "me", "of", "on", "or",
+    "per", "please", "show", "should", "the", "this", "to", "was", "were",
+    "what", "with",
 }
 
 
@@ -61,15 +100,22 @@ class _FallbackEmbedder:
             if len(token) > 3 and token.endswith("s"):
                 token = token[:-1]
             token = _CANONICAL_TERMS.get(token, token)
-            features.append(f"tok:{token}")
-        compact = re.sub(r"\s+", " ", lower)
-        features.extend(f"tri:{compact[i:i+3]}" for i in range(max(0, len(compact) - 2)))
+            if token and token not in _FALLBACK_STOPWORDS:
+                features.append(f"tok:{token}")
+
+        # Add adjacent token pairs so short paraphrases like
+        # "average revenue per customer" and "average revenue by customer"
+        # remain very close without letting unrelated prose match by length.
+        features.extend(
+            f"bigram:{a}:{b}"
+            for a, b in zip(features, features[1:])
+        )
 
         for feature in features:
             digest = blake2b(feature.encode("utf-8"), digest_size=8).digest()
             idx = int.from_bytes(digest[:4], "big") % _EMBED_DIM
-            sign = 1.0 if digest[4] & 1 else -1.0
-            vec[idx] += sign
+            weight = 2.0 if feature.startswith("tok:") else 1.0
+            vec[idx] += weight
 
         norm = np.linalg.norm(vec)
         if normalize_embeddings and norm > 0:
