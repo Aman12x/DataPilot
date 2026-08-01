@@ -22,6 +22,7 @@ interface Props {
     metric_pack_id?: string;
     source?: string;
     message: string;
+    schema_drift_warnings?: string[];
   };
   onSubmit: (value: object) => void;
   submitting?: boolean;
@@ -75,6 +76,17 @@ export default function MetricGate({ payload, onSubmit, submitting }: Props) {
         {payload.metric_pack_id ? ` · pack ${payload.metric_pack_id.slice(0, 8)}…` : ""}
       </p>
 
+      {(payload.schema_drift_warnings?.length ?? 0) > 0 && (
+        <div style={s.driftBox}>
+          <div style={s.driftTitle}>Schema drift</div>
+          <ul style={s.driftList}>
+            {payload.schema_drift_warnings!.map((w) => (
+              <li key={w}>{w}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <div style={s.grid}>
         {FIELDS.map(({ key, label, hint }) => (
           <label key={key} style={s.field}>
@@ -123,6 +135,9 @@ export default function MetricGate({ payload, onSubmit, submitting }: Props) {
 const s: Record<string, React.CSSProperties> = {
   tag:  { fontSize: 11, fontWeight: 700, color: "#a6e3a1", background: "#a6e3a111", border: "1px solid #a6e3a133", borderRadius: 20, padding: "3px 10px", display: "inline-block", marginBottom: 10 },
   meta: { color: "#6c7086", fontSize: 12, marginBottom: 16 },
+  driftBox: { background: "#f9e2af11", border: "1px solid #f9e2af44", borderRadius: 10, padding: "10px 14px", marginBottom: 16 },
+  driftTitle: { color: "#f9e2af", fontSize: 12, fontWeight: 700, marginBottom: 6 },
+  driftList: { margin: 0, paddingLeft: 18, color: "#bac2de", fontSize: 12, lineHeight: 1.5 },
   grid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 18 },
   field:{ display: "flex", flexDirection: "column", gap: 4 },
   label:{ color: "#a6adc8", fontSize: 11, fontWeight: 600 },

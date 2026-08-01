@@ -149,6 +149,8 @@ def init_db(path: str | None = None) -> None:
             ("user_id",       "TEXT"),
             ("analysis_mode", "TEXT"),
             ("audit_passed",  "INTEGER DEFAULT 0"),
+            ("metric_pack_id", "TEXT"),
+            ("connection_id", "TEXT"),
         ]:
             if col_name not in existing:
                 con.execute(f"ALTER TABLE runs ADD COLUMN {col_name} {col_defn}")
@@ -175,6 +177,8 @@ def log_run(
     task_embedding: bytes | None = None,
     notes: str = "",
     audit_passed: bool = False,
+    metric_pack_id: str = "",
+    connection_id: str = "",
 ) -> str:
     """
     Persist one run to the memory store.
@@ -196,15 +200,15 @@ def log_run(
                 db_backend, analyst_override, top_segment, eval_score,
                 cache_read_tokens, cache_write_tokens, uncached_tokens,
                 semantic_cache_hits, estimated_cost_usd, notes, user_id, analysis_mode,
-                audit_passed
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                audit_passed, metric_pack_id, connection_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id, ts, task, task_embedding, metric, covariate,
                 db_backend, override_json, top_segment, eval_score,
                 cache_read_tokens, cache_write_tokens, uncached_tokens,
                 semantic_cache_hits, estimated_cost_usd, notes, user_id, analysis_mode,
-                int(audit_passed),
+                int(audit_passed), metric_pack_id or None, connection_id or None,
             ),
         )
     return run_id

@@ -207,7 +207,11 @@ class DBConnection:
 
     # ── Schema inspection ──────────────────────────────────────────────────────
 
-    def inspect_schema(self, annotation_path: str | None = None) -> str:
+    def inspect_schema(
+        self,
+        annotation_path: str | None = None,
+        annotations: dict | None = None,
+    ) -> str:
         """
         Return a formatted schema string for all tables.
 
@@ -216,10 +220,12 @@ class DBConnection:
               user_id   STRING   -- unique user identifier
               ...
 
-        Inline comments come from SCHEMA_COMMENTS (built-in dataset) or from
-        the annotation_path JSON file (external databases).
+        Inline comments come from (in priority order):
+          1. `annotations` dict passed in-memory (saved connection annotations)
+          2. `annotation_path` JSON file
+          3. SCHEMA_COMMENTS for the built-in DuckDB demo
         """
-        annotations = self._load_annotations(annotation_path)
+        loaded = self._load_annotations(annotation_path, annotations=annotations)
 
         if self.backend == "duckdb":
             tables = self._get_tables_duckdb()
@@ -230,7 +236,7 @@ class DBConnection:
                 lines.append(f"TABLE: {table}{row_note}")
                 cols = self._get_columns_duckdb(table)
                 for col_name, col_type in cols:
-                    comment = annotations.get(table, {}).get(col_name, "")
+                    comment = loaded.get(table, {}).get(col_name, "")
                     if not comment and profile:
                         col_info = profile["columns"].get(col_name, {})
                         parts = []
@@ -253,7 +259,7 @@ class DBConnection:
                 lines.append(f"TABLE: {table}")
                 cols = self._get_columns_postgres(table)
                 for col_name, col_type in cols:
-                    comment = annotations.get(table, {}).get(col_name, "")
+                    comment = loaded.get(table, {}).get(col_name, "")
                     # For unannotated string columns on external DBs, sample values
                     # so the LLM knows valid enum values and doesn't hallucinate them.
                     if not comment and col_type.lower() in self._POSTGRES_STRING_TYPES:
@@ -265,7 +271,13 @@ class DBConnection:
                 lines.append("")
             return "\n".join(lines).rstrip()
 
-    def _load_annotations(self, annotation_path: str | None) -> dict:
+    def _load_annotations(
+        self,
+        annotation_path: str | None,
+        annotations: dict | None = None,
+    ) -> dict:
+        if annotations:
+            return annotations
         if annotation_path and os.path.exists(annotation_path):
             with open(annotation_path) as f:
                 return json.load(f)

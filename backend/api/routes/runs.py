@@ -331,6 +331,7 @@ async def create_run(
     metric_config = None
     metric_pack_certified = False
     metric_pack_id = req.metric_pack_id
+    metric_pack_version = None
     if metric_pack_id:
         pack = workspace_store.get_metric_pack(user_id, metric_pack_id)
         if not pack:
@@ -342,6 +343,7 @@ async def create_run(
                 status_code=400, detail=f"Metric pack config invalid: {exc}"
             ) from exc
         metric_pack_certified = bool(pack.certified)
+        metric_pack_version = int(pack.version)
 
     graph  = _get_graph(request)
     run_id = str(uuid.uuid4())
@@ -379,6 +381,7 @@ async def create_run(
         "pg_password":            pg_password,
         "pg_sslmode":             pg_sslmode,
         "metric_pack_id":         metric_pack_id,
+        "metric_pack_version":    metric_pack_version,
         "metric_pack_certified":  metric_pack_certified,
         "user_id":                user_id,
         "run_id":                 run_id,

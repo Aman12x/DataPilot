@@ -17,6 +17,11 @@ Endpoints:
     GET    /metric-packs/{id}
     PATCH  /metric-packs/{id}
     DELETE /metric-packs/{id}
+
+  Annotations / drift (Phase 2):
+    GET/PUT /connections/{id}/annotations
+    GET     /connections/{id}/drift?metric_pack_id=
+    POST    /connections/{id}/test?metric_pack_id=  (returns drift_warnings)
 """
 
 from __future__ import annotations
@@ -237,7 +242,12 @@ async def delete_connection(connection_id: str, current_user: dict = Depends(get
 async def test_saved_connection(
     connection_id: str,
     current_user: dict = Depends(get_current_user),
+    metric_pack_id: Optional[str] = None,
 ):
+    """
+    Live-test a saved connection. Optional `metric_pack_id` query param runs
+    pack-vs-live drift checks and returns `drift_warnings`.
+    """
     user_id = current_user["user_id"]
     secrets = workspace_store.get_connection_secrets(user_id, connection_id)
     if not secrets:
@@ -252,12 +262,54 @@ async def test_saved_connection(
         ok=bool(result.get("success")),
         error=result.get("error"),
     )
+
+    drift_warnings: list[str] = []
+    schema_changed = False
+    if result.get("success"):
+        try:
+            from agents.analyze.semantic_layer import (
+                detect_pack_drift,
+                schema_hash,
+                strip_sql_dialect_header,
+            )
+            ann = workspace_store.get_annotations(user_id, connection_id)
+            annotations = (ann.annotations if ann else {}) or {}
+            conn = DBConnection(
+                backend="postgres",
+                host=secrets.host, port=secrets.port, dbname=secrets.dbname,
+                user=secrets.username, password=secrets.password, sslmode=secrets.sslmode,
+            )
+            schema_context = conn.inspect_schema(annotations=annotations)
+            sch_hash = schema_hash(schema_context)
+            prev = workspace_store.get_schema_snapshot(user_id, connection_id)
+            if prev and prev.get("schema_hash") and prev["schema_hash"] != sch_hash:
+                schema_changed = True
+                drift_warnings.append(
+                    "Live schema hash differs from last successful connect — "
+                    "columns or tables may have changed."
+                )
+            workspace_store.record_schema_snapshot(
+                user_id, connection_id,
+                schema_context=strip_sql_dialect_header(schema_context),
+                schema_hash=sch_hash,
+            )
+            if metric_pack_id:
+                pack = workspace_store.get_metric_pack(user_id, metric_pack_id)
+                if pack:
+                    drift_warnings.extend(
+                        detect_pack_drift(MetricConfig(**pack.config), schema_context)
+                    )
+        except Exception as exc:
+            logger.debug("connection test drift enrich failed: %s", exc)
+
     # Never echo password
     return {
         "success": result.get("success"),
         "error": result.get("error"),
         "table_count": result.get("table_count", 0),
         "tables": result.get("tables", []),
+        "schema_changed": schema_changed,
+        "drift_warnings": drift_warnings,
     }
 
 
@@ -375,3 +427,73 @@ async def delete_pack(pack_id: str, current_user: dict = Depends(get_current_use
     if not ok:
         raise HTTPException(status_code=404, detail="Metric pack not found")
     return None
+
+
+# ── Schema annotations (Phase 2) ──────────────────────────────────────────────
+
+class AnnotationsUpsert(BaseModel):
+    annotations: dict[str, Any]
+    synonyms: dict[str, str] = Field(default_factory=dict)
+
+
+@router.get("/connections/{connection_id}/annotations")
+async def get_annotations(connection_id: str, current_user: dict = Depends(get_current_user)):
+    ann = workspace_store.get_annotations(current_user["user_id"], connection_id)
+    if ann is None:
+        raise HTTPException(status_code=404, detail="Connection not found")
+    return ann.to_dict()
+
+
+@router.put("/connections/{connection_id}/annotations")
+async def put_annotations(
+    connection_id: str,
+    body: AnnotationsUpsert,
+    current_user: dict = Depends(get_current_user),
+):
+    try:
+        ann = workspace_store.upsert_annotations(
+            current_user["user_id"],
+            connection_id,
+            annotations=body.annotations,
+            synonyms=body.synonyms,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ann.to_dict()
+
+
+@router.get("/connections/{connection_id}/drift")
+async def connection_drift(
+    connection_id: str,
+    metric_pack_id: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Compare last-known schema snapshot / live connect against a metric pack.
+    Uses the stored snapshot when available (no live DB round-trip required).
+    """
+    user_id = current_user["user_id"]
+    snap = workspace_store.get_schema_snapshot(user_id, connection_id)
+    if snap is None:
+        raise HTTPException(status_code=404, detail="Connection not found")
+    warnings: list[str] = []
+    if not snap.get("schema_context"):
+        return {
+            "connection_id": connection_id,
+            "schema_hash": "",
+            "has_snapshot": False,
+            "drift_warnings": ["No schema snapshot yet — run a connection test first."],
+        }
+    if metric_pack_id:
+        pack = workspace_store.get_metric_pack(user_id, metric_pack_id)
+        if not pack:
+            raise HTTPException(status_code=404, detail="Metric pack not found")
+        from agents.analyze.semantic_layer import detect_pack_drift
+        warnings = detect_pack_drift(MetricConfig(**pack.config), snap["schema_context"])
+    return {
+        "connection_id": connection_id,
+        "schema_hash": snap.get("schema_hash") or "",
+        "has_snapshot": True,
+        "schema_snapshot_at": snap.get("schema_snapshot_at"),
+        "drift_warnings": warnings,
+    }

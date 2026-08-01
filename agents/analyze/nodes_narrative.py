@@ -516,6 +516,8 @@ def log_run_node(state: AgentState) -> dict:
             (ar := state.get("audit_result")) is None
             or (hasattr(ar, "passed") and ar.passed)
         ),
+        metric_pack_id=state.get("metric_pack_id") or "",
+        connection_id=state.get("connection_id") or "",
     )
 
     # In-band completeness scoring — fills eval_score when offline eval hasn't run yet
@@ -545,7 +547,7 @@ def log_run_node(state: AgentState) -> dict:
                     "recommendation": state.get("recommendation") or "",
                 },
                 run_id=run_id,
-                dataset_fingerprint=state.get("duckdb_path", ""),
+                dataset_fingerprint=state.get("dataset_fingerprint") or state.get("duckdb_path", ""),
                 user_id=state.get("user_id"),
             )
         else:

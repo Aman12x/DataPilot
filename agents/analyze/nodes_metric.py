@@ -2,7 +2,8 @@
 agents/analyze/nodes_metric.py — Metric Config HITL gate.
 
 After infer_metric_config, pause so the analyst can approve or edit the
-metric mapping before SQL generation.  Certified metric packs skip this gate.
+metric mapping before SQL generation.  Certified metric packs skip this gate
+unless schema drift was detected (force_metric_gate).
 """
 
 from __future__ import annotations
@@ -44,14 +45,18 @@ def metric_config_gate(state: AgentState) -> dict:
     HITL gate: confirm metric / table / segment mapping.
 
     Skip when:
-      - metric_pack_certified is True (SMB certified pack)
+      - metric_pack_certified is True AND no force_metric_gate (no drift)
       - SKIP_METRIC_GATE=true (tests / automated evals)
+      - built-in demo DuckDB
     """
     import os
     if os.getenv("SKIP_METRIC_GATE", "").lower() in ("1", "true", "yes"):
         return {"metric_config_approved": True}
 
-    if state.get("metric_pack_certified"):
+    drift = list(state.get("schema_drift_warnings") or [])
+    force = bool(state.get("force_metric_gate"))
+
+    if state.get("metric_pack_certified") and not force:
         logger.info("metric_config_gate: skipping — certified metric pack")
         return {"metric_config_approved": True}
 
@@ -63,22 +68,30 @@ def metric_config_gate(state: AgentState) -> dict:
         and not state.get("connection_id")
         and not state.get("metric_pack_id")
     )
-    if is_demo:
+    if is_demo and not force:
         logger.info("metric_config_gate: skipping — built-in demo dataset")
         return {"metric_config_approved": True}
 
     mc = state.get("metric_config") or load_metric_config()
     schema_context = state.get("schema_context", "")
 
+    message = (
+        "Confirm how metrics and tables map to your data before SQL is generated. "
+        "Edit any field that looks wrong."
+    )
+    if drift:
+        message = (
+            "Schema drift detected versus your metric pack. "
+            "Review the warnings and confirm or edit the mapping before SQL is generated."
+        )
+
     payload = {
         "gate": "metric",
         "metric_config": _config_summary(mc),
         "metric_pack_id": state.get("metric_pack_id") or "",
         "source": "pack" if state.get("metric_pack_id") else "inferred",
-        "message": (
-            "Confirm how metrics and tables map to your data before SQL is generated. "
-            "Edit any field that looks wrong."
-        ),
+        "schema_drift_warnings": drift,
+        "message": message,
     }
     analyst_response = interrupt(payload)
 
@@ -90,7 +103,6 @@ def metric_config_gate(state: AgentState) -> dict:
 
     if edits and isinstance(edits, dict):
         try:
-            # Merge edits onto current config
             base = mc.model_dump()
             base.update({k: v for k, v in edits.items() if v is not None})
             updated = MetricConfig(**base)
@@ -102,6 +114,7 @@ def metric_config_gate(state: AgentState) -> dict:
                 "metric_config": updated,
                 "metric": updated.primary_metric,
                 "covariate": updated.covariate,
+                "force_metric_gate": False,
             }
         except Exception as exc:
             logger.warning("metric_config_gate: invalid edits ignored: %s", exc)
@@ -111,4 +124,5 @@ def metric_config_gate(state: AgentState) -> dict:
         "metric_config": mc,
         "metric": mc.primary_metric,
         "covariate": mc.covariate,
+        "force_metric_gate": False,
     }

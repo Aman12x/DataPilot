@@ -210,6 +210,63 @@ class TestMetricPacksAPI:
         assert r.status_code == 400
 
 
+class TestAnnotationsAPI:
+    def test_put_get_annotations(self, client, auth, public_dns):
+        with _patch_test_pg():
+            conn = client.post(
+                "/connections",
+                headers=auth,
+                json={
+                    "name": "Ann",
+                    "host": "ann.example.com",
+                    "port": 5432,
+                    "dbname": "d",
+                    "username": "u",
+                    "password": "p",
+                    "test": False,
+                },
+            ).json()
+
+        r = client.put(
+            f"/connections/{conn['connection_id']}/annotations",
+            headers=auth,
+            json={
+                "annotations": {"events": {"revenue": "USD revenue"}},
+                "synonyms": {"WAU": "weekly_active"},
+            },
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["annotations"]["events"]["revenue"] == "USD revenue"
+
+        got = client.get(
+            f"/connections/{conn['connection_id']}/annotations",
+            headers=auth,
+        ).json()
+        assert got["synonyms"]["WAU"] == "weekly_active"
+
+    def test_drift_without_snapshot(self, client, auth, public_dns):
+        with _patch_test_pg():
+            conn = client.post(
+                "/connections",
+                headers=auth,
+                json={
+                    "name": "D",
+                    "host": "drift.example.com",
+                    "port": 5432,
+                    "dbname": "d",
+                    "username": "u",
+                    "password": "p",
+                    "test": False,
+                },
+            ).json()
+        r = client.get(
+            f"/connections/{conn['connection_id']}/drift",
+            headers=auth,
+        )
+        assert r.status_code == 200
+        assert r.json()["has_snapshot"] is False
+
+
 class TestStartRunWithPackAndConnection:
     def test_run_accepts_connection_and_pack(self, client, auth, public_dns):
         with _patch_test_pg():

@@ -25,7 +25,12 @@ def generate_sql(state: AgentState) -> dict:
     # schema.  Prevents demo-DB examples (events, experiment, metrics_daily)
     # from misleading the LLM when the user uploads a different dataset.
     current_tables = _known_schema_names(schema_context)[0]
-    sql_examples   = retrieve_sql_examples(task, user_id=state.get("user_id"))
+    sql_examples   = retrieve_sql_examples(
+        task,
+        user_id=state.get("user_id"),
+        metric_pack_id=state.get("metric_pack_id") or None,
+        connection_id=state.get("connection_id") or None,
+    )
     sql_examples   = _filter_few_shot_by_schema(sql_examples, current_tables)
     few_shot_block = _build_few_shot_block(sql_examples)
 
@@ -105,14 +110,28 @@ def generate_sql(state: AgentState) -> dict:
                     "generate_sql: issues remain after correction: %s", all_issues
                 )
 
+    # Certified packs: soft-warn on tables outside the pack allowlist (not auto-corrected).
+    pack_warnings: list[str] = []
+    if state.get("metric_pack_certified") and mc:
+        from agents.analyze.semantic_layer import pack_allowed_tables
+        allowed = pack_allowed_tables(mc)
+        if allowed:
+            for tbl in _tables_in_sql(sql):
+                if tbl in allowed:
+                    continue
+                pack_warnings.append(
+                    f"table '{tbl}' is outside certified metric pack allowlist"
+                )
+
+    warnings_out = all_issues + pack_warnings
     result = {
         "generated_sql":      sql,
         "cache_read_tokens":  cost_info.get("cache_read_tokens", 0),
         "cache_write_tokens": cost_info.get("cache_write_tokens", 0),
         "estimated_cost_usd": cost_info.get("estimated_cost_usd", 0.0),
     }
-    if all_issues:
-        result["sql_validation_warnings"] = all_issues
+    if warnings_out:
+        result["sql_validation_warnings"] = warnings_out
     return result
 
 
