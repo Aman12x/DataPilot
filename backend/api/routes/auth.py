@@ -12,6 +12,8 @@ GET  /auth/me                                        → user info
 """
 from __future__ import annotations
 
+import asyncio
+
 import os
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -117,7 +119,8 @@ def _issue_session(user, *, status_code: int = 200) -> JSONResponse:
 async def register(req: RegisterRequest, request: Request):
     await check_auth_rate(request, bucket="register")
     auto_verify = _should_auto_verify()
-    result = create_user(
+    result = await asyncio.to_thread(
+        create_user,
         req.username,
         req.email,
         req.password,
@@ -129,11 +132,11 @@ async def register(req: RegisterRequest, request: Request):
     if auto_verify:
         return _issue_session(result, status_code=status.HTTP_201_CREATED)
 
-    from ..email import send_verification_email
+    from ..email import send_verification_email_async
 
     token = create_verification_token(result.user_id)
     try:
-        send_verification_email(result.email, token)
+        await send_verification_email_async(result.email, token)
     except RuntimeError:
         # Don't trap new accounts when Resend/SMTP is misconfigured.
         mark_email_verified(result.user_id)
@@ -172,13 +175,13 @@ async def verify_email(req: VerifyEmailRequest, request: Request):
 @router.post("/resend-verification", status_code=status.HTTP_202_ACCEPTED)
 async def resend_verification(req: ResendVerificationRequest, request: Request):
     await check_auth_rate(request, bucket="verify")
-    from ..email import send_verification_email
+    from ..email import send_verification_email_async
 
     user = get_user_by_email(req.email)
     if user and not user.email_verified:
         token = create_verification_token(user.user_id)
         try:
-            send_verification_email(user.email, token)
+            await send_verification_email_async(user.email, token)
         except RuntimeError:
             # Same fallback as register/login — unlock the account if mail is down.
             mark_email_verified(user.user_id)
@@ -191,16 +194,16 @@ async def resend_verification(req: ResendVerificationRequest, request: Request):
 @router.post("/login")
 async def login(req: LoginRequest, request: Request):
     await check_auth_rate(request, bucket="login")
-    user = verify_user(req.login, req.password)
+    user = await asyncio.to_thread(verify_user, req.login, req.password)
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     if not user.email_verified:
         # Recover accounts stuck when verification mail cannot be delivered.
-        from ..email import send_verification_email
+        from ..email import send_verification_email_async
 
         token = create_verification_token(user.user_id)
         try:
-            send_verification_email(user.email, token)
+            await send_verification_email_async(user.email, token)
         except RuntimeError:
             mark_email_verified(user.user_id)
             user = get_user_by_id(user.user_id) or user
@@ -274,11 +277,11 @@ async def forgot_password(req: ForgotPasswordRequest, request: Request):
     Always returns 202 — never reveals whether the email exists.
     """
     await check_auth_rate(request, bucket="forgot")
-    from ..email import send_password_reset
+    from ..email import send_password_reset_async
     token = create_reset_token(req.email)
     if token:
         try:
-            send_password_reset(req.email, token)
+            await send_password_reset_async(req.email, token)
         except RuntimeError:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -297,7 +300,7 @@ async def reset_password(req: ResetPasswordRequest, request: Request):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Reset link is invalid or has expired.",
         )
-    if not update_password(user_id, req.password):
+    if not await asyncio.to_thread(update_password, user_id, req.password):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Password must be at least 8 characters and include a letter and a number.",

@@ -11,6 +11,7 @@ This keeps the dev workflow functional without an email account.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 
@@ -19,6 +20,43 @@ logger = logging.getLogger(__name__)
 _API_KEY   = os.getenv("RESEND_API_KEY", "")
 _FROM      = os.getenv("EMAIL_FROM", "DataPilot <noreply@datapilot.app>")
 _APP_URL   = os.getenv("APP_URL", "http://localhost:5173")
+
+# resend's RequestsClient defaults to 30s. That is a long time to hold a
+# registration or password-reset request open when the provider is degraded.
+_TIMEOUT = float(os.getenv("EMAIL_TIMEOUT_SECONDS", "10"))
+
+_client_configured = False
+
+
+def _configure_client() -> None:
+    """Pin the HTTP timeout on resend's client, once per process.
+
+    Best-effort: requirements allow resend>=2.0 and the http_client module is
+    not part of its documented API, so a version without it falls back to the
+    SDK default rather than failing to send.
+    """
+    global _client_configured
+    if _client_configured:
+        return
+    _client_configured = True
+    try:
+        import resend
+        from resend.http_client_requests import RequestsClient
+
+        resend.default_http_client = RequestsClient(timeout=_TIMEOUT)
+        logger.debug("Resend HTTP timeout set to %.0fs", _TIMEOUT)
+    except Exception:
+        logger.debug("Could not set Resend timeout; using SDK default", exc_info=True)
+
+
+async def send_password_reset_async(to_email: str, token: str) -> None:
+    """Off-loop wrapper. The send is a blocking HTTP call."""
+    await asyncio.to_thread(send_password_reset, to_email, token)
+
+
+async def send_verification_email_async(to_email: str, token: str) -> None:
+    """Off-loop wrapper. The send is a blocking HTTP call."""
+    await asyncio.to_thread(send_verification_email, to_email, token)
 
 
 def send_password_reset(to_email: str, token: str) -> None:
@@ -64,6 +102,7 @@ def send_password_reset(to_email: str, token: str) -> None:
 
     try:
         import resend
+        _configure_client()
         resend.api_key = _API_KEY
         resend.Emails.send({
             "from":    _FROM,
@@ -117,6 +156,7 @@ def send_verification_email(to_email: str, token: str) -> None:
 
     try:
         import resend
+        _configure_client()
         resend.api_key = _API_KEY
         resend.Emails.send({
             "from":    _FROM,
