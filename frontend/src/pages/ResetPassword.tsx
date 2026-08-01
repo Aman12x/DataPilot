@@ -21,7 +21,7 @@ export default function ResetPassword() {
     return (
       <AuthCard>
         <div style={authShared.errorBox}><span>⚠</span> Invalid reset link. Please request a new one.</div>
-        <button style={{ ...authShared.linkBtn, color: "#89b4fa" }} onClick={() => navigate("/forgot-password")}>
+        <button style={{ ...authShared.linkBtn, color: "var(--dp-accent)" }} onClick={() => navigate("/forgot-password")}>
           Request new link
         </button>
       </AuthCard>
@@ -80,10 +80,10 @@ export default function ResetPassword() {
 
 const s: Record<string, React.CSSProperties> = {
   form:        { display: "flex", flexDirection: "column", gap: 16 },
-  heading:     { color: "#cdd6f4", fontSize: 18, fontWeight: 600, textAlign: "center", marginBottom: 6 },
-  sub:         { color: "#585b70", fontSize: 13, textAlign: "center", marginBottom: 24 },
+  heading:     { color: "var(--dp-ink)", fontSize: 18, fontWeight: 600, textAlign: "center", marginBottom: 6 },
+  sub:         { color: "var(--dp-ink-muted)", fontSize: 13, textAlign: "center", marginBottom: 24 },
   successBox:  { textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", gap: 12 },
-  successIcon: { fontSize: 40, color: "#a6e3a1" },
-  successTitle:{ color: "#cdd6f4", fontSize: 18, fontWeight: 600 },
-  successSub:  { color: "#a6adc8", fontSize: 13, lineHeight: 1.6 },
+  successIcon: { fontSize: 40, color: "var(--dp-success)" },
+  successTitle:{ color: "var(--dp-ink)", fontSize: 18, fontWeight: 600 },
+  successSub:  { color: "var(--dp-ink-secondary)", fontSize: 13, lineHeight: 1.6 },
 };

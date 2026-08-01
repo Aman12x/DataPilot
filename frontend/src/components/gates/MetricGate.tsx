@@ -133,13 +133,13 @@ export default function MetricGate({ payload, onSubmit, submitting }: Props) {
 }
 
 const s: Record<string, React.CSSProperties> = {
-  tag:  { fontSize: 11, fontWeight: 700, color: "#a6e3a1", background: "#a6e3a111", border: "1px solid #a6e3a133", borderRadius: 20, padding: "3px 10px", display: "inline-block", marginBottom: 10 },
-  meta: { color: "#6c7086", fontSize: 12, marginBottom: 16 },
-  driftBox: { background: "#f9e2af11", border: "1px solid #f9e2af44", borderRadius: 10, padding: "10px 14px", marginBottom: 16 },
-  driftTitle: { color: "#f9e2af", fontSize: 12, fontWeight: 700, marginBottom: 6 },
+  tag:  { fontSize: 11, fontWeight: 700, color: "var(--dp-success)", background: "var(--dp-success)11", border: "1px solid var(--dp-success)33", borderRadius: 20, padding: "3px 10px", display: "inline-block", marginBottom: 10 },
+  meta: { color: "var(--dp-ink-muted)", fontSize: 12, marginBottom: 16 },
+  driftBox: { background: "var(--dp-warning)11", border: "1px solid var(--dp-warning)44", borderRadius: 10, padding: "10px 14px", marginBottom: 16 },
+  driftTitle: { color: "var(--dp-warning)", fontSize: 12, fontWeight: 700, marginBottom: 6 },
   driftList: { margin: 0, paddingLeft: 18, color: "#bac2de", fontSize: 12, lineHeight: 1.5 },
   grid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 18 },
   field:{ display: "flex", flexDirection: "column", gap: 4 },
-  label:{ color: "#a6adc8", fontSize: 11, fontWeight: 600 },
-  input:{ background: "#11111b", border: "1px solid #313244", borderRadius: 8, color: "#cdd6f4", padding: "8px 10px", fontSize: 13 },
+  label:{ color: "var(--dp-ink-secondary)", fontSize: 11, fontWeight: 600 },
+  input:{ background: "var(--dp-bg)", border: "1px solid var(--dp-line)", borderRadius: 8, color: "var(--dp-ink)", padding: "8px 10px", fontSize: 13 },
 };

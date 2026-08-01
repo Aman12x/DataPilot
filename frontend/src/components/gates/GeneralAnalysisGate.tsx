@@ -53,9 +53,9 @@ function fmt(v: number | undefined): string {
 
 function corrColor(r: number): string {
   const abs = Math.abs(r);
-  if (abs >= 0.7) return r > 0 ? "#a6e3a1" : "#f38ba8";
+  if (abs >= 0.7) return r > 0 ? "var(--dp-success)" : "var(--dp-danger)";
   if (abs >= 0.4) return "#fab387";
-  return "#a6adc8";
+  return "var(--dp-ink-secondary)";
 }
 
 export default function GeneralAnalysisGate({ payload, onSubmit, submitting }: Props) {
@@ -65,7 +65,7 @@ export default function GeneralAnalysisGate({ payload, onSubmit, submitting }: P
   return (
     <div style={{ ...gateCard, maxWidth: 760 }}>
       <h3 style={gateTitle}>Review Data Summary</h3>
-      <p style={{ color: "#a6adc8", marginBottom: 16, fontSize: 14 }}>{payload.message}</p>
+      <p style={{ color: "var(--dp-ink-secondary)", marginBottom: 16, fontSize: 14 }}>{payload.message}</p>
 
       {desc && (
         <>
@@ -116,18 +116,18 @@ export default function GeneralAnalysisGate({ payload, onSubmit, submitting }: P
 
 const s: Record<string, React.CSSProperties> = {
   meta:      { display: "flex", gap: 16, marginBottom: 16 },
-  metaItem:  { background: "#313244", color: "#89b4fa", padding: "4px 12px", borderRadius: 4, fontSize: 13, fontWeight: 600 },
+  metaItem:  { background: "var(--dp-line)", color: "var(--dp-accent)", padding: "4px 12px", borderRadius: 4, fontSize: 13, fontWeight: 600 },
   colGrid:   { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 8, marginBottom: 20 },
-  colCard:   { background: "#181825", borderRadius: 6, padding: "10px 12px", border: "1px solid #313244" },
-  colName:   { color: "#cdd6f4", fontWeight: 600, fontSize: 13, marginBottom: 4 },
-  dtype:     { color: "#585b70", fontWeight: 400, fontSize: 11, marginLeft: 6 },
-  nullBadge: { color: "#f38ba8", fontSize: 11, marginBottom: 4 },
-  colStats:  { display: "flex", flexWrap: "wrap" as const, gap: 6, fontSize: 11, color: "#a6adc8" },
-  topVal:    { background: "#313244", borderRadius: 3, padding: "1px 5px" },
-  subTitle:  { color: "#cdd6f4", marginTop: 20, marginBottom: 8, fontSize: 15 },
-  corrList:  { background: "#181825", borderRadius: 6, padding: "8px 12px", marginBottom: 16 },
-  corrRow:   { display: "flex", justifyContent: "space-between", padding: "4px 0", borderBottom: "1px solid #313244" },
-  corrCols:  { color: "#a6adc8", fontSize: 13 },
+  colCard:   { background: "var(--dp-surface-2)", borderRadius: 6, padding: "10px 12px", border: "1px solid var(--dp-line)" },
+  colName:   { color: "var(--dp-ink)", fontWeight: 600, fontSize: 13, marginBottom: 4 },
+  dtype:     { color: "var(--dp-ink-muted)", fontWeight: 400, fontSize: 11, marginLeft: 6 },
+  nullBadge: { color: "var(--dp-danger)", fontSize: 11, marginBottom: 4 },
+  colStats:  { display: "flex", flexWrap: "wrap" as const, gap: 6, fontSize: 11, color: "var(--dp-ink-secondary)" },
+  topVal:    { background: "var(--dp-line)", borderRadius: 3, padding: "1px 5px" },
+  subTitle:  { color: "var(--dp-ink)", marginTop: 20, marginBottom: 8, fontSize: 15 },
+  corrList:  { background: "var(--dp-surface-2)", borderRadius: 6, padding: "8px 12px", marginBottom: 16 },
+  corrRow:   { display: "flex", justifyContent: "space-between", padding: "4px 0", borderBottom: "1px solid var(--dp-line)" },
+  corrCols:  { color: "var(--dp-ink-secondary)", fontSize: 13 },
   corrVal:   { fontWeight: 700, fontSize: 13 },
-  btnReject: { padding: "10px 22px", background: "transparent", color: "#f38ba8", border: "1px solid #f38ba844", borderRadius: 8, cursor: "pointer", fontSize: 14 },
+  btnReject: { padding: "10px 22px", background: "transparent", color: "var(--dp-danger)", border: "1px solid var(--dp-danger)44", borderRadius: 8, cursor: "pointer", fontSize: 14 },
 };

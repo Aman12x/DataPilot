@@ -52,13 +52,13 @@ export default function SemanticCacheGate({ payload, onSubmit, submitting }: Pro
 }
 
 const s: Record<string, React.CSSProperties> = {
-  cacheTag:       { fontSize: 11, fontWeight: 700, color: "#f9e2af", background: "#f9e2af11", border: "1px solid #f9e2af33", borderRadius: 20, padding: "3px 10px", display: "inline-block", marginBottom: 10 },
+  cacheTag:       { fontSize: 11, fontWeight: 700, color: "var(--dp-warning)", background: "var(--dp-warning)11", border: "1px solid var(--dp-warning)33", borderRadius: 20, padding: "3px 10px", display: "inline-block", marginBottom: 10 },
   metaRow:        { display: "flex", gap: 10, alignItems: "center", marginBottom: 16 },
-  metaBadge:      { background: "#89b4fa22", color: "#89b4fa", fontSize: 12, fontWeight: 700, padding: "4px 10px", borderRadius: 20, border: "1px solid #89b4fa44" },
-  metaType:       { color: "#585b70", fontSize: 13 },
+  metaBadge:      { background: "var(--dp-accent)22", color: "var(--dp-accent)", fontSize: 12, fontWeight: 700, padding: "4px 10px", borderRadius: 20, border: "1px solid var(--dp-accent)44" },
+  metaType:       { color: "var(--dp-ink-muted)", fontSize: 13 },
   recRow:         { marginBottom: 14 },
-  label:          { color: "#585b70", fontSize: 11, fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.08em", marginBottom: 6 },
-  rec:            { color: "#a6e3a1", fontWeight: 600, fontSize: 14 },
+  label:          { color: "var(--dp-ink-muted)", fontSize: 11, fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.08em", marginBottom: 6 },
+  rec:            { color: "var(--dp-success)", fontWeight: 600, fontSize: 14 },
   previewSection: { marginBottom: 18 },
-  preview:        { background: "#181825", borderRadius: 8, padding: "14px 18px", maxHeight: 280, overflowY: "auto" as const, border: "1px solid #313244" },
+  preview:        { background: "var(--dp-surface-2)", borderRadius: 8, padding: "14px 18px", maxHeight: 280, overflowY: "auto" as const, border: "1px solid var(--dp-line)" },
 };

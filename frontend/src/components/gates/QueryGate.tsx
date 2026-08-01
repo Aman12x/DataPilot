@@ -57,6 +57,6 @@ export default function QueryGate({ payload, onSubmit, submitting }: Props) {
 const s: Record<string, React.CSSProperties> = {
   warnings: { background: "#fab38711", border: "1px solid #fab38744", borderRadius: 8, padding: "10px 14px", marginBottom: 14 },
   warning:  { color: "#fab387", fontSize: 13, marginBottom: 2 },
-  sqlLabel: { color: "#585b70", fontSize: 11, fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.08em", marginBottom: 6 },
-  sql:      { width: "100%", background: "#181825", color: "#cdd6f4", border: "1px solid #313244", borderRadius: 8, padding: "12px 14px", fontFamily: "monospace", fontSize: 13, resize: "vertical" as const, boxSizing: "border-box" as const },
+  sqlLabel: { color: "var(--dp-ink-muted)", fontSize: 11, fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.08em", marginBottom: 6 },
+  sql:      { width: "100%", background: "var(--dp-surface-2)", color: "var(--dp-ink)", border: "1px solid var(--dp-line)", borderRadius: 8, padding: "12px 14px", fontFamily: "monospace", fontSize: 13, resize: "vertical" as const, boxSizing: "border-box" as const },
 };
