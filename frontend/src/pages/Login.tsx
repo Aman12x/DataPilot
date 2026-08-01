@@ -48,6 +48,11 @@ export default function Login() {
     setError("");
     try {
       await client.post("/auth/resend-verification", { email: pendingEmail });
+      // Backend may issue a session when email delivery is down.
+      if (await checkAuth()) {
+        navigate("/");
+        return;
+      }
       setError("");
     } catch (err) {
       setError(extractApiError(err, "Could not resend verification email."));
