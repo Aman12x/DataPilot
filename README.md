@@ -155,7 +155,7 @@ Treatment/control comparison with covariate adjustment, subgroup HTE, guardrail 
 | Backend | FastAPI + uvicorn |
 | Agent graph | LangGraph 1.1 (SqliteSaver / PostgresSaver) |
 | LLM | Anthropic Claude via `MODEL`, defaulting to `FAST_MODEL` (`claude-haiku-4-5-20251001`) |
-| Query engine | DuckDB (upload/local) · PostgreSQL (external) |
+| Query engine | DuckDB (upload/local) · PostgreSQL · MySQL · BigQuery |
 | Auth | JWT HS256 + PBKDF2 + refresh token rotation |
 | Semantic cache | MiniLM (all-MiniLM-L6-v2) + SQLite |
 | Run state | Redis Streams (multi-pod) · asyncio.Queue (local) |
@@ -168,15 +168,15 @@ Treatment/control comparison with covariate adjustment, subgroup HTE, guardrail 
 
 ## Saved connections & metric packs
 
-SMBs can save Postgres connections and reusable metric definitions:
+SMBs can save warehouse connections and reusable metric definitions:
 
-- `POST/GET/PATCH/DELETE /connections` — passwords encrypted at rest (Fernet; key from `SECRET_KEY` or `CONNECTIONS_ENCRYPTION_KEY`). Passwords are wiped from LangGraph checkpoints after schema load and re-resolved via `connection_id`.
+- `POST/GET/PATCH/DELETE /connections` — backends: `postgres`, `mysql`, `bigquery`. Secrets encrypted at rest (Fernet; key from `SECRET_KEY` or `CONNECTIONS_ENCRYPTION_KEY`). For BigQuery, store the service-account JSON as the connection password and set `project_id` + dataset (`dbname`). Secrets are wiped from LangGraph checkpoints after schema load and re-resolved via `connection_id`.
 - `POST/GET/PATCH/DELETE /metric-packs` — versioned `MetricConfig` packs; `certified: true` skips the Metric Config HITL gate.
 - `GET/PUT /connections/{id}/annotations` — column comments + business synonyms injected into schema context.
 - `GET /connections/{id}/drift?metric_pack_id=` — pack-vs-snapshot drift; connection tests also return `drift_warnings` / `schema_changed`.
 - Soft per-connection schema cache + dataset fingerprint (`connection|pack|version|schema`) scopes semantic cache and few-shot history.
-- Private DB hosts are blocked by default (SSRF guard); set `ALLOW_PRIVATE_DB_HOSTS=true` for VPC / self-hosted Postgres.
-- The Analysis UI can select saved connections / packs and save a new connection after a live test.
+- Private DB hosts are blocked by default (SSRF guard); set `ALLOW_PRIVATE_DB_HOSTS=true` for VPC / self-hosted Postgres or MySQL. BigQuery uses GCP IAM (no host SSRF check).
+- The Analysis UI can select DuckDB / Postgres / MySQL / BigQuery, save connections after a live test, and attach metric packs.
 - **Workspaces** (`GET/POST /workspaces`, members under `/workspaces/{id}/members`) with `owner` / `analyst` roles. Send `X-Workspace-Id` to scope connections, packs, and shared run history. Analysts can read teammate runs; only the creator can resume live HITL gates.
 - **UI:** Metric Pack Studio (create / edit / certify from templates), Schema annotations (column comments + business synonyms), Team members panel (add by email of an existing user), connection save/select, workspace switcher, shared History.
 
@@ -198,8 +198,8 @@ Other controls:
 - Auth required on API routes; guest sessions use ephemeral `guest-{uuid}` tokens
 - Semantic cache scoped per user and dataset fingerprint
 - SQL guardrails (read-only, no file-read functions, auto `LIMIT`)
-- Saved Postgres passwords encrypted at rest; never returned by the API; wiped from checkpoints after schema load
-- SSRF guard on database hosts (private/link-local blocked unless `ALLOW_PRIVATE_DB_HOSTS=true`)
+- Saved Postgres / MySQL / BigQuery secrets encrypted at rest; never returned by the API; wiped from checkpoints after schema load
+- SSRF guard on Postgres/MySQL hosts (private/link-local blocked unless `ALLOW_PRIVATE_DB_HOSTS=true`)
 - Short-lived scoped tokens for SSE/PDF streams
 - Refresh token rotation; password reset invalidates all sessions
 - User tasks and schema excerpts wrapped in delimiters before LLM calls

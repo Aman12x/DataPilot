@@ -26,6 +26,7 @@ Endpoints:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import Any, Literal, Optional
@@ -68,17 +69,43 @@ def _validate_host(host: str) -> None:
     _validate_pg_host(host)
 
 
-def _test_pg(
+def _validate_bq_credentials(raw: str) -> None:
+    if not raw or len(raw) > 65_536:
+        raise HTTPException(status_code=400, detail="BigQuery credentials JSON required")
+    try:
+        info = json.loads(raw)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="credentials must be valid JSON") from exc
+    if not isinstance(info, dict):
+        raise HTTPException(status_code=400, detail="credentials must be a JSON object")
+    for key in ("type", "client_email", "private_key"):
+        if not info.get(key):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Service account JSON missing required field: {key}",
+            )
+
+
+def _build_db_connection(
     *,
-    host: str,
-    port: int,
-    dbname: str,
-    user: str,
-    password: str,
+    backend: str,
+    host: str = "",
+    port: int = 0,
+    dbname: str = "",
+    user: str = "",
+    password: str = "",
     sslmode: str = "prefer",
-) -> dict[str, Any]:
-    conn = DBConnection(
-        backend="postgres",
+    project_id: str = "",
+) -> DBConnection:
+    if backend == "bigquery":
+        return DBConnection(
+            backend="bigquery",
+            project_id=project_id,
+            dataset=dbname,
+            credentials_json=password,
+        )
+    return DBConnection(
+        backend=backend,
         host=host,
         port=port,
         dbname=dbname,
@@ -86,35 +113,62 @@ def _test_pg(
         password=password,
         sslmode=sslmode,
     )
+
+
+def _test_db(
+    *,
+    backend: str,
+    host: str = "",
+    port: int = 0,
+    dbname: str = "",
+    user: str = "",
+    password: str = "",
+    sslmode: str = "prefer",
+    project_id: str = "",
+) -> dict[str, Any]:
+    conn = _build_db_connection(
+        backend=backend,
+        host=host,
+        port=port,
+        dbname=dbname,
+        user=user,
+        password=password,
+        sslmode=sslmode,
+        project_id=project_id,
+    )
     result = conn.test_connection()
-    # Enrich with table names (capped) for onboarding UX
     if result.get("success"):
         try:
-            tables = conn.inspect_schema()
-            # inspect_schema returns a string — also try listing tables
-            from tools.db_tools import DBConnection as _
+            preview = conn.inspect_schema()
             names = []
             try:
-                names = conn._get_tables_postgres()[:50]
+                names = conn._get_tables()[:50]
             except Exception:
                 pass
             result["tables"] = names
-            result["schema_preview"] = (tables or "")[:2000]
+            result["schema_preview"] = (preview or "")[:2000]
         except Exception as exc:
             logger.debug("schema enrich failed: %s", exc)
     return result
+
+
+# Public entrypoint used by routes — tests patch this name for live-test isolation.
+def _test_pg(**kwargs: Any) -> dict[str, Any]:
+    kwargs.setdefault("backend", "postgres")
+    return _test_db(**kwargs)
 
 
 # ── Connection models ─────────────────────────────────────────────────────────
 
 class ConnectionCreate(BaseModel):
     name: str = Field(min_length=1, max_length=128)
-    host: str = Field(min_length=1, max_length=253)
+    backend: Literal["postgres", "mysql", "bigquery"] = "postgres"
+    host: str = Field(default="", max_length=253)
     port: int = 5432
-    dbname: str = Field(min_length=1, max_length=128)
-    username: str = Field(min_length=1, max_length=128)
-    password: str = Field(min_length=0, max_length=512)
-    backend: Literal["postgres"] = "postgres"
+    dbname: str = Field(default="", max_length=128)  # MySQL/PG db or BQ dataset
+    username: str = Field(default="", max_length=128)
+    password: str = Field(default="", max_length=65_536)  # BQ service-account JSON
+    project_id: str = Field(default="", max_length=128)
     sslmode: str = "prefer"
     test: bool = True  # test before save by default
 
@@ -125,13 +179,6 @@ class ConnectionCreate(BaseModel):
             raise ValueError(f"sslmode must be one of {sorted(_ALLOWED_SSL)}")
         return v
 
-    @field_validator("port")
-    @classmethod
-    def _port(cls, v: int) -> int:
-        if not (1 <= v <= 65535):
-            raise ValueError("port out of range")
-        return v
-
 
 class ConnectionUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=128)
@@ -139,7 +186,8 @@ class ConnectionUpdate(BaseModel):
     port: Optional[int] = None
     dbname: Optional[str] = Field(default=None, min_length=1, max_length=128)
     username: Optional[str] = Field(default=None, min_length=1, max_length=128)
-    password: Optional[str] = Field(default=None, max_length=512)
+    password: Optional[str] = Field(default=None, max_length=65_536)
+    project_id: Optional[str] = Field(default=None, max_length=128)
     sslmode: Optional[str] = None
 
     @field_validator("sslmode")
@@ -151,11 +199,13 @@ class ConnectionUpdate(BaseModel):
 
 
 class EphemeralTestRequest(BaseModel):
-    host: str
+    backend: Literal["postgres", "mysql", "bigquery"] = "postgres"
+    host: str = ""
     port: int = 5432
-    dbname: str
-    username: str
+    dbname: str = ""
+    username: str = ""
     password: str = ""
+    project_id: str = ""
     sslmode: str = "prefer"
 
 
@@ -178,14 +228,38 @@ async def create_connection(
     current_user: dict = Depends(get_current_user),
     workspace_id: str | None = Depends(resolve_workspace_id),
 ):
-    _validate_host(body.host)
     user_id = current_user["user_id"]
     _require_owner(user_id, workspace_id)
 
+    backend = body.backend
+    host = body.host
+    port = body.port
+    dbname = body.dbname
+    username = body.username
+    password = body.password
+    project_id = body.project_id
+    sslmode = body.sslmode
+
+    if backend in ("postgres", "mysql"):
+        if not host or not dbname or not username:
+            raise HTTPException(status_code=400, detail="host, dbname, and username are required")
+        if not (1 <= int(port) <= 65535):
+            raise HTTPException(status_code=400, detail="port out of range")
+        if backend == "mysql" and port == 5432:
+            port = 3306
+        _validate_host(host)
+    elif backend == "bigquery":
+        if not project_id or not dbname:
+            raise HTTPException(status_code=400, detail="project_id and dataset (dbname) are required")
+        _validate_bq_credentials(password)
+        host, port, username, sslmode = "", 0, "", "prefer"
+
     if body.test:
         result = _test_pg(
-            host=body.host, port=body.port, dbname=body.dbname,
-            user=body.username, password=body.password, sslmode=body.sslmode,
+            backend=backend,
+            host=host, port=port, dbname=dbname,
+            user=username, password=password, sslmode=sslmode,
+            project_id=project_id,
         )
         if not result.get("success"):
             raise HTTPException(
@@ -196,20 +270,24 @@ async def create_connection(
     conn = workspace_store.create_connection(
         user_id,
         name=body.name,
-        host=body.host,
-        port=body.port,
-        dbname=body.dbname,
-        username=body.username,
-        password=body.password,
-        backend=body.backend,
-        sslmode=body.sslmode,
+        host=host,
+        port=port,
+        dbname=dbname,
+        username=username,
+        password=password,
+        backend=backend,
+        sslmode=sslmode,
+        project_id=project_id,
         workspace_id=workspace_id,
     )
     if body.test:
         workspace_store.record_connection_test(user_id, conn.connection_id, ok=True)
         conn = workspace_store.get_connection(user_id, conn.connection_id) or conn
 
-    logger.info("connection.created user=%s id=%s host=%s", user_id, conn.connection_id, body.host)
+    logger.info(
+        "connection.created user=%s id=%s backend=%s host=%s project=%s",
+        user_id, conn.connection_id, backend, host or "-", project_id or "-",
+    )
     return conn.to_dict()
 
 
@@ -279,8 +357,10 @@ async def test_saved_connection(
         raise HTTPException(status_code=404, detail="Connection not found")
 
     result = _test_pg(
+        backend=secrets.backend,
         host=secrets.host, port=secrets.port, dbname=secrets.dbname,
         user=secrets.username, password=secrets.password, sslmode=secrets.sslmode,
+        project_id=secrets.project_id,
     )
     workspace_store.record_connection_test(
         user_id, connection_id,
@@ -299,10 +379,11 @@ async def test_saved_connection(
             )
             ann = workspace_store.get_annotations(user_id, connection_id)
             annotations = (ann.annotations if ann else {}) or {}
-            conn = DBConnection(
-                backend="postgres",
+            conn = _build_db_connection(
+                backend=secrets.backend,
                 host=secrets.host, port=secrets.port, dbname=secrets.dbname,
                 user=secrets.username, password=secrets.password, sslmode=secrets.sslmode,
+                project_id=secrets.project_id,
             )
             schema_context = conn.inspect_schema(annotations=annotations)
             sch_hash = schema_hash(schema_context)
@@ -343,10 +424,17 @@ async def test_ephemeral(
     body: EphemeralTestRequest,
     current_user: dict = Depends(get_current_user),
 ):
-    _validate_host(body.host)
+    if body.backend in ("postgres", "mysql"):
+        _validate_host(body.host)
+    elif body.backend == "bigquery":
+        _validate_bq_credentials(body.password)
+        if not body.project_id or not body.dbname:
+            raise HTTPException(status_code=400, detail="project_id and dataset required")
     result = _test_pg(
+        backend=body.backend,
         host=body.host, port=body.port, dbname=body.dbname,
         user=body.username, password=body.password, sslmode=body.sslmode,
+        project_id=body.project_id,
     )
     return {
         "success": result.get("success"),

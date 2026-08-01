@@ -109,8 +109,11 @@ def load_schema(state: AgentState) -> dict:
     is_upload = bool(state.get("duckdb_path"))
     connection_id = state.get("connection_id") or ""
     user_id = state.get("user_id") or ""
+    backend = state.get("db_backend", "duckdb")
     is_byo_db = bool(connection_id) or (
-        state.get("db_backend") == "postgres" and bool(state.get("pg_host"))
+        backend in ("postgres", "mysql") and bool(state.get("pg_host"))
+    ) or (
+        backend == "bigquery" and bool(state.get("bq_project_id") or state.get("bq_dataset"))
     )
 
     force_refresh = (
@@ -182,7 +185,8 @@ def load_schema(state: AgentState) -> dict:
 
     # Prepend SQL dialect so the LLM never has to guess the engine.
     backend = state.get("db_backend", "duckdb")
-    dialect = "DuckDB SQL" if backend == "duckdb" else "PostgreSQL"
+    from tools.db_tools import dialect_label
+    dialect = dialect_label(backend)
     schema_context = f"-- Dialect: {dialect}\n\n{schema_context}"
 
     # Append synonym hints when present
@@ -221,9 +225,10 @@ def load_schema(state: AgentState) -> dict:
         "schema_drift_warnings": drift_warnings,
         "dataset_fingerprint": fingerprint,
         "force_metric_gate": force_metric_gate,
-        # Wipe inline Postgres credentials from the checkpoint immediately.
+        # Wipe inline credentials from the checkpoint immediately.
         "pg_password": "",
         "pg_user":     "",
         "pg_host":     "",
         "pg_dbname":   "",
+        "bq_credentials_json": "",
     }

@@ -9,7 +9,47 @@ import pandas as pd
 import pytest
 import duckdb
 
-from tools.db_tools import DBConnection
+from tools.db_tools import DBConnection, dialect_label
+
+
+def test_dialect_label_covers_warehouse_backends():
+    assert dialect_label("mysql") == "MySQL"
+    assert "BigQuery" in dialect_label("bigquery")
+    assert dialect_label("postgres") == "PostgreSQL"
+
+
+def test_mysql_init_and_connection_fails_gracefully():
+    db = DBConnection(
+        "mysql",
+        host="127.0.0.1",
+        port=3306,
+        dbname="nonexistent_db",
+        user="nobody",
+        password="wrong",
+    )
+    result = db.test_connection()
+    assert result["success"] is False
+    assert isinstance(result["error"], str)
+    assert len(result["error"]) > 0
+
+
+def test_bigquery_init_requires_credentials():
+    with pytest.raises(ValueError, match="credentials"):
+        DBConnection("bigquery", project_id="p", dataset="d")
+
+
+def test_bigquery_init_ok():
+    creds = (
+        '{"type":"service_account","client_email":"a@b.com",'
+        '"private_key":"-----BEGIN PRIVATE KEY-----\\nX\\n-----END PRIVATE KEY-----\\n"}'
+    )
+    db = DBConnection(
+        "bigquery",
+        project_id="my-project",
+        dataset="analytics",
+        credentials_json=creds,
+    )
+    assert db.backend == "bigquery"
 
 
 def test_duckdb_connection_succeeds(tmp_duckdb):
