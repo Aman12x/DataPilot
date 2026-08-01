@@ -35,6 +35,7 @@ from auth.store import (
 from ..auth_rate import check_auth_rate
 from ..cookies import clear_auth_cookies, read_refresh_token, set_auth_cookies
 from ..deps import (
+    bootstrap_user_workspace,
     create_access_token,
     create_guest_access_token,
     create_refresh_token,
@@ -101,6 +102,11 @@ def _auth_response(
 
 
 def _issue_session(user, *, status_code: int = 200) -> JSONResponse:
+    # Personal workspace bootstrap (Phase 3) — idempotent
+    try:
+        bootstrap_user_workspace(user.user_id)
+    except Exception:
+        pass
     sv = get_session_version(user.user_id)
     access = create_access_token(user.user_id, user.username)
     refresh = create_refresh_token(user.user_id, session_version=sv)

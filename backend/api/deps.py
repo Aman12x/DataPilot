@@ -151,6 +151,84 @@ def get_current_user(
     return {"user_id": payload["sub"], "username": payload.get("username", "")}
 
 
+def bootstrap_user_workspace(user_id: str) -> dict[str, str] | None:
+    """
+    Ensure a real user has a personal workspace and migrated resources.
+    Returns {workspace_id, role, name} or None for guests.
+    """
+    if not user_id or user_id.startswith("guest-"):
+        return None
+    from auth.org_store import (
+        ensure_personal_workspace,
+        migrate_user_resources_to_workspace,
+    )
+
+    ws = ensure_personal_workspace(user_id)
+    migrate_user_resources_to_workspace(user_id, ws.workspace_id)
+    return {
+        "workspace_id": ws.workspace_id,
+        "role": ws.role,
+        "name": ws.name,
+    }
+
+
+def resolve_workspace_id(
+    request: Request,
+    current_user: dict[str, str] = Depends(get_current_user),
+) -> str | None:
+    """
+    Resolve active workspace from X-Workspace-Id (or query workspace_id).
+
+    Guests → None (legacy personal path).
+    Real users → header/query if member, else personal workspace (auto-created).
+    """
+    user_id = current_user["user_id"]
+    if user_id.startswith("guest-"):
+        return None
+
+    from auth.org_store import get_membership
+
+    header_ws = (request.headers.get("X-Workspace-Id") or "").strip()
+    query_ws = (request.query_params.get("workspace_id") or "").strip()
+    requested = header_ws or query_ws
+
+    personal = bootstrap_user_workspace(user_id)
+    if not personal:
+        return None
+
+    if requested:
+        role = get_membership(user_id, requested)
+        if role is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not a member of this workspace",
+            )
+        return requested
+    return personal["workspace_id"]
+
+
+def require_workspace_owner(
+    request: Request,
+    current_user: dict[str, str] = Depends(get_current_user),
+) -> str:
+    """Resolve workspace and require owner role. Returns workspace_id."""
+    from auth.org_store import require_role
+
+    ws_id = resolve_workspace_id(request, current_user)
+    if not ws_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Workspace required",
+        )
+    try:
+        require_role(current_user["user_id"], ws_id, min_role="owner")
+    except PermissionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)
+        ) from exc
+    return ws_id
+
+
 def resolve_refresh_token(
     request: Request,
     body_token: str | None = None,

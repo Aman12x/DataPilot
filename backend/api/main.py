@@ -270,9 +270,11 @@ from .routes.runs import router as runs_router
 from .routes.upload import router as upload_router
 from .routes.samples import router as samples_router
 from .routes.workspace import router as workspace_router
+from .routes.orgs import router as orgs_router
 
 app.include_router(auth_router)
 app.include_router(runs_router)
 app.include_router(upload_router)
 app.include_router(samples_router)
 app.include_router(workspace_router)
+app.include_router(orgs_router)
