@@ -129,3 +129,43 @@ test("login through the UI with a freshly created account", async ({ page, reque
   expect(page.url(), "still on /login after login").not.toContain("/login");
   await expect(page.getByText(email.split("@")[0]), "signed-in user not shown").toBeVisible();
 });
+
+
+test("no CSP violations across the authenticated app", async ({ page, request }) => {
+  const d = attach(page);
+  const violations: string[] = [];
+  page.on("console", (m) => {
+    if (/Refused to|Content Security Policy|violates/i.test(m.text())) violations.push(m.text());
+  });
+  // The DOM event catches violations the console formats differently.
+  await page.addInitScript(() => {
+    document.addEventListener("securitypolicyviolation", (e) => {
+      const w = window as unknown as { __csp?: string[] };
+      (w.__csp = w.__csp || []).push(`${e.violatedDirective} <- ${e.blockedURI || "(inline)"}`);
+    });
+  });
+
+  const stamp = Date.now();
+  const email = `cspcheck${stamp}@example.com`;
+  const password = "Str0ngTestPass!x";
+  const reg = await request.post("https://datapilot.singhaman.dev/auth/register", {
+    data: { username: `cspcheck${stamp}`, email, password },
+  });
+  expect(reg.status()).toBe(201);
+
+  await page.goto("/login", { waitUntil: "networkidle" });
+  await page.getByLabel("Username or email", { exact: true }).fill(email);
+  await page.getByLabel("Password", { exact: true }).fill(password);
+  await page.getByRole("button", { name: /sign in|log ?in/i }).last().click();
+  await expect(page.getByRole("button", { name: /sign out/i })).toBeVisible({ timeout: 30_000 });
+
+  for (const route of ["/", "/history", "/"]) {
+    await page.goto(route, { waitUntil: "networkidle" });
+    await expect(page.locator("#root")).not.toBeEmpty();
+  }
+
+  const dom = await page.evaluate(() => (window as unknown as { __csp?: string[] }).__csp || []);
+  dump("csp sweep", d);
+  expect(violations, `console CSP violations: ${violations.join(" | ")}`).toEqual([]);
+  expect(dom, `blocked by CSP: ${dom.join(" | ")}`).toEqual([]);
+});
