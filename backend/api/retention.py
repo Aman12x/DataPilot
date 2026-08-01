@@ -311,5 +311,43 @@ def run_maintenance() -> dict:
             logger.warning("backup of %s failed", key, exc_info=True)
     report["backups"] = made
 
+    # Sizes on every pass: without them there is no way to tell which file is
+    # consuming a fixed-size volume, or to see growth before the disk is full.
+    try:
+        report["sizes_mb"] = disk_report()
+    except Exception:
+        logger.debug("size report failed", exc_info=True)
+
     logger.info("retention.pass %s", report)
     return report
+
+
+def _dir_bytes(path: Path) -> int:
+    total = 0
+    if not path.exists():
+        return 0
+    for p in path.rglob("*"):
+        try:
+            if p.is_file():
+                total += p.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def disk_report() -> dict:
+    """Per-file and per-directory usage on the volume, in MB."""
+    paths = _paths()
+    out: dict[str, float] = {}
+    for key, p in paths.items():
+        size = 0
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                size += os.path.getsize(p + suffix)
+            except OSError:
+                pass
+        out[key] = round(size / 1e6, 1)
+    out["uploads"] = round(_dir_bytes(Path(os.getenv("UPLOAD_DIR", "tmp_uploads"))) / 1e6, 1)
+    out["backups"] = round(_dir_bytes(Path(backup_dir())) / 1e6, 1)
+    out["graph_free"] = round(free_bytes(paths["graph"]) / 1e6, 1)
+    return out

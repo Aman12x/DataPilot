@@ -415,3 +415,34 @@ def test_free_bytes_is_zero_for_a_compact_database(tmp_path):
     con.commit(); con.close()
     assert retention.free_bytes(db) == 0
     assert retention.free_bytes(str(tmp_path / "missing.db")) == 0
+
+
+def test_disk_report_breaks_down_volume_usage(tmp_path, monkeypatch):
+    """Without per-file sizes there is no way to tell what is filling the disk."""
+    graph = str(tmp_path / "graph.db")
+    _graph_db(graph, {"a": [datetime.now(timezone.utc)]})
+    # Pad past a megabyte so the rounded report is meaningful.
+    con = sqlite3.connect(graph)
+    con.executemany(
+        "INSERT INTO checkpoints VALUES ('pad','',?,NULL,'msgpack',?,?)",
+        [(_uuid6_at(datetime.now(timezone.utc)), b"x" * 100_000, b"{}") for _ in range(20)],
+    )
+    con.commit()
+    con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    con.close()
+
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    (uploads / "u1.db").write_bytes(b"x" * 2_000_000)
+
+    monkeypatch.setenv("GRAPH_DB_PATH", graph)
+    monkeypatch.setenv("AUTH_DB_PATH", str(tmp_path / "auth.db"))
+    monkeypatch.setenv("MEMORY_DB_PATH", str(tmp_path / "mem.db"))
+    monkeypatch.setenv("UPLOAD_DIR", str(uploads))
+    monkeypatch.setenv("BACKUP_DIR", str(tmp_path / "backups"))
+
+    rep = retention.disk_report()
+    assert rep["uploads"] == pytest.approx(2.0, abs=0.2)
+    assert rep["graph"] > 0
+    assert rep["auth"] == 0        # missing file, not an error
+    assert "graph_free" in rep
