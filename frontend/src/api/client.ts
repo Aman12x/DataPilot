@@ -6,6 +6,42 @@ const client = axios.create({
   withCredentials: true,
 });
 
+const WORKSPACE_KEY = "datapilot.workspace_id";
+
+export function getActiveWorkspaceId(): string | null {
+  try {
+    return localStorage.getItem(WORKSPACE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function setActiveWorkspaceId(id: string | null): void {
+  try {
+    if (id) localStorage.setItem(WORKSPACE_KEY, id);
+    else localStorage.removeItem(WORKSPACE_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+export interface WorkspaceSummary {
+  workspace_id: string;
+  name: string;
+  role: string;
+  created_at: string;
+}
+
+// Attach active workspace on every request (Phase 3)
+client.interceptors.request.use((config) => {
+  const ws = getActiveWorkspaceId();
+  if (ws) {
+    config.headers = config.headers || {};
+    config.headers["X-Workspace-Id"] = ws;
+  }
+  return config;
+});
+
 // On 401: attempt cookie-based refresh once, then redirect to login.
 // Auth probe routes (/auth/me, etc.) must reject quietly — no refresh or redirect.
 const AUTH_PROBE_PATHS = ["/auth/me", "/auth/refresh", "/auth/login", "/auth/guest", "/auth/register"];

@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import client, { API_BASE, uploadFile, type UploadResult, logout } from "../api/client";
+import client, {
+  API_BASE, uploadFile, type UploadResult, logout,
+  getActiveWorkspaceId, setActiveWorkspaceId, type WorkspaceSummary,
+} from "../api/client";
 import { useSSE, type DoneEvent, type StepEvent, type TrustIndicators, type PowerAnalysisResult, type SensitivityRow } from "../hooks/useSSE";
 import { useTokenRefresh } from "../hooks/useTokenRefresh";
 import PipelineProgress from "../components/PipelineProgress";
@@ -35,11 +38,14 @@ const FALLBACK_SAMPLES: Sample[] = [
 
 // ── ModeSelect — the two-button landing ───────────────────────────────────────
 
-function ModeSelect({ onSelect, username, onHistory, onSignOut }: {
+function ModeSelect({ onSelect, username, onHistory, onSignOut, workspaces, workspaceId, onWorkspaceChange }: {
   onSelect: (mode: Mode) => void;
   username: string;
   onHistory: () => void;
   onSignOut: () => void;
+  workspaces: WorkspaceSummary[];
+  workspaceId: string;
+  onWorkspaceChange: (id: string) => void;
 }) {
   const [showAbSub, setShowAbSub] = useState(false);
 
@@ -50,6 +56,20 @@ function ModeSelect({ onSelect, username, onHistory, onSignOut }: {
       <div style={ms.topBar} className="dp-topbar">
         <span style={ms.logo} className="dp-logo">✦ DataPilot</span>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {workspaces.length > 0 && (
+            <select
+              aria-label="Workspace"
+              value={workspaceId}
+              onChange={(e) => onWorkspaceChange(e.target.value)}
+              style={ms.wsSelect}
+            >
+              {workspaces.map((w) => (
+                <option key={w.workspace_id} value={w.workspace_id}>
+                  {w.name}{w.role === "owner" ? "" : ` (${w.role})`}
+                </option>
+              ))}
+            </select>
+          )}
           {username && <span style={ms.username}>{username}</span>}
           <button className="dp-btn dp-btn-ghost" style={{ padding: "6px 14px" }} onClick={onHistory}>History</button>
           <button className="dp-btn dp-btn-link" onClick={onSignOut}>Sign out</button>
@@ -139,6 +159,7 @@ const ms: Record<string, React.CSSProperties> = {
   topBar:     { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 4px", maxWidth: 760, margin: "0 auto" },
   logo:       { color: "#89b4fa", fontWeight: 700, fontSize: 18, letterSpacing: "-0.3px" },
   username:   { color: "#45475a", fontSize: 13 },
+  wsSelect:   { background: "#1e1e2e", border: "1px solid #313244", color: "#a6adc8", padding: "5px 10px", borderRadius: 6, fontSize: 12, maxWidth: 160 },
   navBtn:     { background: "transparent", border: "1px solid #313244", color: "#a6adc8", padding: "5px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12 },
   signOutBtn: { background: "transparent", border: "none", color: "#45475a", fontSize: 12, cursor: "pointer" },
   hero:       { textAlign: "center", padding: "48px 0 36px", maxWidth: 560, margin: "0 auto" },
@@ -912,6 +933,8 @@ export default function Analysis() {
   const [startError,   setStartError]   = useState("");
   const [username,     setUsername]     = useState("");
   const [runError,     setRunError]     = useState("");
+  const [workspaces,   setWorkspaces]   = useState<WorkspaceSummary[]>([]);
+  const [workspaceId,  setWorkspaceId]  = useState(getActiveWorkspaceId() || "");
 
   useTokenRefresh(() => {});
 
@@ -919,7 +942,24 @@ export default function Analysis() {
     client.get<{ username: string }>("/auth/me")
       .then(r => setUsername(r.data.username))
       .catch(() => {});
+    client.get<{ workspaces: WorkspaceSummary[] }>("/workspaces")
+      .then((r) => {
+        const list = r.data.workspaces || [];
+        setWorkspaces(list);
+        if (!list.length) return;
+        const saved = getActiveWorkspaceId();
+        const active = list.find((w) => w.workspace_id === saved)?.workspace_id
+          || list[0].workspace_id;
+        setWorkspaceId(active);
+        setActiveWorkspaceId(active);
+      })
+      .catch(() => {});
   }, []);
+
+  const handleWorkspaceChange = (id: string) => {
+    setWorkspaceId(id);
+    setActiveWorkspaceId(id);
+  };
 
   const startOver = () => {
     setThread([]); setSelectedMode(null); setStartError(""); setRunError(""); setExpanded(new Set());
@@ -1003,6 +1043,9 @@ export default function Analysis() {
         username={username}
         onHistory={() => navigate("/history")}
         onSignOut={async () => { await logout(); navigate("/login"); }}
+        workspaces={workspaces}
+        workspaceId={workspaceId}
+        onWorkspaceChange={handleWorkspaceChange}
       />
     );
 

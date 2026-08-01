@@ -85,16 +85,38 @@ def init_workspace_tables(path: str | None = None) -> None:
                 updated_at      TEXT NOT NULL
             )
         """)
-        # Schema snapshot columns on connections (idempotent ALTERs)
+        # Schema snapshot + workspace scoping columns (idempotent ALTERs)
         for col, defn in (
             ("schema_snapshot_json", "TEXT"),
             ("schema_hash", "TEXT"),
             ("schema_snapshot_at", "TEXT"),
+            ("workspace_id", "TEXT"),
         ):
             try:
                 con.execute(f"ALTER TABLE db_connections ADD COLUMN {col} {defn}")
             except Exception:
                 pass  # already exists
+        try:
+            con.execute("ALTER TABLE metric_packs ADD COLUMN workspace_id TEXT")
+        except Exception:
+            pass
+        try:
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_db_connections_workspace "
+                "ON db_connections(workspace_id)"
+            )
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_metric_packs_workspace "
+                "ON metric_packs(workspace_id)"
+            )
+        except Exception:
+            pass
+        # Org tables (workspaces / members)
+        try:
+            from auth.org_store import init_org_tables
+            init_org_tables(path)
+        except Exception:
+            pass
 
 
 # ── Connection DTOs ───────────────────────────────────────────────────────────
@@ -114,6 +136,7 @@ class ConnectionPublic:
     last_test_error: str | None
     created_at: str
     updated_at: str
+    workspace_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -130,6 +153,7 @@ class ConnectionPublic:
             "last_test_error": self.last_test_error,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "workspace_id": self.workspace_id,
         }
 
 
@@ -164,7 +188,22 @@ def _row_to_public(row: Any) -> ConnectionPublic:
         last_test_error=d.get("last_test_error"),
         created_at=d["created_at"],
         updated_at=d["updated_at"],
+        workspace_id=d.get("workspace_id") or None,
     )
+
+
+def _user_can_access_connection(
+    user_id: str, row: Any, path: str | None = None
+) -> bool:
+    """Owner user_id OR workspace membership."""
+    d = dict(row)
+    if d.get("user_id") == user_id:
+        return True
+    ws = d.get("workspace_id") or ""
+    if not ws:
+        return False
+    from auth.org_store import get_membership
+    return get_membership(user_id, ws, path=path) is not None
 
 
 def create_connection(
@@ -178,6 +217,7 @@ def create_connection(
     password: str,
     backend: str = "postgres",
     sslmode: str = "prefer",
+    workspace_id: str | None = None,
     path: str | None = None,
 ) -> ConnectionPublic:
     from backend.api.crypto_secrets import encrypt_secret
@@ -193,30 +233,44 @@ def create_connection(
             """
             INSERT INTO db_connections (
                 connection_id, user_id, name, backend, host, port, dbname,
-                username, password_enc, sslmode, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                username, password_enc, sslmode, created_at, updated_at, workspace_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 connection_id, user_id, name.strip(), backend, host.strip(),
                 int(port), dbname.strip(), username.strip(), password_enc,
-                sslmode or "prefer", now, now,
+                sslmode or "prefer", now, now, workspace_id,
             ),
         )
     return get_connection(user_id, connection_id, path=path)  # type: ignore[return-value]
 
 
-def list_connections(user_id: str, path: str | None = None) -> list[ConnectionPublic]:
+def list_connections(
+    user_id: str,
+    path: str | None = None,
+    workspace_id: str | None = None,
+) -> list[ConnectionPublic]:
     path = path or _auth_db_path()
     init_workspace_tables(path)
     with _connect(path) as con:
-        rows = con.execute(
-            """
-            SELECT * FROM db_connections
-            WHERE user_id = ? AND deleted_at IS NULL
-            ORDER BY updated_at DESC
-            """,
-            (user_id,),
-        ).fetchall()
+        if workspace_id:
+            rows = con.execute(
+                """
+                SELECT * FROM db_connections
+                WHERE workspace_id = ? AND deleted_at IS NULL
+                ORDER BY updated_at DESC
+                """,
+                (workspace_id,),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                """
+                SELECT * FROM db_connections
+                WHERE user_id = ? AND deleted_at IS NULL
+                ORDER BY updated_at DESC
+                """,
+                (user_id,),
+            ).fetchall()
     return [_row_to_public(r) for r in rows]
 
 
@@ -229,11 +283,13 @@ def get_connection(
         row = con.execute(
             """
             SELECT * FROM db_connections
-            WHERE connection_id = ? AND user_id = ? AND deleted_at IS NULL
+            WHERE connection_id = ? AND deleted_at IS NULL
             """,
-            (connection_id, user_id),
+            (connection_id,),
         ).fetchone()
-    return _row_to_public(row) if row else None
+    if not row or not _user_can_access_connection(user_id, row, path=path):
+        return None
+    return _row_to_public(row)
 
 
 def get_connection_secrets(
@@ -248,11 +304,11 @@ def get_connection_secrets(
         row = con.execute(
             """
             SELECT * FROM db_connections
-            WHERE connection_id = ? AND user_id = ? AND deleted_at IS NULL
+            WHERE connection_id = ? AND deleted_at IS NULL
             """,
-            (connection_id, user_id),
+            (connection_id,),
         ).fetchone()
-    if not row:
+    if not row or not _user_can_access_connection(user_id, row, path=path):
         return None
     d = dict(row)
     return ConnectionSecrets(
@@ -266,6 +322,31 @@ def get_connection_secrets(
         password=decrypt_secret(d["password_enc"]),
         sslmode=d.get("sslmode") or "prefer",
     )
+
+
+def _user_can_mutate_connection(
+    user_id: str, connection_id: str, path: str | None = None
+) -> bool:
+    """Creator or workspace owner can mutate connection config/secrets."""
+    path = path or _auth_db_path()
+    with _connect(path) as con:
+        row = con.execute(
+            """
+            SELECT user_id, workspace_id FROM db_connections
+            WHERE connection_id = ? AND deleted_at IS NULL
+            """,
+            (connection_id,),
+        ).fetchone()
+    if not row:
+        return False
+    d = dict(row)
+    if d.get("user_id") == user_id:
+        return True
+    ws = d.get("workspace_id") or ""
+    if not ws:
+        return False
+    from auth.org_store import get_membership
+    return get_membership(user_id, ws, path=path) == "owner"
 
 
 def update_connection(
@@ -286,6 +367,8 @@ def update_connection(
     path = path or _auth_db_path()
     existing = get_connection(user_id, connection_id, path=path)
     if not existing:
+        return None
+    if not _user_can_mutate_connection(user_id, connection_id, path=path):
         return None
 
     now = _utcnow()
@@ -315,12 +398,12 @@ def update_connection(
         return existing
 
     _set("updated_at", now)
-    params.extend([connection_id, user_id])
+    params.append(connection_id)
 
     with _connect(path) as con:
         con.execute(
             f"UPDATE db_connections SET {', '.join(fields)} "
-            "WHERE connection_id = ? AND user_id = ? AND deleted_at IS NULL",
+            "WHERE connection_id = ? AND deleted_at IS NULL",
             tuple(params),
         )
     return get_connection(user_id, connection_id, path=path)
@@ -329,25 +412,26 @@ def update_connection(
 def delete_connection(user_id: str, connection_id: str, path: str | None = None) -> bool:
     path = path or _auth_db_path()
     init_workspace_tables(path)
+    if not _user_can_mutate_connection(user_id, connection_id, path=path):
+        return False
     now = _utcnow()
     with _connect(path) as con:
         cur = con.execute(
             """
             UPDATE db_connections SET deleted_at = ?, updated_at = ?
-            WHERE connection_id = ? AND user_id = ? AND deleted_at IS NULL
+            WHERE connection_id = ? AND deleted_at IS NULL
             """,
-            (now, now, connection_id, user_id),
+            (now, now, connection_id),
         )
-        # Prefer rowcount so soft-deleted rows owned by others don't look like success.
         try:
             return int(cur.rowcount or 0) > 0
         except Exception:
             row = con.execute(
                 """
                 SELECT 1 FROM db_connections
-                WHERE connection_id = ? AND user_id = ? AND deleted_at IS NOT NULL
+                WHERE connection_id = ? AND deleted_at IS NOT NULL
                 """,
-                (connection_id, user_id),
+                (connection_id,),
             ).fetchone()
             return row is not None
 
@@ -362,15 +446,17 @@ def record_connection_test(
 ) -> None:
     path = path or _auth_db_path()
     init_workspace_tables(path)
+    if not get_connection(user_id, connection_id, path=path):
+        return
     now = _utcnow()
     with _connect(path) as con:
         con.execute(
             """
             UPDATE db_connections
             SET last_tested_at = ?, last_test_ok = ?, last_test_error = ?, updated_at = ?
-            WHERE connection_id = ? AND user_id = ? AND deleted_at IS NULL
+            WHERE connection_id = ? AND deleted_at IS NULL
             """,
-            (now, 1 if ok else 0, (error or "")[:500], now, connection_id, user_id),
+            (now, 1 if ok else 0, (error or "")[:500], now, connection_id),
         )
 
 
@@ -387,6 +473,7 @@ class MetricPackPublic:
     version: int
     created_at: str
     updated_at: str
+    workspace_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -399,6 +486,7 @@ class MetricPackPublic:
             "version": self.version,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "workspace_id": self.workspace_id,
         }
 
 
@@ -414,7 +502,41 @@ def _pack_from_row(row: Any) -> MetricPackPublic:
         version=int(d.get("version") or 1),
         created_at=d["created_at"],
         updated_at=d["updated_at"],
+        workspace_id=d.get("workspace_id") or None,
     )
+
+
+def _user_can_access_pack(user_id: str, row: Any, path: str | None = None) -> bool:
+    d = dict(row)
+    if d.get("user_id") == user_id:
+        return True
+    ws = d.get("workspace_id") or ""
+    if not ws:
+        return False
+    from auth.org_store import get_membership
+    return get_membership(user_id, ws, path=path) is not None
+
+
+def _user_can_mutate_pack(user_id: str, pack_id: str, path: str | None = None) -> bool:
+    path = path or _auth_db_path()
+    with _connect(path) as con:
+        row = con.execute(
+            """
+            SELECT user_id, workspace_id FROM metric_packs
+            WHERE pack_id = ? AND deleted_at IS NULL
+            """,
+            (pack_id,),
+        ).fetchone()
+    if not row:
+        return False
+    d = dict(row)
+    if d.get("user_id") == user_id:
+        return True
+    ws = d.get("workspace_id") or ""
+    if not ws:
+        return False
+    from auth.org_store import get_membership
+    return get_membership(user_id, ws, path=path) == "owner"
 
 
 def create_metric_pack(
@@ -425,6 +547,7 @@ def create_metric_pack(
     description: str = "",
     certified: bool = False,
     connection_id: str | None = None,
+    workspace_id: str | None = None,
     path: str | None = None,
 ) -> MetricPackPublic:
     from config.analysis_config import MetricConfig
@@ -439,18 +562,18 @@ def create_metric_pack(
 
     if connection_id:
         if not get_connection(user_id, connection_id, path=path):
-            raise ValueError("connection_id not found or not owned by user")
+            raise ValueError("connection_id not found or not accessible")
 
     with _connect(path) as con:
         con.execute(
             """
             INSERT INTO metric_packs (
-                pack_id, user_id, name, description, config_json,
+                pack_id, user_id, workspace_id, name, description, config_json,
                 certified, connection_id, version, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
             """,
             (
-                pack_id, user_id, name.strip(), description.strip(),
+                pack_id, user_id, workspace_id, name.strip(), description.strip(),
                 json.dumps(config), 1 if certified else 0,
                 connection_id, now, now,
             ),
@@ -458,18 +581,32 @@ def create_metric_pack(
     return get_metric_pack(user_id, pack_id, path=path)  # type: ignore[return-value]
 
 
-def list_metric_packs(user_id: str, path: str | None = None) -> list[MetricPackPublic]:
+def list_metric_packs(
+    user_id: str,
+    path: str | None = None,
+    workspace_id: str | None = None,
+) -> list[MetricPackPublic]:
     path = path or _auth_db_path()
     init_workspace_tables(path)
     with _connect(path) as con:
-        rows = con.execute(
-            """
-            SELECT * FROM metric_packs
-            WHERE user_id = ? AND deleted_at IS NULL
-            ORDER BY updated_at DESC
-            """,
-            (user_id,),
-        ).fetchall()
+        if workspace_id:
+            rows = con.execute(
+                """
+                SELECT * FROM metric_packs
+                WHERE workspace_id = ? AND deleted_at IS NULL
+                ORDER BY updated_at DESC
+                """,
+                (workspace_id,),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                """
+                SELECT * FROM metric_packs
+                WHERE user_id = ? AND deleted_at IS NULL
+                ORDER BY updated_at DESC
+                """,
+                (user_id,),
+            ).fetchall()
     return [_pack_from_row(r) for r in rows]
 
 
@@ -482,11 +619,13 @@ def get_metric_pack(
         row = con.execute(
             """
             SELECT * FROM metric_packs
-            WHERE pack_id = ? AND user_id = ? AND deleted_at IS NULL
+            WHERE pack_id = ? AND deleted_at IS NULL
             """,
-            (pack_id, user_id),
+            (pack_id,),
         ).fetchone()
-    return _pack_from_row(row) if row else None
+    if not row or not _user_can_access_pack(user_id, row, path=path):
+        return None
+    return _pack_from_row(row)
 
 
 def update_metric_pack(
@@ -507,12 +646,14 @@ def update_metric_pack(
     existing = get_metric_pack(user_id, pack_id, path=path)
     if not existing:
         return None
+    if not _user_can_mutate_pack(user_id, pack_id, path=path):
+        return None
 
     if config is not None:
         MetricConfig(**config)
 
     if connection_id and not get_connection(user_id, connection_id, path=path):
-        raise ValueError("connection_id not found or not owned by user")
+        raise ValueError("connection_id not found or not accessible")
 
     now = _utcnow()
     fields: list[str] = []
@@ -540,12 +681,12 @@ def update_metric_pack(
         return existing
 
     _set("updated_at", now)
-    params.extend([pack_id, user_id])
+    params.append(pack_id)
 
     with _connect(path) as con:
         con.execute(
             f"UPDATE metric_packs SET {', '.join(fields)} "
-            "WHERE pack_id = ? AND user_id = ? AND deleted_at IS NULL",
+            "WHERE pack_id = ? AND deleted_at IS NULL",
             tuple(params),
         )
     return get_metric_pack(user_id, pack_id, path=path)
@@ -554,14 +695,16 @@ def update_metric_pack(
 def delete_metric_pack(user_id: str, pack_id: str, path: str | None = None) -> bool:
     path = path or _auth_db_path()
     init_workspace_tables(path)
+    if not _user_can_mutate_pack(user_id, pack_id, path=path):
+        return False
     now = _utcnow()
     with _connect(path) as con:
         cur = con.execute(
             """
             UPDATE metric_packs SET deleted_at = ?, updated_at = ?
-            WHERE pack_id = ? AND user_id = ? AND deleted_at IS NULL
+            WHERE pack_id = ? AND deleted_at IS NULL
             """,
-            (now, now, pack_id, user_id),
+            (now, now, pack_id),
         )
         try:
             return int(cur.rowcount or 0) > 0
@@ -569,9 +712,9 @@ def delete_metric_pack(user_id: str, pack_id: str, path: str | None = None) -> b
             row = con.execute(
                 """
                 SELECT 1 FROM metric_packs
-                WHERE pack_id = ? AND user_id = ? AND deleted_at IS NOT NULL
+                WHERE pack_id = ? AND deleted_at IS NOT NULL
                 """,
-                (pack_id, user_id),
+                (pack_id,),
             ).fetchone()
             return row is not None
 
@@ -599,16 +742,15 @@ def get_annotations(
 ) -> SchemaAnnotationsPublic | None:
     path = path or _auth_db_path()
     init_workspace_tables(path)
-    # Ownership: connection must belong to user
     if not get_connection(user_id, connection_id, path=path):
         return None
     with _connect(path) as con:
         row = con.execute(
             """
             SELECT * FROM schema_annotations
-            WHERE connection_id = ? AND user_id = ?
+            WHERE connection_id = ?
             """,
-            (connection_id, user_id),
+            (connection_id,),
         ).fetchone()
     if not row:
         return SchemaAnnotationsPublic(
@@ -639,7 +781,10 @@ def upsert_annotations(
     path = path or _auth_db_path()
     init_workspace_tables(path)
     if not get_connection(user_id, connection_id, path=path):
-        raise ValueError("connection_id not found or not owned by user")
+        raise ValueError("connection_id not found or not accessible")
+    # Analysts can read; only creator/workspace owner can write annotations
+    if not _user_can_mutate_connection(user_id, connection_id, path=path):
+        raise PermissionError("Owner role required to edit annotations")
 
     clean = validate_annotations_payload(annotations)
     syn = synonyms or {}
@@ -695,9 +840,9 @@ def record_schema_snapshot(
             """
             UPDATE db_connections
             SET schema_snapshot_json = ?, schema_hash = ?, schema_snapshot_at = ?, updated_at = ?
-            WHERE connection_id = ? AND user_id = ? AND deleted_at IS NULL
+            WHERE connection_id = ? AND deleted_at IS NULL
             """,
-            (snap, schema_hash, now, now, connection_id, user_id),
+            (snap, schema_hash, now, now, connection_id),
         )
 
 
@@ -706,14 +851,16 @@ def get_schema_snapshot(
 ) -> dict[str, Any] | None:
     path = path or _auth_db_path()
     init_workspace_tables(path)
+    if not get_connection(user_id, connection_id, path=path):
+        return None
     with _connect(path) as con:
         row = con.execute(
             """
             SELECT schema_snapshot_json, schema_hash, schema_snapshot_at
             FROM db_connections
-            WHERE connection_id = ? AND user_id = ? AND deleted_at IS NULL
+            WHERE connection_id = ? AND deleted_at IS NULL
             """,
-            (connection_id, user_id),
+            (connection_id,),
         ).fetchone()
     if not row:
         return None

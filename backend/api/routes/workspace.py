@@ -33,14 +33,24 @@ from typing import Any, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
 
-from auth import workspace_store
+from auth import org_store, workspace_store
 from config.analysis_config import MetricConfig
 from tools.db_tools import DBConnection
 
-from ..deps import get_current_user
+from ..deps import get_current_user, resolve_workspace_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["workspace"])
+
+
+def _require_owner(user_id: str, workspace_id: str | None) -> None:
+    if not workspace_id:
+        # Legacy / guest path: user owns their own resources
+        return
+    try:
+        org_store.require_role(user_id, workspace_id, min_role="owner")
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 _ALLOWED_SSL = frozenset({"disable", "allow", "prefer", "require", "verify-ca", "verify-full"})
 _ALLOW_PRIVATE = os.getenv("ALLOW_PRIVATE_DB_HOSTS", "").lower() in ("1", "true", "yes")
@@ -152,8 +162,13 @@ class EphemeralTestRequest(BaseModel):
 # ── Connection routes ─────────────────────────────────────────────────────────
 
 @router.get("/connections")
-async def list_connections(current_user: dict = Depends(get_current_user)):
-    items = workspace_store.list_connections(current_user["user_id"])
+async def list_connections(
+    current_user: dict = Depends(get_current_user),
+    workspace_id: str | None = Depends(resolve_workspace_id),
+):
+    items = workspace_store.list_connections(
+        current_user["user_id"], workspace_id=workspace_id
+    )
     return {"connections": [c.to_dict() for c in items]}
 
 
@@ -161,9 +176,11 @@ async def list_connections(current_user: dict = Depends(get_current_user)):
 async def create_connection(
     body: ConnectionCreate,
     current_user: dict = Depends(get_current_user),
+    workspace_id: str | None = Depends(resolve_workspace_id),
 ):
     _validate_host(body.host)
     user_id = current_user["user_id"]
+    _require_owner(user_id, workspace_id)
 
     if body.test:
         result = _test_pg(
@@ -186,6 +203,7 @@ async def create_connection(
         password=body.password,
         backend=body.backend,
         sslmode=body.sslmode,
+        workspace_id=workspace_id,
     )
     if body.test:
         workspace_store.record_connection_test(user_id, conn.connection_id, ok=True)
@@ -208,7 +226,9 @@ async def update_connection(
     connection_id: str,
     body: ConnectionUpdate,
     current_user: dict = Depends(get_current_user),
+    workspace_id: str | None = Depends(resolve_workspace_id),
 ):
+    _require_owner(current_user["user_id"], workspace_id)
     if body.host is not None:
         _validate_host(body.host)
     try:
@@ -231,7 +251,12 @@ async def update_connection(
 
 
 @router.delete("/connections/{connection_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_connection(connection_id: str, current_user: dict = Depends(get_current_user)):
+async def delete_connection(
+    connection_id: str,
+    current_user: dict = Depends(get_current_user),
+    workspace_id: str | None = Depends(resolve_workspace_id),
+):
+    _require_owner(current_user["user_id"], workspace_id)
     ok = workspace_store.delete_connection(current_user["user_id"], connection_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Connection not found")
@@ -353,8 +378,13 @@ class MetricPackUpdate(BaseModel):
 # ── Metric pack routes ────────────────────────────────────────────────────────
 
 @router.get("/metric-packs")
-async def list_packs(current_user: dict = Depends(get_current_user)):
-    packs = workspace_store.list_metric_packs(current_user["user_id"])
+async def list_packs(
+    current_user: dict = Depends(get_current_user),
+    workspace_id: str | None = Depends(resolve_workspace_id),
+):
+    packs = workspace_store.list_metric_packs(
+        current_user["user_id"], workspace_id=workspace_id
+    )
     return {"metric_packs": [p.to_dict() for p in packs]}
 
 
@@ -362,7 +392,9 @@ async def list_packs(current_user: dict = Depends(get_current_user)):
 async def create_pack(
     body: MetricPackCreate,
     current_user: dict = Depends(get_current_user),
+    workspace_id: str | None = Depends(resolve_workspace_id),
 ):
+    _require_owner(current_user["user_id"], workspace_id)
     try:
         # Validate early for clear 400s
         MetricConfig(**body.config)
@@ -373,6 +405,7 @@ async def create_pack(
             config=body.config,
             certified=body.certified,
             connection_id=body.connection_id,
+            workspace_id=workspace_id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -398,7 +431,9 @@ async def update_pack(
     pack_id: str,
     body: MetricPackUpdate,
     current_user: dict = Depends(get_current_user),
+    workspace_id: str | None = Depends(resolve_workspace_id),
 ):
+    _require_owner(current_user["user_id"], workspace_id)
     try:
         if body.config is not None:
             MetricConfig(**body.config)
@@ -422,7 +457,12 @@ async def update_pack(
 
 
 @router.delete("/metric-packs/{pack_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_pack(pack_id: str, current_user: dict = Depends(get_current_user)):
+async def delete_pack(
+    pack_id: str,
+    current_user: dict = Depends(get_current_user),
+    workspace_id: str | None = Depends(resolve_workspace_id),
+):
+    _require_owner(current_user["user_id"], workspace_id)
     ok = workspace_store.delete_metric_pack(current_user["user_id"], pack_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Metric pack not found")
@@ -457,6 +497,8 @@ async def put_annotations(
             annotations=body.annotations,
             synonyms=body.synonyms,
         )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return ann.to_dict()
