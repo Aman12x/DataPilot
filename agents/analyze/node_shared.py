@@ -283,8 +283,39 @@ def _extract_sql(text: str) -> str:
 
 
 def _db_conn(state: AgentState) -> DBConnection:
+    """
+    Build a DBConnection from AgentState.
+
+    Postgres credential resolution order:
+      1. Saved connection_id → decrypt from vault (survives checkpoint wipe)
+      2. Inline pg_* fields still present in state (ephemeral / first load)
+      3. PG_* environment variables (operator-managed demo / CI)
+    """
     backend = state.get("db_backend", "duckdb")
     if backend == "postgres":
+        connection_id = state.get("connection_id") or ""
+        user_id = state.get("user_id") or ""
+        if connection_id and user_id:
+            try:
+                from auth.workspace_store import get_connection_secrets
+                secrets = get_connection_secrets(user_id, connection_id)
+                if secrets:
+                    return DBConnection(
+                        backend="postgres",
+                        host=secrets.host,
+                        port=secrets.port,
+                        dbname=secrets.dbname,
+                        user=secrets.username,
+                        password=secrets.password,
+                        sslmode=secrets.sslmode,
+                    )
+                logger.warning(
+                    "_db_conn: connection_id=%s not found for user=%s — falling back",
+                    connection_id, user_id,
+                )
+            except Exception as exc:
+                logger.warning("_db_conn: vault resolve failed: %s", exc)
+
         return DBConnection(
             backend="postgres",
             host=state.get("pg_host")     or os.getenv("PG_HOST", "localhost"),
@@ -292,6 +323,7 @@ def _db_conn(state: AgentState) -> DBConnection:
             dbname=state.get("pg_dbname") or os.getenv("PG_DBNAME", ""),
             user=state.get("pg_user")     or os.getenv("PG_USER", ""),
             password=state.get("pg_password") or os.getenv("PG_PASSWORD", ""),
+            sslmode=state.get("pg_sslmode") or os.getenv("PG_SSLMODE", "prefer"),
         )
     # prefer state-injected path (CSV/Excel upload) over env-var default
     path = state.get("duckdb_path") or os.getenv("DUCKDB_PATH", "data/dau_experiment.db")

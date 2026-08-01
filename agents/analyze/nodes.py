@@ -15,6 +15,7 @@ from agents.analyze.nodes_intent import (
     resolve_task_intent,
     _apply_intent_to_config,
 )
+from agents.analyze.nodes_metric import metric_config_gate
 from agents.analyze.nodes_sql import (
     execute_query,
     generate_sql,
@@ -61,7 +62,7 @@ from agents.analyze.node_shared import (
 
 __all__ = [
     "check_semantic_cache", "semantic_cache_gate", "inject_history", "load_schema",
-    "resolve_task_intent", "infer_metric_config_node",
+    "resolve_task_intent", "infer_metric_config_node", "metric_config_gate",
     "generate_sql", "query_gate", "execute_query",
     "load_auxiliary_data", "decompose_metric", "detect_anomaly_node", "forecast_baseline_node",
     "run_cuped_node", "run_ttest_node", "check_srm_node", "run_hte_node", "detect_novelty_node",

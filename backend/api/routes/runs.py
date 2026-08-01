@@ -100,7 +100,7 @@ _UUID_RE = re.compile(
 )
 
 _ALLOWED_GATES = frozenset({
-    "semantic_cache", "intent", "query", "analysis", "narrative", "srm",
+    "semantic_cache", "intent", "metric", "query", "analysis", "narrative", "srm",
 })
 
 _ALLOWED_DB_BACKENDS = frozenset({"duckdb", "postgres"})
@@ -184,11 +184,14 @@ class StartRunRequest(BaseModel):
     analysis_mode: str = ""       # empty = auto-detect via resolve_task_intent
     db_backend:    str = "duckdb"
     duckdb_path:   str = ""
+    connection_id: str = ""       # saved DB connection (preferred over inline pg_*)
+    metric_pack_id: str = ""      # saved metric pack
     pg_host:       str = ""
     pg_port:       int = 5432
     pg_dbname:     str = ""
     pg_user:       str = ""
     pg_password:   str = ""
+    pg_sslmode:    str = "prefer"
     parent_run_id: str = ""       # set for follow-up queries; injects parent narrative as context
 
     @field_validator("analysis_mode")
@@ -212,11 +215,11 @@ class StartRunRequest(BaseModel):
             raise ValueError("pg_port out of range")
         return v
 
-    @field_validator("parent_run_id")
+    @field_validator("connection_id", "metric_pack_id", "parent_run_id")
     @classmethod
-    def _check_parent(cls, v: str) -> str:
+    def _check_uuidish(cls, v: str) -> str:
         if v and not _UUID_RE.match(v):
-            raise ValueError("parent_run_id must be a valid UUID")
+            raise ValueError("must be a valid UUID")
         return v
 
 
@@ -293,23 +296,64 @@ async def create_run(
 ):
     t0 = time.perf_counter()
     await check_rate_limit(current_user["user_id"])
+    user_id = current_user["user_id"]
 
     task = _sanitise_task(req.task)
 
-    if req.pg_host:
-        _validate_pg_host(req.pg_host)
+    # ── Resolve saved connection (preferred over inline pg_*) ─────────────────
+    from auth import workspace_store
+    from config.analysis_config import MetricConfig
+
+    connection_id = req.connection_id
+    pg_host = req.pg_host
+    pg_port = req.pg_port
+    pg_dbname = req.pg_dbname
+    pg_user = req.pg_user
+    pg_password = req.pg_password
+    pg_sslmode = req.pg_sslmode
+    db_backend = req.db_backend
+
+    if connection_id:
+        secrets = workspace_store.get_connection_secrets(user_id, connection_id)
+        if not secrets:
+            raise HTTPException(status_code=404, detail="Connection not found")
+        db_backend = secrets.backend
+        pg_host = secrets.host
+        pg_port = secrets.port
+        pg_dbname = secrets.dbname
+        pg_user = secrets.username
+        pg_password = secrets.password
+        pg_sslmode = secrets.sslmode
+    elif pg_host:
+        _validate_pg_host(pg_host)
+
+    # ── Resolve metric pack ───────────────────────────────────────────────────
+    metric_config = None
+    metric_pack_certified = False
+    metric_pack_id = req.metric_pack_id
+    if metric_pack_id:
+        pack = workspace_store.get_metric_pack(user_id, metric_pack_id)
+        if not pack:
+            raise HTTPException(status_code=404, detail="Metric pack not found")
+        try:
+            metric_config = MetricConfig(**pack.config)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400, detail=f"Metric pack config invalid: {exc}"
+            ) from exc
+        metric_pack_certified = bool(pack.certified)
 
     graph  = _get_graph(request)
     run_id = str(uuid.uuid4())
 
     resolved_duckdb_path = ""
     if req.duckdb_path:
-        resolved_duckdb_path = resolve_upload_path(req.duckdb_path, current_user["user_id"])
+        resolved_duckdb_path = resolve_upload_path(req.duckdb_path, user_id)
 
     # Extract parent narrative for follow-up context injection
     context_narrative = ""
     if req.parent_run_id:
-        await _check_parent_ownership(graph, req.parent_run_id, current_user["user_id"])
+        await _check_parent_ownership(graph, req.parent_run_id, user_id)
         try:
             parent_config = {"configurable": {"thread_id": req.parent_run_id}}
             parent_state  = graph.get_state(parent_config)
@@ -322,24 +366,34 @@ async def create_run(
         except Exception:
             logger.warning("Could not read parent run state for %s", req.parent_run_id)
 
+    initial_state: dict[str, Any] = {
+        "task":                   task,
+        "analysis_mode":          req.analysis_mode,
+        "db_backend":             db_backend,
+        "duckdb_path":            resolved_duckdb_path,
+        "connection_id":          connection_id,
+        "pg_host":                pg_host,
+        "pg_port":                pg_port,
+        "pg_dbname":              pg_dbname,
+        "pg_user":                pg_user,
+        "pg_password":            pg_password,
+        "pg_sslmode":             pg_sslmode,
+        "metric_pack_id":         metric_pack_id,
+        "metric_pack_certified":  metric_pack_certified,
+        "user_id":                user_id,
+        "run_id":                 run_id,
+        "context_narrative":      context_narrative,
+    }
+    if metric_config is not None:
+        initial_state["metric_config"] = metric_config
+        initial_state["metric"] = metric_config.primary_metric
+        initial_state["covariate"] = metric_config.covariate
+
     await start_run(
         graph,
         run_id,
-        {
-            "task":               task,
-            "analysis_mode":      req.analysis_mode,
-            "db_backend":         req.db_backend,
-            "duckdb_path":        resolved_duckdb_path,
-            "pg_host":            req.pg_host,
-            "pg_port":            req.pg_port,
-            "pg_dbname":          req.pg_dbname,
-            "pg_user":            req.pg_user,
-            "pg_password":        req.pg_password,
-            "user_id":            current_user["user_id"],
-            "run_id":             run_id,
-            "context_narrative":  context_narrative,
-        },
-        user_id=current_user["user_id"],
+        initial_state,
+        user_id=user_id,
     )
 
     logger.info("run.start user=%s run=%s mode=%s backend=%s latency_ms=%.0f",

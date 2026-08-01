@@ -42,12 +42,17 @@ class AgentState(TypedDict, total=False):
     relevant_history: list[dict]        # injected from memory store at run start
     db_backend: str                     # 'duckdb' | 'postgres'
     duckdb_path: str                    # path to a user-uploaded DuckDB file (CSV/Excel upload)
+    connection_id: str                  # saved DB connection — secrets resolved from vault at query time
     pg_host:     str                    # postgres credentials (only used when db_backend='postgres')
     pg_port:     int
     pg_dbname:   str
     pg_user:     str
     pg_password: str
+    pg_sslmode:  str                    # prefer | require | disable | …
     metric_config: MetricConfig         # single source of truth for all metric references
+    metric_pack_id: str                 # saved metric pack id (if any)
+    metric_pack_certified: bool         # True → skip Metric Config Gate
+    metric_config_approved: bool        # HITL: metric mapping approved
     user_id: str                        # authenticated user — scopes memory store queries
 
     # ── Caching metadata ──────────────────────────────────────────────────────

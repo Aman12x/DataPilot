@@ -63,6 +63,7 @@ from agents.analyze.nodes import (
     generate_narrative,
     generate_sql,
     infer_metric_config_node,
+    metric_config_gate,
     inject_history,
     load_auxiliary_data,
     load_schema,
@@ -131,12 +132,23 @@ def _route_after_cache_gate(state: AgentState) -> str:
 def _route_after_infer_metric_config(state: AgentState) -> str:
     """
     After infer_metric_config:
-      - power_analysis mode → skip SQL/query, go straight to run_power_analysis
-      - everything else     → generate_sql (normal path)
+      - power_analysis mode → skip metric gate + SQL, go to run_power_analysis
+      - everything else     → metric_config_gate (confirm mapping before SQL)
     """
     if state.get("analysis_mode") == "power_analysis":
         return "run_power_analysis"
-    return "generate_sql"
+    return "metric_config_gate"
+
+
+def _route_after_metric_config_gate(state: AgentState) -> str:
+    """
+    After metric_config_gate:
+      - Approved → generate_sql
+      - Declined → loop back to metric_config_gate (re-prompt)
+    """
+    if state.get("metric_config_approved", True):
+        return "generate_sql"
+    return "metric_config_gate"
 
 
 def _route_after_execute_query(state: AgentState) -> str:
@@ -230,6 +242,7 @@ def build_graph(checkpointer=None) -> StateGraph:
     builder.add_node("load_schema",           load_schema)
     builder.add_node("resolve_task_intent",   resolve_task_intent)
     builder.add_node("infer_metric_config",   infer_metric_config_node)
+    builder.add_node("metric_config_gate",    metric_config_gate)
     builder.add_node("generate_sql",          generate_sql)
     builder.add_node("query_gate",           query_gate)
     builder.add_node("execute_query",        execute_query)
@@ -284,7 +297,15 @@ def build_graph(checkpointer=None) -> StateGraph:
     builder.add_conditional_edges(
         "infer_metric_config",
         _route_after_infer_metric_config,
-        {"generate_sql": "generate_sql", "run_power_analysis": "run_power_analysis"},
+        {
+            "metric_config_gate": "metric_config_gate",
+            "run_power_analysis": "run_power_analysis",
+        },
+    )
+    builder.add_conditional_edges(
+        "metric_config_gate",
+        _route_after_metric_config_gate,
+        {"generate_sql": "generate_sql", "metric_config_gate": "metric_config_gate"},
     )
     builder.add_node("run_power_analysis", run_power_analysis_node)
     builder.add_edge("run_power_analysis", "generate_charts")
