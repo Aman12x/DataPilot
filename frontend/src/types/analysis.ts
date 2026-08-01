@@ -1,7 +1,15 @@
 export type Mode = "general" | "ab_test" | "power_analysis";
 
+export type DbBackend = "duckdb" | "postgres" | "mysql" | "bigquery";
+
 export interface PgCreds {
   host: string; port: string; dbname: string; user: string; password: string;
+}
+
+export interface BqCreds {
+  projectId: string;
+  dataset: string;
+  credentialsJson: string;
 }
 
 export interface SavedConnection {
@@ -14,6 +22,7 @@ export interface SavedConnection {
   username: string;
   sslmode: string;
   last_test_ok: boolean | null;
+  project_id?: string | null;
 }
 
 export interface MetricPackSummary {
@@ -29,6 +38,7 @@ export interface MetricPackSummary {
 export interface RunOptions {
   connectionId?: string;
   metricPackId?: string;
+  bq?: BqCreds;
 }
 
 export interface Sample {

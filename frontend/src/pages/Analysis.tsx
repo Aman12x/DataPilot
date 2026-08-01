@@ -18,7 +18,7 @@ import AnalysisGate from "../components/gates/AnalysisGate";
 import GeneralAnalysisGate from "../components/gates/GeneralAnalysisGate";
 import NarrativeGate from "../components/gates/NarrativeGate";
 import {
-  type Mode, type PgCreds, type Sample, type SavedConnection,
+  type Mode, type PgCreds, type BqCreds, type Sample, type SavedConnection,
   type MetricPackSummary, type RunOptions, MODE_META,
 } from "../types/analysis";
 import { stripMarkdown, sanitiseNarrative } from "../utils/markdown";
@@ -220,6 +220,7 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
   const [task,           setTask]           = useState("");
   const [db,             setDb]             = useState("duckdb");
   const [pg,             setPg]             = useState<PgCreds>({ host: "localhost", port: "5432", dbname: "", user: "", password: "" });
+  const [bq,             setBq]             = useState<BqCreds>({ projectId: "", dataset: "", credentialsJson: "" });
   const [useUpload,      setUseUpload]      = useState(false);
   const [uploading,      setUploading]      = useState(false);
   const [uploadResult,   setUploadResult]   = useState<UploadResult | null>(null);
@@ -289,9 +290,11 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
   };
 
   const usingSavedConn = !!connectionId && !useUpload;
-  const pgValid     = db !== "postgres" || usingSavedConn || (pg.host && pg.dbname && pg.user);
+  const sqlBackend = db === "postgres" || db === "mysql";
+  const pgValid = !sqlBackend || usingSavedConn || !!(pg.host && pg.dbname && pg.user);
+  const bqValid = db !== "bigquery" || usingSavedConn || !!(bq.projectId && bq.dataset && bq.credentialsJson);
   const uploadReady = !useUpload || !!uploadResult;
-  const canSubmit   = task.trim() && pgValid && uploadReady && !uploading && !loadingSample && !submitting;
+  const canSubmit   = task.trim() && pgValid && bqValid && uploadReady && !uploading && !loadingSample && !submitting;
 
   const handleSubmit = async () => {
     if (!canSubmit) return;
@@ -300,33 +303,50 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
       const opts: RunOptions = {};
       if (metricPackId) opts.metricPackId = metricPackId;
       if (usingSavedConn) opts.connectionId = connectionId;
+      if (db === "bigquery" && !usingSavedConn) opts.bq = bq;
       if (useUpload && uploadResult) {
         await onSubmit(task, "duckdb", undefined, uploadResult.upload_id, opts);
       } else if (usingSavedConn) {
-        await onSubmit(task, "postgres", undefined, undefined, opts);
+        await onSubmit(task, db === "duckdb" ? "postgres" : db, undefined, undefined, opts);
       } else {
-        await onSubmit(task, db, db === "postgres" ? pg : undefined, undefined, opts);
+        await onSubmit(task, db, sqlBackend ? pg : undefined, undefined, opts);
       }
     } finally { setSubmitting(false); }
   };
 
   const saveCurrentConnection = async () => {
-    if (!pg.host || !pg.dbname || !pg.user) return;
     setSavingConn(true); setConnMsg("");
     try {
-      const { data } = await client.post<SavedConnection>("/connections", {
-        name: `${pg.dbname}@${pg.host}`,
-        host: pg.host,
-        port: parseInt(pg.port) || 5432,
-        dbname: pg.dbname,
-        username: pg.user,
-        password: pg.password,
-        sslmode: "prefer",
-        test: true,
-      });
+      let payload: Record<string, unknown>;
+      if (db === "bigquery") {
+        if (!bq.projectId || !bq.dataset || !bq.credentialsJson) return;
+        payload = {
+          name: `${bq.dataset}@${bq.projectId}`,
+          backend: "bigquery",
+          project_id: bq.projectId,
+          dbname: bq.dataset,
+          password: bq.credentialsJson,
+          test: true,
+        };
+      } else {
+        if (!pg.host || !pg.dbname || !pg.user) return;
+        const backend = db === "mysql" ? "mysql" : "postgres";
+        payload = {
+          name: `${pg.dbname}@${pg.host}`,
+          backend,
+          host: pg.host,
+          port: parseInt(pg.port) || (backend === "mysql" ? 3306 : 5432),
+          dbname: pg.dbname,
+          username: pg.user,
+          password: pg.password,
+          sslmode: "prefer",
+          test: true,
+        };
+      }
+      const { data } = await client.post<SavedConnection>("/connections", payload);
       setConnections((c) => [data, ...c]);
       setConnectionId(data.connection_id);
-      setDb("postgres");
+      setDb(data.backend || db);
       setConnMsg("Connection saved and tested.");
     } catch (err) {
       setConnMsg(extractApiError(err, "Could not save connection."));
@@ -423,19 +443,28 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
                 onChange={(e) => {
                   const v = e.target.value;
                   if (v.startsWith("conn:")) {
-                    setConnectionId(v.slice(5));
-                    setDb("postgres");
+                    const id = v.slice(5);
+                    const c = connections.find(x => x.connection_id === id);
+                    setConnectionId(id);
+                    setDb(c?.backend || "postgres");
                   } else {
                     setConnectionId("");
                     setDb(v);
+                    if (v === "mysql") setPg(p => ({ ...p, port: p.port === "5432" ? "3306" : p.port }));
+                    if (v === "postgres") setPg(p => ({ ...p, port: p.port === "3306" ? "5432" : p.port }));
                   }
                 }}
               >
                 <option value="duckdb">Built-in sample data</option>
-                <option value="postgres">PostgreSQL (enter credentials)</option>
+                <option value="postgres">PostgreSQL</option>
+                <option value="mysql">MySQL / MariaDB</option>
+                <option value="bigquery">Google BigQuery</option>
                 {connections.map((c) => (
                   <option key={c.connection_id} value={`conn:${c.connection_id}`}>
-                    {c.name} ({c.host}/{c.dbname})
+                    {c.name} · {c.backend}
+                    {c.backend === "bigquery"
+                      ? ` (${c.project_id || "?"}/${c.dbname})`
+                      : ` (${c.host}/${c.dbname})`}
                     {c.last_test_ok === false ? " — last test failed" : ""}
                   </option>
                 ))}
@@ -443,13 +472,13 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
             </div>
           )}
 
-          {db === "postgres" && !useUpload && !connectionId && (
+          {(db === "postgres" || db === "mysql") && !useUpload && !connectionId && (
             <div style={s.pgGrid} className="fade-in">
               {([
                 { k: "host",     label: "Host",     placeholder: "localhost", type: "text" },
-                { k: "port",     label: "Port",     placeholder: "5432",      type: "text" },
+                { k: "port",     label: "Port",     placeholder: db === "mysql" ? "3306" : "5432", type: "text" },
                 { k: "dbname",   label: "Database", placeholder: "mydb",      type: "text" },
-                { k: "user",     label: "User",     placeholder: "postgres",  type: "text" },
+                { k: "user",     label: "User",     placeholder: db === "mysql" ? "root" : "postgres", type: "text" },
                 { k: "password", label: "Password", placeholder: "••••••",    type: "password" },
               ] as const).map(({ k, label, placeholder, type }) => (
                 <div key={k} style={s.pgField}>
@@ -464,6 +493,59 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
                   style={{ padding: "6px 12px", fontSize: 12 }}
                   onClick={saveCurrentConnection}
                   disabled={savingConn || !pg.host || !pg.dbname || !pg.user}
+                >
+                  {savingConn ? "Testing & saving…" : "Save connection"}
+                </button>
+                {connMsg && <span style={{ fontSize: 12, color: connMsg.includes("saved") ? "#a6e3a1" : "#f38ba8" }}>{connMsg}</span>}
+              </div>
+            </div>
+          )}
+
+          {db === "bigquery" && !useUpload && !connectionId && (
+            <div style={s.pgGrid} className="fade-in">
+              <div style={s.pgField}>
+                <label style={s.pgLabel}>Project ID</label>
+                <input
+                  style={s.pgInput}
+                  type="text"
+                  placeholder="my-gcp-project"
+                  value={bq.projectId}
+                  onChange={(e) => setBq(b => ({ ...b, projectId: e.target.value }))}
+                  autoComplete="off"
+                />
+              </div>
+              <div style={s.pgField}>
+                <label style={s.pgLabel}>Dataset</label>
+                <input
+                  style={s.pgInput}
+                  type="text"
+                  placeholder="analytics"
+                  value={bq.dataset}
+                  onChange={(e) => setBq(b => ({ ...b, dataset: e.target.value }))}
+                  autoComplete="off"
+                />
+              </div>
+              <div style={{ ...s.pgField, gridColumn: "1 / -1" }}>
+                <label style={s.pgLabel}>Service account JSON</label>
+                <textarea
+                  style={{ ...s.pgInput, fontFamily: "ui-monospace, monospace", fontSize: 12, minHeight: 110, resize: "vertical" }}
+                  placeholder='{"type":"service_account","project_id":"...","private_key":"..."}'
+                  value={bq.credentialsJson}
+                  onChange={(e) => setBq(b => ({ ...b, credentialsJson: e.target.value }))}
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+                <div style={{ fontSize: 11, color: "#6c7086", marginTop: 4 }}>
+                  Paste a GCP service-account key (BigQuery Job User + Data Viewer). Prefer saving to the vault.
+                </div>
+              </div>
+              <div style={{ gridColumn: "1 / -1", display: "flex", gap: 10, alignItems: "center" }}>
+                <button
+                  type="button"
+                  className="dp-btn dp-btn-ghost"
+                  style={{ padding: "6px 12px", fontSize: 12 }}
+                  onClick={saveCurrentConnection}
+                  disabled={savingConn || !bq.projectId || !bq.dataset || !bq.credentialsJson}
                 >
                   {savingConn ? "Testing & saving…" : "Save connection"}
                 </button>
@@ -1054,7 +1136,19 @@ export default function Analysis() {
       if (parentRunId) body.parent_run_id = parentRunId;
       if (opts?.connectionId) body.connection_id = opts.connectionId;
       if (opts?.metricPackId) body.metric_pack_id = opts.metricPackId;
-      if (pg) { body.pg_host = pg.host; body.pg_port = parseInt(pg.port) || 5432; body.pg_dbname = pg.dbname; body.pg_user = pg.user; body.pg_password = pg.password; }
+      if (pg) {
+        const defaultPort = db_backend === "mysql" ? 3306 : 5432;
+        body.pg_host = pg.host;
+        body.pg_port = parseInt(pg.port) || defaultPort;
+        body.pg_dbname = pg.dbname;
+        body.pg_user = pg.user;
+        body.pg_password = pg.password;
+      }
+      if (opts?.bq) {
+        body.bq_project_id = opts.bq.projectId;
+        body.bq_dataset = opts.bq.dataset;
+        body.bq_credentials_json = opts.bq.credentialsJson;
+      }
       const { data } = await client.post("/runs", body);
       const newExchange: Exchange = {
         task, runId: data.run_id, parentRunId,

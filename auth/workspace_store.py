@@ -91,6 +91,7 @@ def init_workspace_tables(path: str | None = None) -> None:
             ("schema_hash", "TEXT"),
             ("schema_snapshot_at", "TEXT"),
             ("workspace_id", "TEXT"),
+            ("project_id", "TEXT"),
         ):
             try:
                 con.execute(f"ALTER TABLE db_connections ADD COLUMN {col} {defn}")
@@ -137,6 +138,7 @@ class ConnectionPublic:
     created_at: str
     updated_at: str
     workspace_id: str | None = None
+    project_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -154,6 +156,7 @@ class ConnectionPublic:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "workspace_id": self.workspace_id,
+            "project_id": self.project_id,
         }
 
 
@@ -169,6 +172,7 @@ class ConnectionSecrets:
     username: str
     password: str
     sslmode: str
+    project_id: str = ""
 
 
 def _row_to_public(row: Any) -> ConnectionPublic:
@@ -179,7 +183,7 @@ def _row_to_public(row: Any) -> ConnectionPublic:
         name=d["name"],
         backend=d["backend"],
         host=d["host"],
-        port=int(d["port"]),
+        port=int(d["port"] or 0),
         dbname=d["dbname"],
         username=d["username"],
         sslmode=d.get("sslmode") or "prefer",
@@ -189,6 +193,7 @@ def _row_to_public(row: Any) -> ConnectionPublic:
         created_at=d["created_at"],
         updated_at=d["updated_at"],
         workspace_id=d.get("workspace_id") or None,
+        project_id=d.get("project_id") or None,
     )
 
 
@@ -210,13 +215,14 @@ def create_connection(
     user_id: str,
     *,
     name: str,
-    host: str,
-    port: int,
-    dbname: str,
-    username: str,
-    password: str,
+    host: str = "",
+    port: int = 0,
+    dbname: str = "",
+    username: str = "",
+    password: str = "",
     backend: str = "postgres",
     sslmode: str = "prefer",
+    project_id: str = "",
     workspace_id: str | None = None,
     path: str | None = None,
 ) -> ConnectionPublic:
@@ -233,13 +239,15 @@ def create_connection(
             """
             INSERT INTO db_connections (
                 connection_id, user_id, name, backend, host, port, dbname,
-                username, password_enc, sslmode, created_at, updated_at, workspace_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                username, password_enc, sslmode, created_at, updated_at,
+                workspace_id, project_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                connection_id, user_id, name.strip(), backend, host.strip(),
-                int(port), dbname.strip(), username.strip(), password_enc,
-                sslmode or "prefer", now, now, workspace_id,
+                connection_id, user_id, name.strip(), backend, (host or "").strip(),
+                int(port or 0), (dbname or "").strip(), (username or "").strip(),
+                password_enc, sslmode or "prefer", now, now, workspace_id,
+                (project_id or "").strip() or None,
             ),
         )
     return get_connection(user_id, connection_id, path=path)  # type: ignore[return-value]
@@ -315,12 +323,13 @@ def get_connection_secrets(
         connection_id=d["connection_id"],
         user_id=d["user_id"],
         backend=d["backend"],
-        host=d["host"],
-        port=int(d["port"]),
-        dbname=d["dbname"],
-        username=d["username"],
+        host=d["host"] or "",
+        port=int(d["port"] or 0),
+        dbname=d["dbname"] or "",
+        username=d["username"] or "",
         password=decrypt_secret(d["password_enc"]),
         sslmode=d.get("sslmode") or "prefer",
+        project_id=d.get("project_id") or "",
     )
 
 

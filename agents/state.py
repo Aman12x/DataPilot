@@ -40,15 +40,18 @@ class AgentState(TypedDict, total=False):
     query_type: str                     # 'lookup' | 'exploratory' — set by resolve_task_intent
     task_clarification: str             # analyst answer to the intent clarifying question (if any)
     relevant_history: list[dict]        # injected from memory store at run start
-    db_backend: str                     # 'duckdb' | 'postgres'
+    db_backend: str                     # 'duckdb' | 'postgres' | 'mysql' | 'bigquery'
     duckdb_path: str                    # path to a user-uploaded DuckDB file (CSV/Excel upload)
     connection_id: str                  # saved DB connection — secrets resolved from vault at query time
-    pg_host:     str                    # postgres credentials (only used when db_backend='postgres')
+    pg_host:     str                    # postgres/mysql host (inline ephemeral)
     pg_port:     int
     pg_dbname:   str
     pg_user:     str
     pg_password: str
     pg_sslmode:  str                    # prefer | require | disable | …
+    bq_project_id: str                  # BigQuery project (inline ephemeral)
+    bq_dataset: str
+    bq_credentials_json: str            # wiped from checkpoint after schema load
     metric_config: MetricConfig         # single source of truth for all metric references
     metric_pack_id: str                 # saved metric pack id (if any)
     metric_pack_version: int            # pack version used for fingerprinting

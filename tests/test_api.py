@@ -345,7 +345,7 @@ class TestRunCreate:
     def test_invalid_db_backend(self, client):
         access, _, _ = _login(client)
         r = client.post("/runs",
-                        json={"task": "analyse", "db_backend": "mysql"},
+                        json={"task": "analyse", "db_backend": "oracle"},
                         headers={"Authorization": f"Bearer {access}"})
         assert r.status_code == 422
 

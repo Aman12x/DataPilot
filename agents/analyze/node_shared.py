@@ -296,48 +296,71 @@ def _db_conn(state: AgentState) -> DBConnection:
     """
     Build a DBConnection from AgentState.
 
-    Postgres credential resolution order:
+    Credential resolution order (postgres/mysql/bigquery):
       1. Saved connection_id → decrypt from vault (survives checkpoint wipe)
-      2. Inline pg_* fields still present in state (ephemeral / first load)
-      3. PG_* environment variables (operator-managed demo / CI)
+      2. Inline state fields still present (ephemeral / first load)
+      3. Environment variables (operator-managed demo / CI)
     """
     backend = state.get("db_backend", "duckdb")
-    if backend == "postgres":
-        connection_id = state.get("connection_id") or ""
-        user_id = state.get("user_id") or ""
-        if connection_id and user_id:
-            try:
-                from auth.workspace_store import get_connection_secrets
-                secrets = get_connection_secrets(user_id, connection_id)
-                if secrets:
-                    return DBConnection(
-                        backend="postgres",
-                        host=secrets.host,
-                        port=secrets.port,
-                        dbname=secrets.dbname,
-                        user=secrets.username,
-                        password=secrets.password,
-                        sslmode=secrets.sslmode,
-                    )
-                logger.warning(
-                    "_db_conn: connection_id=%s not found for user=%s — falling back",
-                    connection_id, user_id,
-                )
-            except Exception as exc:
-                logger.warning("_db_conn: vault resolve failed: %s", exc)
+    connection_id = state.get("connection_id") or ""
+    user_id = state.get("user_id") or ""
 
+    if backend in ("postgres", "mysql", "bigquery") and connection_id and user_id:
+        try:
+            from auth.workspace_store import get_connection_secrets
+            secrets = get_connection_secrets(user_id, connection_id)
+            if secrets:
+                if secrets.backend == "bigquery":
+                    return DBConnection(
+                        backend="bigquery",
+                        project_id=secrets.project_id,
+                        dataset=secrets.dbname,
+                        credentials_json=secrets.password,
+                    )
+                return DBConnection(
+                    backend=secrets.backend or backend,
+                    host=secrets.host,
+                    port=secrets.port,
+                    dbname=secrets.dbname,
+                    user=secrets.username,
+                    password=secrets.password,
+                    sslmode=secrets.sslmode,
+                )
+            logger.warning(
+                "_db_conn: connection_id=%s not found for user=%s — falling back",
+                connection_id, user_id,
+            )
+        except Exception as exc:
+            logger.warning("_db_conn: vault resolve failed: %s", exc)
+
+    if backend in ("postgres", "mysql"):
+        default_port = "3306" if backend == "mysql" else "5432"
         return DBConnection(
-            backend="postgres",
+            backend=backend,
             host=state.get("pg_host")     or os.getenv("PG_HOST", "localhost"),
-            port=int(state.get("pg_port") or os.getenv("PG_PORT", "5432")),
+            port=int(state.get("pg_port") or os.getenv("PG_PORT", default_port)),
             dbname=state.get("pg_dbname") or os.getenv("PG_DBNAME", ""),
             user=state.get("pg_user")     or os.getenv("PG_USER", ""),
             password=state.get("pg_password") or os.getenv("PG_PASSWORD", ""),
             sslmode=state.get("pg_sslmode") or os.getenv("PG_SSLMODE", "prefer"),
         )
+
+    if backend == "bigquery":
+        creds = state.get("bq_credentials_json") or ""
+        path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+        kwargs: dict = {
+            "project_id": state.get("bq_project_id") or os.getenv("BQ_PROJECT_ID", ""),
+            "dataset": state.get("bq_dataset") or os.getenv("BQ_DATASET", ""),
+        }
+        if creds:
+            kwargs["credentials_json"] = creds
+        elif path:
+            kwargs["credentials_path"] = path
+        return DBConnection(backend="bigquery", **kwargs)
+
     # prefer state-injected path (CSV/Excel upload) over env-var default
     path = state.get("duckdb_path") or os.getenv("DUCKDB_PATH", "data/dau_experiment.db")
-    return DBConnection(backend=backend, path=path)
+    return DBConnection(backend="duckdb", path=path)
 
 
 def _safe_df(state: AgentState) -> pd.DataFrame | None:

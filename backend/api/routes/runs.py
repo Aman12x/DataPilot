@@ -104,7 +104,7 @@ _ALLOWED_GATES = frozenset({
     "semantic_cache", "intent", "metric", "query", "analysis", "narrative", "srm",
 })
 
-_ALLOWED_DB_BACKENDS = frozenset({"duckdb", "postgres"})
+_ALLOWED_DB_BACKENDS = frozenset({"duckdb", "postgres", "mysql", "bigquery"})
 
 
 # ── JSON helpers ──────────────────────────────────────────────────────────────
@@ -232,6 +232,10 @@ class StartRunRequest(BaseModel):
     pg_user:       str = ""
     pg_password:   str = ""
     pg_sslmode:    str = "prefer"
+    # BigQuery (inline ephemeral; prefer connection_id in production)
+    bq_project_id: str = ""
+    bq_dataset: str = ""
+    bq_credentials_json: str = ""
     parent_run_id: str = ""       # set for follow-up queries; injects parent narrative as context
 
     @field_validator("analysis_mode")
@@ -245,12 +249,16 @@ class StartRunRequest(BaseModel):
     @classmethod
     def _check_backend(cls, v: str) -> str:
         if v not in _ALLOWED_DB_BACKENDS:
-            raise ValueError("db_backend must be 'duckdb' or 'postgres'")
+            raise ValueError(
+                "db_backend must be one of: duckdb, postgres, mysql, bigquery"
+            )
         return v
 
     @field_validator("pg_port")
     @classmethod
     def _check_port(cls, v: int) -> int:
+        if v == 0:
+            return v
         if not (1 <= v <= 65535):
             raise ValueError("pg_port out of range")
         return v
@@ -353,18 +361,36 @@ async def create_run(
     pg_password = req.pg_password
     pg_sslmode = req.pg_sslmode
     db_backend = req.db_backend
+    bq_project_id = req.bq_project_id
+    bq_dataset = req.bq_dataset
+    bq_credentials_json = req.bq_credentials_json
 
     if connection_id:
         secrets = workspace_store.get_connection_secrets(user_id, connection_id)
         if not secrets:
             raise HTTPException(status_code=404, detail="Connection not found")
         db_backend = secrets.backend
-        pg_host = secrets.host
-        pg_port = secrets.port
-        pg_dbname = secrets.dbname
-        pg_user = secrets.username
-        pg_password = secrets.password
-        pg_sslmode = secrets.sslmode
+        if secrets.backend == "bigquery":
+            bq_project_id = secrets.project_id
+            bq_dataset = secrets.dbname
+            bq_credentials_json = secrets.password
+            pg_host = pg_user = pg_password = ""
+            pg_dbname = ""
+            pg_port = 0
+        else:
+            pg_host = secrets.host
+            pg_port = secrets.port
+            pg_dbname = secrets.dbname
+            pg_user = secrets.username
+            pg_password = secrets.password
+            pg_sslmode = secrets.sslmode
+    elif db_backend == "bigquery":
+        if not (bq_project_id and bq_dataset and bq_credentials_json):
+            raise HTTPException(
+                status_code=400,
+                detail="BigQuery requires project_id, dataset, and credentials JSON "
+                       "(or a saved connection_id)",
+            )
     elif pg_host:
         _validate_pg_host(pg_host)
 
@@ -421,6 +447,9 @@ async def create_run(
         "pg_user":                pg_user,
         "pg_password":            pg_password,
         "pg_sslmode":             pg_sslmode,
+        "bq_project_id":          bq_project_id,
+        "bq_dataset":             bq_dataset,
+        "bq_credentials_json":    bq_credentials_json,
         "metric_pack_id":         metric_pack_id,
         "metric_pack_version":    metric_pack_version,
         "metric_pack_certified":  metric_pack_certified,

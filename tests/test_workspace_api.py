@@ -154,6 +154,93 @@ class TestConnectionsAPI:
         assert r.status_code == 400
         assert "not allowed" in r.json()["detail"].lower()
 
+    def test_blocks_private_mysql_host(self, client, auth):
+        r = client.post(
+            "/connections",
+            headers=auth,
+            json={
+                "name": "Internal MySQL",
+                "backend": "mysql",
+                "host": "192.168.1.10",
+                "port": 3306,
+                "dbname": "d",
+                "username": "u",
+                "password": "p",
+                "test": False,
+            },
+        )
+        assert r.status_code == 400
+        assert "not allowed" in r.json()["detail"].lower()
+
+    def test_create_mysql_connection(self, client, auth, public_dns):
+        with _patch_test_pg() as mock_test:
+            mock_test.return_value = {
+                "success": True, "error": None, "table_count": 2, "tables": ["orders"],
+            }
+            r = client.post(
+                "/connections",
+                headers=auth,
+                json={
+                    "name": "MySQL Prod",
+                    "backend": "mysql",
+                    "host": "mysql.example.com",
+                    "port": 3306,
+                    "dbname": "shop",
+                    "username": "reader",
+                    "password": "secret",
+                    "test": True,
+                },
+            )
+        assert r.status_code == 201, r.text
+        data = r.json()
+        assert data["backend"] == "mysql"
+        assert data["port"] == 3306
+        assert "password" not in data
+
+    def test_create_bigquery_connection(self, client, auth):
+        creds = (
+            '{"type":"service_account","client_email":"sa@proj.iam.gserviceaccount.com",'
+            '"private_key":"-----BEGIN PRIVATE KEY-----\\nX\\n-----END PRIVATE KEY-----\\n"}'
+        )
+        with _patch_test_pg() as mock_test:
+            mock_test.return_value = {
+                "success": True, "error": None, "table_count": 1, "tables": ["events"],
+            }
+            r = client.post(
+                "/connections",
+                headers=auth,
+                json={
+                    "name": "BQ Analytics",
+                    "backend": "bigquery",
+                    "project_id": "my-gcp-project",
+                    "dbname": "analytics",
+                    "password": creds,
+                    "test": True,
+                },
+            )
+        assert r.status_code == 201, r.text
+        data = r.json()
+        assert data["backend"] == "bigquery"
+        assert data["project_id"] == "my-gcp-project"
+        assert data["dbname"] == "analytics"
+        assert "password" not in data
+
+    def test_bigquery_rejects_invalid_credentials_json(self, client, auth):
+        r = client.post(
+            "/connections",
+            headers=auth,
+            json={
+                "name": "BQ Bad",
+                "backend": "bigquery",
+                "project_id": "p",
+                "dbname": "d",
+                "password": "not-json",
+                "test": False,
+            },
+        )
+        assert r.status_code == 400
+        assert "json" in r.json()["detail"].lower()
+
     def test_ownership_isolation(self, client, public_dns):
         a = _auth_headers(client)
         b = _auth_headers(client)
