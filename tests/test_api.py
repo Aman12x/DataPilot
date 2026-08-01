@@ -33,8 +33,6 @@ if _TESTS not in sys.path:
 # Shared harness (stubs, FakeGraph, app, client / fake_mode fixtures)
 pytest_plugins = ["api_harness"]
 
-from api_harness import _fake_graph_mode, app  # noqa: E402
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
