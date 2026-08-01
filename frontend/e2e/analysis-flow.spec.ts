@@ -69,12 +69,24 @@ test.describe("Analysis flow", () => {
     );
     await page.getByRole("button", { name: /Explore Data/i }).click();
 
-    // Run started — pipeline progress, a HITL gate, or an analysis error screen
+    // Run started — pipeline progress, a HITL gate, or an analysis error screen.
+    // CSV uploads hit the Metric Config Gate before SQL (confirm column mapping).
     await expect(
       page.getByText(
-        /One quick question|Review the generated SQL|Processing your response|Something went wrong|Connection lost/i
+        /One quick question|Confirm how your data is defined|Review the generated SQL|Processing your response|Something went wrong|Connection lost/i
       )
     ).toBeVisible({ timeout: 120_000 });
+
+    // If the metric gate appeared, approve the inferred mapping and continue.
+    const metricConfirm = page.getByRole("button", { name: /Confirm mapping/i });
+    if (await metricConfirm.isVisible().catch(() => false)) {
+      await metricConfirm.click();
+      await expect(
+        page.getByText(
+          /One quick question|Review the generated SQL|Processing your response|Something went wrong|Connection lost/i
+        )
+      ).toBeVisible({ timeout: 120_000 });
+    }
   });
 
   test("upload path reaches intent gate when LLM is configured", async ({ page }) => {
