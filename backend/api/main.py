@@ -53,6 +53,11 @@ if _SENTRY_DSN:
             traces_sample_rate=0.1,
             environment=os.getenv("RAILWAY_ENVIRONMENT", "production"),
             release=os.getenv("RAILWAY_GIT_COMMIT_SHA", "unknown"),
+            # Explicit rather than relying on the SDK default: this decides
+            # whether request bodies, headers, and cookies leave the box. Log
+            # records at INFO also become breadcrumbs, which is why user content
+            # is redacted at the call site (agents/log_safety.py).
+            send_default_pii=False,
         )
         logger.info("Sentry initialised (environment=%s)", os.getenv("RAILWAY_ENVIRONMENT", "production"))
     except ImportError:
@@ -221,6 +226,32 @@ _IS_PRODUCTION = _ENV.lower() in ("production", "prod")
 app = FastAPI(title="DataPilot API", version="1.0.0", lifespan=lifespan)
 
 
+# This service returns JSON and SSE — it never needs to load a script, style,
+# image, or font. 'none' across the board means an injected payload that somehow
+# reached a response body still has nowhere to fetch from and no frame to sit in.
+_API_CSP = (
+    "default-src 'none'; "
+    "frame-ancestors 'none'; "
+    "base-uri 'none'; "
+    "form-action 'none'"
+)
+
+# Swagger UI and ReDoc are HTML pages that pull their bundles from jsDelivr and
+# bootstrap via an inline <script>, so they cannot live under the API policy.
+_DOCS_CSP = (
+    "default-src 'none'; "
+    "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+    "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; "
+    "font-src 'self' https://cdn.jsdelivr.net https://fonts.gstatic.com; "
+    "img-src 'self' data: https://fastapi.tiangolo.com; "
+    "connect-src 'self'; "
+    "frame-ancestors 'none'; "
+    "base-uri 'none'"
+)
+
+_DOCS_PATHS = ("/docs", "/redoc", "/openapi.json")
+
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next) -> Response:
         response = await call_next(request)
@@ -228,6 +259,13 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
         response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+
+        path = request.url.path
+        is_docs = any(path == p or path.startswith(p + "/") for p in _DOCS_PATHS)
+        response.headers.setdefault(
+            "Content-Security-Policy", _DOCS_CSP if is_docs else _API_CSP
+        )
+
         if _IS_PRODUCTION:
             response.headers.setdefault(
                 "Strict-Transport-Security",

@@ -14,15 +14,18 @@ When REDIS_URL is not set (local dev / single-pod):
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import os
-import queue
 import time
 from collections import OrderedDict, deque
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from langgraph.types import Command
+
+from agents import spend
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +33,8 @@ REDIS_URL = os.getenv("REDIS_URL", "")
 
 # ── In-memory fallback ────────────────────────────────────────────────────────
 _queues:     dict[str, asyncio.Queue] = {}
-_sync_queues: dict[str, queue.Queue] = {}
 _run_owners: dict[str, str]           = {}
+_run_scopes: dict[str, str]           = {}
 _run_errors: OrderedDict[str, str]    = OrderedDict()  # run_id → error (capped, survives cleanup)
 _RUN_ERRORS_MAX = 1000
 
@@ -49,6 +52,29 @@ _gate_deadlines: dict[str, int] = {}
 _MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT_GRAPH_INVOKES", "32"))
 _GATE_TIMEOUT_SECS = int(os.getenv("GATE_TIMEOUT_SECONDS", str(4 * 60 * 60)))
 _active_invokes = 0
+
+# Strong references to in-flight invoke tasks. asyncio only holds weak
+# references, so without this a running task can be garbage-collected mid-run.
+_active_tasks: set[asyncio.Task] = set()
+_SHUTDOWN_TIMEOUT = float(os.getenv("SHUTDOWN_CANCEL_TIMEOUT", "10"))
+
+# Graph execution gets its own thread pool rather than asyncio's default
+# executor. The default is shared process-wide and sized min(32, cpu+4) — on a
+# 2-vCPU box that is 6 threads, so unrelated to_thread() callers could occupy
+# every slot and block all analyses. Sizing this to _MAX_CONCURRENT also makes
+# that admission cap honest: previously it allowed 32 concurrent invokes on a
+# pool that could only ever run 6.
+_graph_executor: ThreadPoolExecutor | None = None
+
+
+def _get_graph_executor() -> ThreadPoolExecutor:
+    global _graph_executor
+    if _graph_executor is None:
+        _graph_executor = ThreadPoolExecutor(
+            max_workers=_MAX_CONCURRENT,
+            thread_name_prefix="graph-invoke",
+        )
+    return _graph_executor
 
 
 def set_redis_client(client: Any) -> None:
@@ -76,6 +102,21 @@ async def get_owner(run_id: str) -> str | None:
     return _run_owners.get(run_id)
 
 
+async def set_budget_scope(run_id: str, scope: str) -> None:
+    """Remember which budget a run's spend bills to, so gate resumes bill it too."""
+    if _redis:
+        await _redis.set(f"run:budget:{run_id}", scope, ex=_OWNER_TTL)
+    else:
+        _run_scopes[run_id] = scope
+
+
+async def get_budget_scope(run_id: str) -> str | None:
+    if _redis:
+        val = await _redis.get(f"run:budget:{run_id}")
+        return val.decode() if val else None
+    return _run_scopes.get(run_id)
+
+
 
 # ── Result stream ─────────────────────────────────────────────────────────────
 
@@ -85,10 +126,6 @@ async def _publish_result(run_id: str, payload: dict) -> None:
         await _redis.xadd(key, {"data": json.dumps(payload)})
         await _redis.expire(key, _STREAM_TTL)
     else:
-        sq = _sync_queues.get(run_id)
-        if sq is not None:
-            sq.put(payload)
-            return
         q = _queues.get(run_id)
         if q is not None:
             await q.put(payload)
@@ -103,6 +140,10 @@ async def read_result(run_id: str, last_id: str = "$") -> dict | None:
     last_id="<id>" → read entries after this ID (mid-stream reconnect).
 
     Returns None on timeout; caller sends a keepalive and retries.
+
+    The in-memory path awaits an asyncio.Queue directly. It must never block a
+    worker thread: one SSE viewer per connected client holding a thread for the
+    full 30s poll would starve the pool that graph execution runs on.
     """
     if _redis:
         reply = await _redis.xread(
@@ -118,12 +159,6 @@ async def read_result(run_id: str, last_id: str = "$") -> dict | None:
         data["_stream_id"] = entry_id.decode()
         return data
     else:
-        sq = _sync_queues.get(run_id)
-        if sq is not None:
-            try:
-                return await asyncio.to_thread(sq.get, True, 30.0)
-            except queue.Empty:
-                return None
         q = _queues.get(run_id)
         if q is None:
             return None
@@ -135,7 +170,6 @@ async def read_result(run_id: str, last_id: str = "$") -> dict | None:
 
 def cleanup_run(run_id: str, *, drop_owner: bool = True) -> None:
     _queues.pop(run_id, None)
-    _sync_queues.pop(run_id, None)
     if drop_owner:
         _run_owners.pop(run_id, None)
 
@@ -311,19 +345,63 @@ async def get_gate_deadline(run_id: str) -> int | None:
     return _gate_deadlines.get(run_id)
 
 
-async def start_run(graph: Any, run_id: str, initial_state: dict, user_id: str) -> None:
+def _spawn_invoke(graph: Any, arg: Any, run_id: str) -> asyncio.Task:
+    task = asyncio.create_task(_invoke(graph, arg, run_id))
+    _active_tasks.add(task)
+    task.add_done_callback(_active_tasks.discard)
+    return task
+
+
+async def cancel_active_runs() -> None:
+    """Cancel in-flight invoke tasks so the process can shut down cleanly.
+
+    Cancelling the coroutine does not stop the worker thread already inside
+    graph.stream() — it only releases the event loop so shutdown can proceed.
+    """
+    global _graph_executor
+
+    tasks = [t for t in _active_tasks if not t.done()]
+    if tasks:
+        logger.info("Cancelling %d in-flight run task(s)", len(tasks))
+        for task in tasks:
+            task.cancel()
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True),
+                timeout=_SHUTDOWN_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Timed out after %.0fs waiting for run tasks to cancel",
+                _SHUTDOWN_TIMEOUT,
+            )
+
+    if _graph_executor is not None:
+        # wait=False: a thread already inside graph.stream() cannot be
+        # interrupted, so blocking here would stall shutdown for up to
+        # GRAPH_INVOKE_TIMEOUT. Queued-but-unstarted work is dropped.
+        _graph_executor.shutdown(wait=False, cancel_futures=True)
+        _graph_executor = None
+
+
+async def start_run(
+    graph: Any,
+    run_id: str,
+    initial_state: dict,
+    user_id: str,
+    budget_scope: str | None = None,
+) -> None:
     await set_owner(run_id, user_id)
+    await set_budget_scope(run_id, budget_scope or f"user:{user_id}")
     if not _redis:
         _queues[run_id] = asyncio.Queue()
-        _sync_queues[run_id] = queue.Queue()
-    asyncio.create_task(_invoke(graph, initial_state, run_id))
+    _spawn_invoke(graph, initial_state, run_id)
 
 
 async def resume_run(graph: Any, run_id: str, resume_value: Any) -> None:
-    if not _redis and run_id not in _sync_queues:
+    if not _redis and run_id not in _queues:
         _queues[run_id] = asyncio.Queue()
-        _sync_queues[run_id] = queue.Queue()
-    asyncio.create_task(_invoke(graph, Command(resume=resume_value), run_id))
+    _spawn_invoke(graph, Command(resume=resume_value), run_id)
 
 
 _INVOKE_TIMEOUT = int(os.getenv("GRAPH_INVOKE_TIMEOUT", "600"))  # 10 min default
@@ -342,8 +420,27 @@ async def _store_error(run_id: str, msg: str) -> None:
     _cache_error(run_id, msg)
 
 
-def _stream_graph(graph: Any, arg: Any, config: dict, run_id: str, loop: asyncio.AbstractEventLoop) -> dict:
-    """Sync function: stream graph execution, publishing step events as nodes complete."""
+def _stream_graph(
+    graph: Any,
+    arg: Any,
+    config: dict,
+    run_id: str,
+    loop: asyncio.AbstractEventLoop,
+    run_meter: spend.Meter,
+) -> dict:
+    """Stream graph execution in a worker thread, publishing step events.
+
+    The meter is activated here, inside the worker thread, so concurrent runs
+    accumulate into their own contexts. The caller owns the Meter object and can
+    read the total even if this call times out.
+    """
+    with spend.meter(run_meter):
+        return _run_graph_stream(graph, arg, config, run_id, loop)
+
+
+def _run_graph_stream(
+    graph: Any, arg: Any, config: dict, run_id: str, loop: asyncio.AbstractEventLoop
+) -> dict:
     for chunk in graph.stream(arg, config, stream_mode="updates"):
         if not chunk:
             continue
@@ -356,21 +453,47 @@ def _stream_graph(graph: Any, arg: Any, config: dict, run_id: str, loop: asyncio
         if detail is not None:
             event["detail"] = detail
         try:
-            _publish_sync(run_id, event)
+            _publish_sync(run_id, event, loop)
         except Exception:
-            pass  # don't let a publish failure abort the graph
+            logger.debug("step publish failed for run %s", run_id, exc_info=True)
     return graph.get_state(config).values
 
 
-def _publish_sync(run_id: str, payload: dict) -> None:
-    """Thread-safe publish for in-memory mode (avoids event-loop deadlock)."""
+def _publish_sync(run_id: str, payload: dict, loop: asyncio.AbstractEventLoop) -> None:
+    """Publish a step event from a worker thread onto the event loop.
+
+    `loop` must be passed in: asyncio.get_event_loop() raises in a non-main
+    thread that has no loop of its own, which previously made every Redis-mode
+    step event fail silently and stripped the whole chain-of-thought stream.
+    """
     if _redis:
-        loop = asyncio.get_event_loop()
-        asyncio.run_coroutine_threadsafe(_publish_result(run_id, payload), loop).result(timeout=2)
+        asyncio.run_coroutine_threadsafe(
+            _publish_result(run_id, payload), loop
+        ).result(timeout=2)
         return
-    sq = _sync_queues.get(run_id)
-    if sq is not None:
-        sq.put(payload)
+    q = _queues.get(run_id)
+    if q is not None:
+        loop.call_soon_threadsafe(q.put_nowait, payload)
+
+
+async def _bill_run(run_id: str, run_meter: spend.Meter) -> None:
+    """Charge a finished run's LLM spend to the budget scope it started under."""
+    if run_meter.total_usd <= 0:
+        return
+    try:
+        from .budget import record_spend
+
+        scope = await get_budget_scope(run_id)
+        if scope is None:
+            owner = await get_owner(run_id)
+            scope = f"user:{owner}" if owner else "user:unknown"
+        await record_spend(scope, run_meter.total_usd)
+        logger.info(
+            "run.spend run=%s scope=%s usd=%.6f calls=%d",
+            run_id, scope, run_meter.total_usd, run_meter.calls,
+        )
+    except Exception:
+        logger.warning("Could not record spend for run %s", run_id, exc_info=True)
 
 
 async def _invoke(graph: Any, arg: Any, run_id: str) -> None:
@@ -385,9 +508,13 @@ async def _invoke(graph: Any, arg: Any, run_id: str) -> None:
     _active_invokes += 1
     config = {"configurable": {"thread_id": run_id}}
     loop = asyncio.get_running_loop()
+    run_meter = spend.Meter()
     try:
         snap = await asyncio.wait_for(
-            asyncio.to_thread(_stream_graph, graph, arg, config, run_id, loop),
+            loop.run_in_executor(
+                _get_graph_executor(),
+                functools.partial(_stream_graph, graph, arg, config, run_id, loop, run_meter),
+            ),
             timeout=_INVOKE_TIMEOUT,
         )
         await _publish_result(run_id, {"ok": True, "snap": snap})
@@ -405,3 +532,6 @@ async def _invoke(graph: Any, arg: Any, run_id: str) -> None:
         cleanup_run(run_id, drop_owner=False)
     finally:
         _active_invokes -= 1
+        # Bill on every exit path. A run that failed or timed out still spent
+        # whatever tokens it consumed before it stopped.
+        await _bill_run(run_id, run_meter)

@@ -93,7 +93,13 @@ def generate_narrative(state: AgentState) -> dict:
                 funnel_result=_to_dict(state.get("funnel_result")),
                 forecast_result=_to_dict(state.get("forecast_result")),
                 business_impact=state.get("business_impact") or "",
-                analyst_notes=analyst_notes,
+                # Deliberately omitted. format_narrative appends the notes raw
+                # to narrative_draft, which is then interpolated into
+                # NARRATIVE_PROMPT below — an unwrapped second copy of text the
+                # model already receives, delimiter-wrapped, via
+                # analyst_notes_section. narrative_draft is prompt-only here, so
+                # dropping it costs the model nothing.
+                analyst_notes="",
                 srm_result=_to_dict(state.get("srm_result")),
             )
         except Exception as exc:

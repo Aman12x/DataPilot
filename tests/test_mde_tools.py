@@ -132,7 +132,10 @@ def test_run_power_analysis_uses_db_query(monkeypatch):
 
     class FakeDB:
         def query(self, sql: str):
-            assert "AVG(CAST(converted AS FLOAT))" in sql
+            # Identifiers are quoted — MetricConfig names are LLM-inferred and
+            # must not be interpolated bare into SQL.
+            assert 'AVG(CAST("converted" AS FLOAT))' in sql
+            assert 'FROM "events"' in sql
             return pd.DataFrame([{
                 "baseline_mean": 0.20,
                 "baseline_std": 0.40,

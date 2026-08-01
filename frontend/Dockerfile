@@ -20,8 +20,11 @@ FROM node:18-alpine
 RUN npm install -g serve
 
 COPY --from=builder /app/dist /app/dist
+COPY runtime-config.js /app/runtime-config.js
 
 EXPOSE 3000
 
-# Write runtime API URL from Railway env at container start (no rebuild needed).
-CMD ["sh", "-c", "node -e \"require('fs').writeFileSync('/app/dist/config.js', 'window.__DP_API__=' + JSON.stringify(process.env.VITE_API_URL || '') + ';')\" && exec serve -s /app/dist -l ${PORT:-3000}"]
+# Writes dist/config.js (runtime API URL) and dist/serve.json (security headers)
+# at container start, so neither needs a rebuild and the CSP's connect-src can
+# name the API origin from VITE_API_URL.
+CMD ["sh", "-c", "node /app/runtime-config.js && exec serve -s /app/dist -l ${PORT:-3000}"]

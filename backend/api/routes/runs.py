@@ -28,6 +28,10 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field, field_validator
 from sse_starlette.sse import EventSourceResponse
 
+from agents.analyze.prompt_safety import strip_delimiters
+
+from ..auth_rate import client_ip
+from ..budget import check_budget, scope_for
 from ..deps import (
     create_pdf_token,
     create_stream_token,
@@ -77,6 +81,49 @@ def _sanitise_task(task: str) -> str:
     if _INJECT_RE.search(task):
         raise HTTPException(status_code=422, detail="Task contains disallowed content")
     return task
+
+
+# Resume payloads carry analyst free text (gate notes, recommendation
+# rewrites, edited SQL). They are persisted to run history and replayed into
+# later prompts, so they get the same treatment as the initial task. The cap is
+# larger because an edited SQL statement legitimately runs long.
+_MAX_RESUME_STR = 10_000
+_MAX_RESUME_FIELDS = 50
+_MAX_RESUME_DEPTH = 4
+
+
+def _sanitise_resume_value(value: Any, _depth: int = 0) -> Any:
+    """Recursively bound and screen a gate resume payload.
+
+    Mirrors _sanitise_task: strip the delimiter marker so stored text cannot
+    close a wrapper it is later embedded in, cap length, and reject the same
+    override phrases.
+    """
+    if _depth > _MAX_RESUME_DEPTH:
+        raise HTTPException(status_code=422, detail="Resume payload nested too deeply")
+
+    if isinstance(value, str):
+        cleaned = strip_delimiters(value)
+        if len(cleaned) > _MAX_RESUME_STR:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Resume field too long (max {_MAX_RESUME_STR} chars)",
+            )
+        if _INJECT_RE.search(cleaned):
+            raise HTTPException(status_code=422, detail="Resume payload contains disallowed content")
+        return cleaned
+
+    if isinstance(value, dict):
+        if len(value) > _MAX_RESUME_FIELDS:
+            raise HTTPException(status_code=422, detail="Resume payload has too many fields")
+        return {k: _sanitise_resume_value(v, _depth + 1) for k, v in value.items()}
+
+    if isinstance(value, list):
+        if len(value) > _MAX_RESUME_FIELDS:
+            raise HTTPException(status_code=422, detail="Resume payload has too many entries")
+        return [_sanitise_resume_value(v, _depth + 1) for v in value]
+
+    return value
 
 
 def _validate_pg_host(host: str) -> None:
@@ -347,6 +394,10 @@ async def create_run(
     await check_rate_limit(current_user["user_id"])
     user_id = current_user["user_id"]
 
+    ip = client_ip(request)
+    await check_budget(current_user["user_id"], ip)
+    budget_scope = scope_for(current_user["user_id"], ip)
+
     task = _sanitise_task(req.task)
 
     # ── Resolve saved connection (preferred over inline pg_*) ─────────────────
@@ -468,6 +519,7 @@ async def create_run(
         run_id,
         initial_state,
         user_id=user_id,
+        budget_scope=budget_scope,
     )
 
     logger.info("run.start user=%s run=%s mode=%s backend=%s latency_ms=%.0f",
@@ -618,6 +670,10 @@ async def resume_run_endpoint(
     graph = _get_graph(request)
     await _check_ownership(graph, run_id, current_user["user_id"])
 
+    # A resume restarts the graph and spends more tokens, so it faces the same
+    # budget check as a fresh run.
+    await check_budget(current_user["user_id"], client_ip(request))
+
     # Reject resume if the gate window has expired
     deadline = await get_gate_deadline(run_id)
     if deadline is not None and time.time() > deadline:
@@ -627,7 +683,7 @@ async def resume_run_endpoint(
         )
 
     logger.info("run.resume run=%s gate=%s user=%s", run_id, req.gate, current_user["user_id"])
-    await resume_run(graph, run_id, req.value)
+    await resume_run(graph, run_id, _sanitise_resume_value(req.value))
     return {"status": "ok"}
 
 
