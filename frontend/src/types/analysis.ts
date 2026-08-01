@@ -22,6 +22,8 @@ export interface MetricPackSummary {
   description: string;
   certified: boolean;
   connection_id: string | null;
+  version?: number;
+  workspace_id?: string | null;
 }
 
 export interface RunOptions {
