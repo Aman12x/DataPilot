@@ -24,6 +24,8 @@ import {
 import { stripMarkdown, sanitiseNarrative } from "../utils/markdown";
 import { extractApiError } from "../utils/error";
 import StakeholderDeck from "../components/StakeholderDeck";
+import PackStudio from "../components/PackStudio";
+import MembersPanel from "../components/MembersPanel";
 import type { DeckData } from "../hooks/useSSE";
 
 // ── Fallback samples (shown even when backend is offline) ─────────────────────
@@ -48,6 +50,10 @@ function ModeSelect({ onSelect, username, onHistory, onSignOut, workspaces, work
   onWorkspaceChange: (id: string) => void;
 }) {
   const [showAbSub, setShowAbSub] = useState(false);
+  const [showPacks, setShowPacks] = useState(false);
+  const [showMembers, setShowMembers] = useState(false);
+  const activeWs = workspaces.find((w) => w.workspace_id === workspaceId);
+  const canManage = activeWs?.role === "owner";
 
   return (
     <div style={ms.page}>
@@ -55,7 +61,7 @@ function ModeSelect({ onSelect, username, onHistory, onSignOut, workspaces, work
 
       <div style={ms.topBar} className="dp-topbar">
         <span style={ms.logo} className="dp-logo">✦ DataPilot</span>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
           {workspaces.length > 0 && (
             <select
               aria-label="Workspace"
@@ -71,10 +77,23 @@ function ModeSelect({ onSelect, username, onHistory, onSignOut, workspaces, work
             </select>
           )}
           {username && <span style={ms.username}>{username}</span>}
+          <button className="dp-btn dp-btn-ghost" style={{ padding: "6px 14px" }} onClick={() => setShowPacks(true)}>Metrics</button>
+          {workspaceId && (
+            <button className="dp-btn dp-btn-ghost" style={{ padding: "6px 14px" }} onClick={() => setShowMembers(true)}>Team</button>
+          )}
           <button className="dp-btn dp-btn-ghost" style={{ padding: "6px 14px" }} onClick={onHistory}>History</button>
           <button className="dp-btn dp-btn-link" onClick={onSignOut}>Sign out</button>
         </div>
       </div>
+
+      <PackStudio open={showPacks} onClose={() => setShowPacks(false)} canEdit={!!canManage || !workspaceId} />
+      <MembersPanel
+        open={showMembers}
+        workspaceId={workspaceId}
+        workspaceName={activeWs?.name}
+        canManage={!!canManage}
+        onClose={() => setShowMembers(false)}
+      />
 
       <div style={ms.hero} className="fade-in">
         <h1 style={ms.heroTitle}>What would you like to do?</h1>
@@ -207,7 +226,14 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
   const [metricPackId,   setMetricPackId]   = useState("");
   const [savingConn,     setSavingConn]     = useState(false);
   const [connMsg,        setConnMsg]        = useState("");
+  const [showPacks,      setShowPacks]      = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  const reloadPacks = () => {
+    client.get<{ metric_packs: MetricPackSummary[] }>("/metric-packs")
+      .then(r => setPacks(r.data.metric_packs || []))
+      .catch(() => {});
+  };
 
   useEffect(() => {
     setSamples(FALLBACK_SAMPLES.filter(s => s.mode === mode));
@@ -217,9 +243,7 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
     client.get<{ connections: SavedConnection[] }>("/connections")
       .then(r => setConnections(r.data.connections || []))
       .catch(() => {});
-    client.get<{ metric_packs: MetricPackSummary[] }>("/metric-packs")
-      .then(r => setPacks(r.data.metric_packs || []))
-      .catch(() => {});
+    reloadPacks();
   }, [mode]);
 
   const setP = (k: keyof PgCreds) => (e: React.ChangeEvent<HTMLInputElement>) =>
@@ -439,27 +463,49 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
             </div>
           )}
 
-          {packs.length > 0 && (
-            <div style={{ marginTop: 14 }}>
+          <div style={{ marginTop: 14 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div style={s.sectionLabel}>Metric pack (optional)</div>
-              <select
-                style={s.select}
-                value={metricPackId}
-                onChange={(e) => setMetricPackId(e.target.value)}
+              <button
+                type="button"
+                className="dp-btn dp-btn-link"
+                style={{ fontSize: 12, padding: 0 }}
+                onClick={() => setShowPacks(true)}
               >
-                <option value="">Infer from schema</option>
-                {packs.map((p) => (
-                  <option key={p.pack_id} value={p.pack_id}>
-                    {p.name}{p.certified ? " ✓ certified" : ""}
-                  </option>
-                ))}
-              </select>
-              <p style={{ color: "#585b70", fontSize: 11, margin: "6px 0 0" }}>
-                Certified packs skip the metric confirmation gate and constrain SQL to your definitions.
-              </p>
+                {packs.length ? "Manage packs" : "Define metrics →"}
+              </button>
             </div>
-          )}
+            {packs.length > 0 ? (
+              <>
+                <select
+                  style={s.select}
+                  value={metricPackId}
+                  onChange={(e) => setMetricPackId(e.target.value)}
+                >
+                  <option value="">Infer from schema</option>
+                  {packs.map((p) => (
+                    <option key={p.pack_id} value={p.pack_id}>
+                      {p.name}{p.certified ? " ✓ certified" : ""}
+                    </option>
+                  ))}
+                </select>
+                <p style={{ color: "#585b70", fontSize: 11, margin: "6px 0 0" }}>
+                  Certified packs skip the metric confirmation gate and constrain SQL to your definitions.
+                </p>
+              </>
+            ) : (
+              <p style={{ color: "#585b70", fontSize: 12, margin: "4px 0 0" }}>
+                No packs yet — define your revenue/DAU mapping once so the team doesn’t re-confirm every run.
+              </p>
+            )}
+          </div>
         </div>
+
+        <PackStudio
+          open={showPacks}
+          onClose={() => setShowPacks(false)}
+          onChanged={() => { reloadPacks(); }}
+        />
 
         {startError && <div style={s.errorBox} className="fade-in">⚠ {startError}</div>}
 
