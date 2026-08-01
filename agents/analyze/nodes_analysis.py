@@ -12,21 +12,23 @@ globals().update({k: v for k, v in vars(_shared).items() if not k.startswith("__
 
 def _aggregate_daily_from_events(conn, mc: MetricConfig) -> pd.DataFrame:
     """Fallback: aggregate daily metric from raw events when no timeseries_table."""
-    agg_map = {
-        "mean":  f"AVG({mc.metric_source_col})",
-        "sum":   f"SUM({mc.metric_source_col})",
-        "count": f"COUNT(*)",
-    }
-    agg_expr = agg_map.get(mc.metric_agg, agg_map["mean"])
-    segment_cols_sql = ", ".join(mc.segment_cols) if mc.segment_cols else ""
-    group_by_cols    = f"{mc.date_col}" + (f", {segment_cols_sql}" if segment_cols_sql else "")
+    # MetricConfig names are LLM-inferred — quote, don't trust.
+    if mc.metric_agg == "count":
+        agg_expr = "COUNT(*)"
+    else:
+        agg = "SUM" if mc.metric_agg == "sum" else "AVG"
+        agg_expr = f"{agg}({_ident(mc.metric_source_col)})"
+
+    date_col = _ident(mc.date_col)
+    segment_cols_sql = ", ".join(_ident(c) for c in mc.segment_cols) if mc.segment_cols else ""
+    group_by_cols    = date_col + (f", {segment_cols_sql}" if segment_cols_sql else "")
     select_extra     = (f", {segment_cols_sql}" if segment_cols_sql else "")
     return conn.query(f"""
-        SELECT {mc.date_col} AS date{select_extra},
-               {agg_expr} AS {mc.primary_metric}
-        FROM {mc.events_table}
+        SELECT {date_col} AS date{select_extra},
+               {agg_expr} AS {_ident(mc.primary_metric)}
+        FROM {_ident(mc.events_table)}
         GROUP BY {group_by_cols}
-        ORDER BY {mc.date_col}
+        ORDER BY {date_col}
     """)
 
 
@@ -39,7 +41,9 @@ def load_auxiliary_data(state: AgentState) -> dict:
     # ── Timeseries: try pre-aggregated table first, fall back to event aggregation ──
     if mc.timeseries_table:
         try:
-            daily = conn.query(f"SELECT * FROM {mc.timeseries_table} ORDER BY {mc.date_col}")
+            daily = conn.query(
+                f"SELECT * FROM {_ident(mc.timeseries_table)} ORDER BY {_ident(mc.date_col)}"
+            )
             # Aggregate DAU component columns to platform level for cleaner time series
             agg_cols = [c for c in ["dau", "new_users", "retained_users", "resurrected_users", "churned_users"]
                         if c in daily.columns]
@@ -69,12 +73,13 @@ def load_auxiliary_data(state: AgentState) -> dict:
 
     # ── Funnel: optional ──────────────────────────────────────────────────────
     if mc.funnel_table:
+        _uid = _ident(mc.user_id_col)
         funnel_sql = f"""\
-SELECT f.{mc.user_id_col}, ex.{mc.variant_col} AS variant, f.step, f.completed
-FROM   {mc.funnel_table} f
-JOIN   {mc.experiment_table} ex
-       ON f.{mc.user_id_col} = ex.{mc.user_id_col}
-      AND ex.{mc.week_col} = 1
+SELECT f.{_uid}, ex.{_ident(mc.variant_col)} AS variant, f.step, f.completed
+FROM   {_ident(mc.funnel_table)} f
+JOIN   {_ident(mc.experiment_table)} ex
+       ON f.{_uid} = ex.{_uid}
+      AND ex.{_ident(mc.week_col)} = 1
 """
         try:
             result["funnel_df"] = conn.query(funnel_sql)
@@ -458,12 +463,13 @@ def run_power_analysis_node(state: AgentState) -> dict:
         conn = _db_conn(state)
         # Query baseline stats from the historical events table.
         # COALESCE(STDDEV(...), 0) avoids NULL when all values are identical.
+        _msc = _ident(mc.metric_source_col)
         stats_sql = f"""
-SELECT AVG(CAST({mc.metric_source_col} AS FLOAT))    AS baseline_mean,
-       COALESCE(STDDEV(CAST({mc.metric_source_col} AS FLOAT)), 0) AS baseline_std,
-       COUNT(DISTINCT {mc.user_id_col})               AS total_users,
-       COUNT(DISTINCT {mc.date_col})                  AS total_days
-FROM {mc.events_table}
+SELECT AVG(CAST({_msc} AS FLOAT))    AS baseline_mean,
+       COALESCE(STDDEV(CAST({_msc} AS FLOAT)), 0) AS baseline_std,
+       COUNT(DISTINCT {_ident(mc.user_id_col)})               AS total_users,
+       COUNT(DISTINCT {_ident(mc.date_col)})                  AS total_days
+FROM {_ident(mc.events_table)}
 """.strip()
         stats_df = conn.query(stats_sql)
     except Exception as exc:

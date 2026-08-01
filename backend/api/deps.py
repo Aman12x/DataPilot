@@ -9,7 +9,9 @@ JWT signed with SECRET_KEY env var (HS256).
 """
 from __future__ import annotations
 
+import logging
 import os
+import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -27,20 +29,69 @@ REFRESH_TOKEN_EXPIRE_DAYS = 30
 STREAM_TOKEN_EXPIRE_MINUTES = 15
 PDF_TOKEN_EXPIRE_MINUTES = 5
 
+logger = logging.getLogger(__name__)
+
 _ENV = os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("ENV", "development")
 _IS_PRODUCTION = _ENV.lower() in ("production", "prod")
 
+# The key check applies to any real deployment, not just one named "production".
+# _IS_PRODUCTION only matches ("production", "prod"), so a Railway service whose
+# environment is called "staging" would otherwise sign tokens with a key nothing
+# validated. Being on Railway at all is enough to demand a real key.
+_IS_DEPLOYED = _IS_PRODUCTION or bool(os.getenv("RAILWAY_ENVIRONMENT"))
+
+# HS256 is HMAC-SHA256: RFC 7518 §3.2 requires a key of at least 256 bits.
+_MIN_SECRET_KEY_LENGTH = 32
+# Rejects keys that pass the length check but carry no entropy ("aaaa…",
+# "abababab…"). 32 random hex chars yield ~16 distinct; 8 is a floor, not a target.
+_MIN_SECRET_KEY_UNIQUE_CHARS = 8
+
+_PLACEHOLDER_SECRETS = frozenset({
+    "change-me-to-a-long-random-string",   # shipped in .env.example
+    "change-me", "changeme", "change_me",
+    "secret", "secretkey", "secret-key", "secret_key",
+    "password", "passw0rd", "letmein",
+    "test", "testing", "dev", "development", "local",
+    "your-secret-key", "your_secret_key", "your_secret_key_here",
+    "supersecret", "super-secret", "super-secret-key",
+    "todo", "fixme", "xxx", "asdf", "qwerty",
+})
+
+
+def validate_secret_key(key: str) -> list[str]:
+    """Return the reasons `key` is unsuitable for signing JWTs; empty if it's fine."""
+    problems: list[str] = []
+    if len(key) < _MIN_SECRET_KEY_LENGTH:
+        problems.append(
+            f"must be at least {_MIN_SECRET_KEY_LENGTH} characters (got {len(key)})"
+        )
+    if key.strip().lower() in _PLACEHOLDER_SECRETS:
+        problems.append("is a well-known placeholder value")
+    distinct = len(set(key))
+    if distinct < _MIN_SECRET_KEY_UNIQUE_CHARS:
+        problems.append(f"has only {distinct} distinct characters, so it is not random")
+    return problems
+
+
+_HOW_TO_GENERATE = (
+    'Generate one with: python -c "import secrets; print(secrets.token_hex(32))"'
+)
+
 SECRET_KEY = os.getenv("SECRET_KEY", "")
 if not SECRET_KEY:
-    if _IS_PRODUCTION:
-        raise RuntimeError("SECRET_KEY must be set in production")
-    import secrets as _secrets
-    import logging as _logging
-
-    SECRET_KEY = _secrets.token_hex(32)
-    _logging.getLogger(__name__).warning(
+    if _IS_DEPLOYED:
+        raise RuntimeError(f"SECRET_KEY must be set in {_ENV}. {_HOW_TO_GENERATE}")
+    SECRET_KEY = secrets.token_hex(32)
+    logger.warning(
         "SECRET_KEY not set — using a random key (sessions won't survive restarts)"
     )
+else:
+    _problems = validate_secret_key(SECRET_KEY)
+    if _problems:
+        _summary = "SECRET_KEY " + "; it ".join(_problems)
+        if _IS_DEPLOYED:
+            raise RuntimeError(f"{_summary}. {_HOW_TO_GENERATE}")
+        logger.warning("%s. Acceptable locally, but would fail to boot when deployed.", _summary)
 
 bearer_scheme = HTTPBearer(auto_error=False)
 

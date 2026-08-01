@@ -8,12 +8,15 @@ No LangGraph or Streamlit imports. Pure Python.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from typing import Any
 
 import duckdb
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 # Compiled once at import time — blocks any LLM-generated mutation statement.
 # DuckDB already enforces read_only=True at the driver level; this adds a
@@ -80,13 +83,28 @@ def _ensure_limit(sql: str) -> str:
     return f"{sql.rstrip()} LIMIT {_MAX_SQL_LIMIT}"
 
 
-_SAFE_IDENT_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+def quote_ident(name: str) -> str:
+    """Quote a table or column name for interpolation into DuckDB/Postgres SQL.
+
+    Doubling embedded quotes is the SQL-standard escape, and it is what makes an
+    arbitrary CSV header safe: there is no sequence that terminates a quoted
+    identifier early once `"` is doubled.
+
+    Escaping rather than allowlisting is deliberate. Uploaded columns are
+    normalised with `re.sub(r"[^\\w]", "_", ...)`, and `\\w` is Unicode-aware, so
+    legitimate headers survive as `café` or `日本` — and a header like
+    `2024 revenue` becomes `2024_revenue`. An `^[a-zA-Z_][a-zA-Z0-9_]*$`
+    allowlist would reject all three.
+    """
+    if not isinstance(name, str) or not name:
+        raise ValueError("SQL identifier must be a non-empty string")
+    if "\x00" in name:
+        raise ValueError("SQL identifier contains a NUL byte")
+    return '"' + name.replace('"', '""') + '"'
 
 
-def _quote_ident(name: str) -> str:
-    if not _SAFE_IDENT_RE.match(name):
-        raise ValueError(f"Unsafe SQL identifier: {name!r}")
-    return f'"{name}"'
+# Back-compat alias for callers that imported the private name.
+_quote_ident = quote_ident
 
 
 # Schema comments: human-readable column descriptions injected into inspect_schema() output.
@@ -184,7 +202,7 @@ class DBConnection:
         finally:
             con.close()
 
-    def _query_postgres(self, sql: str) -> pd.DataFrame:
+    def _query_postgres(self, sql: str, params: tuple | None = None) -> pd.DataFrame:
         try:
             import psycopg2
         except ImportError as e:
@@ -201,7 +219,7 @@ class DBConnection:
             sslmode=kw.get("sslmode", "prefer"),
         )
         try:
-            return pd.read_sql(sql, conn)
+            return pd.read_sql(sql, conn, params=params)
         finally:
             conn.close()
 
@@ -284,9 +302,16 @@ class DBConnection:
     def _get_columns_duckdb(self, table: str) -> list[tuple[str, str]]:
         con = duckdb.connect(self._path, read_only=True)
         try:
-            result = con.execute(f"PRAGMA table_info('{table}')").fetchall()
-            # PRAGMA columns: cid, name, type, notnull, dflt_value, pk
-            return [(row[1], row[2]) for row in result]
+            # The catalog view compares the table name as a plain value, so it
+            # binds as a parameter. PRAGMA table_info cannot be used here: even
+            # via pragma_table_info(?) DuckDB re-parses the bound string as a
+            # qualified name, which fails on any name containing a quote.
+            result = con.execute(
+                "SELECT column_name, data_type FROM information_schema.columns "
+                "WHERE table_name = ? ORDER BY ordinal_position",
+                [table],
+            ).fetchall()
+            return [(row[0], row[1]) for row in result]
         finally:
             con.close()
 
@@ -311,24 +336,31 @@ class DBConnection:
             con = duckdb.connect(self._path, read_only=True)
             try:
                 cols = self._get_columns_duckdb(table)
-                n_rows = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]  # type: ignore[index]
+                # Table and column names are identifiers, so they cannot be
+                # bound as parameters — they must be quoted instead. Column
+                # names here originate from an uploaded CSV header.
+                safe_table = quote_ident(table)
+                n_rows = con.execute(
+                    f"SELECT COUNT(*) FROM {safe_table}"
+                ).fetchone()[0]  # type: ignore[index]
                 col_profiles: dict[str, dict] = {}
                 for col_name, _ in cols:
                     try:
+                        safe_col = quote_ident(col_name)
                         n_distinct = con.execute(
-                            f"SELECT COUNT(DISTINCT {col_name}) FROM {table}"
+                            f"SELECT COUNT(DISTINCT {safe_col}) FROM {safe_table}"
                         ).fetchone()[0]  # type: ignore[index]
                         samples: list[str] = []
                         if n_distinct <= self._PROFILE_SAMPLE_CARDINALITY:
                             rows = con.execute(
-                                f"SELECT DISTINCT CAST({col_name} AS VARCHAR) "
-                                f"FROM {table} WHERE {col_name} IS NOT NULL "
+                                f"SELECT DISTINCT CAST({safe_col} AS VARCHAR) "
+                                f"FROM {safe_table} WHERE {safe_col} IS NOT NULL "
                                 f"ORDER BY 1 LIMIT {self._PROFILE_MAX_SAMPLES}"
                             ).fetchall()
                             samples = [r[0] for r in rows if r[0] is not None]
                         col_profiles[col_name] = {"n_distinct": n_distinct, "samples": samples}
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("profile: skipping column %s — %s", col_name, exc)
                 return {"n_rows": n_rows, "columns": col_profiles}
             finally:
                 con.close()
@@ -343,12 +375,12 @@ class DBConnection:
         return df["table_name"].tolist()
 
     def _get_columns_postgres(self, table: str) -> list[tuple[str, str]]:
-        if not _SAFE_IDENT_RE.match(table):
-            raise ValueError(f"Unsafe table name: {table!r}")
+        # A comparison value, not an identifier — bind it rather than quoting.
         df = self._query_postgres(
             "SELECT column_name, data_type FROM information_schema.columns "
-            f"WHERE table_schema = 'public' AND table_name = '{table}' "
-            "ORDER BY ordinal_position"
+            "WHERE table_schema = 'public' AND table_name = %s "
+            "ORDER BY ordinal_position",
+            params=(table,),
         )
         return list(zip(df["column_name"], df["data_type"]))
 
@@ -371,8 +403,8 @@ class DBConnection:
         when the column looks high-cardinality.
         """
         try:
-            safe_table = _quote_ident(table)
-            safe_col = _quote_ident(col)
+            safe_table = quote_ident(table)
+            safe_col = quote_ident(col)
             df = self._query_postgres(
                 f"SELECT DISTINCT {safe_col}::TEXT AS v "
                 f"FROM {safe_table} "

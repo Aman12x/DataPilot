@@ -21,11 +21,35 @@ def _limits() -> tuple[int, int]:
     return window, max_attempts
 
 
+_IS_PRODUCTION = (
+    os.getenv("RAILWAY_ENVIRONMENT", "") or os.getenv("ENV", "")
+).lower() in ("production", "prod")
+
+
+def _trusted_hops() -> int:
+    """How many reverse proxies sit in front of this app.
+
+    Railway terminates one. Default to 0 in dev, where the app is reached
+    directly and X-Forwarded-For is pure client input.
+    """
+    return int(os.getenv("TRUSTED_PROXY_HOPS", "1" if _IS_PRODUCTION else "0"))
+
+
 def client_ip(request: Request) -> str:
-    """Resolve client IP, honoring X-Forwarded-For from a trusted reverse proxy."""
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+    """Resolve the client IP, counting back from the right of X-Forwarded-For.
+
+    Taking the leftmost entry trusts the client: anyone can send
+    `X-Forwarded-For: 1.2.3.4` and be treated as a new IP, which defeats every
+    per-IP limit. Each proxy *appends* the address it actually saw, so the Nth
+    entry from the right is the last hop the client could not forge.
+    """
+    hops = _trusted_hops()
+    if hops > 0:
+        forwarded = request.headers.get("X-Forwarded-For")
+        if forwarded:
+            parts = [p.strip() for p in forwarded.split(",") if p.strip()]
+            if parts:
+                return parts[-min(hops, len(parts))]
     if request.client:
         return request.client.host
     return "unknown"

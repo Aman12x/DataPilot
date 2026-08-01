@@ -29,6 +29,8 @@ import os
 from contextlib import contextmanager
 from typing import Any, Generator
 
+from agents import pricing
+
 logger = logging.getLogger(__name__)
 
 # ── Initialise Langfuse (disabled automatically if keys are absent) ────────────
@@ -82,12 +84,6 @@ class GenerationContext:
     Anthropic API call to log token counts and estimated cost.
     """
 
-    # Sonnet pricing (USD per million tokens) — update if model changes
-    _INPUT_COST_PER_M  = 3.00
-    _OUTPUT_COST_PER_M = 15.00
-    _CACHE_READ_PER_M  = 0.30
-    _CACHE_WRITE_PER_M = 3.75
-
     def __init__(self, name: str, model: str, prompt: str, max_tokens: int):
         self.name       = name
         self.model      = model
@@ -117,13 +113,15 @@ class GenerationContext:
         cache_read_tokens   = getattr(usage, "cache_read_input_tokens", 0)
         cache_write_tokens  = getattr(usage, "cache_creation_input_tokens", 0)
 
-        # Billable input = uncached input only (cache reads are 10% price)
-        billable_input = input_tokens - cache_read_tokens
-        cost = (
-            billable_input    * self._INPUT_COST_PER_M  / 1_000_000
-            + output_tokens   * self._OUTPUT_COST_PER_M / 1_000_000
-            + cache_read_tokens  * self._CACHE_READ_PER_M  / 1_000_000
-            + cache_write_tokens * self._CACHE_WRITE_PER_M / 1_000_000
+        # `input_tokens` is already the uncached remainder — cache reads and
+        # writes are reported alongside it, not folded into it. Subtracting
+        # cache reads here would discount them twice.
+        cost = pricing.cost_usd(
+            self.model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_write_tokens=cache_write_tokens,
         )
 
         if self._enabled:

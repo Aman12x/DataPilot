@@ -12,14 +12,24 @@ restartPolicyMaxRetries = 3
 
 # ── Volume mount (REQUIRED for data persistence) ───────────────────────────────
 # In the Railway dashboard: Service → Volumes → Add Volume
-#   Mount path: /app/memory
-# This persists:
-#   memory/graph.db       — LangGraph checkpoints (in-progress runs survive redeploy)
-#   memory/auth.db        — User accounts
-#   memory/datapilot_memory.db — Run history
-#   data/dau_experiment.db     — Sample DuckDB (generated once at startup)
+#   Mount path: /app/db
+#
+# Do NOT mount at /app/memory. `memory/` is a Python package in the image
+# (memory/store.py, memory/semantic_cache.py, memory/retriever.py); mounting an
+# empty volume over it shadows the package and the backend fails at startup with
+#   ImportError: cannot import name 'retriever' from 'memory' (unknown location)
+#
+# The mount alone persists nothing — these env vars must point into it:
+#   GRAPH_DB_PATH=/app/db/graph.db              — LangGraph checkpoints
+#   AUTH_DB_PATH=/app/db/auth.db                — User accounts
+#   MEMORY_DB_PATH=/app/db/datapilot_memory.db  — Run history + semantic cache
+#   UPLOAD_DIR=/app/db/uploads                  — User CSV uploads
+#
+# Leave DUCKDB_PATH at its default. The sample dataset is written to
+# /app/data by data/generate_data.py on first boot; repointing only the read
+# path would look for a file that is never written there.
 #
 # Without a volume, all SQLite files are wiped on every redeploy and
 # users lose their accounts + history.
 #
-# Railway CLI: railway volume create --service backend --mount /app/memory
+# Railway CLI: railway volume create --service backend --mount /app/db

@@ -3,7 +3,9 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 # Ensure SECRET_KEY is set before any backend module is imported.
 # backend/api/deps.py exits at import time if this is missing.
-os.environ.setdefault("SECRET_KEY", "test-secret-key-for-pytest-only")
+# Must satisfy deps.validate_secret_key (>=32 chars) so tests exercise the same
+# policy production enforces.
+os.environ.setdefault("SECRET_KEY", "test-secret-key-for-pytest-only-not-a-real-key")
 
 import pytest
 

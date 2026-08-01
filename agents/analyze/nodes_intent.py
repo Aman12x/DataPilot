@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import agents.analyze.node_shared as _shared
 from agents.analyze.prompt_safety import wrap_untrusted_content
+from agents.log_safety import redact
 
 globals().update({k: v for k, v in vars(_shared).items() if not k.startswith("__")})
 
@@ -241,7 +242,14 @@ def resolve_task_intent(state: AgentState) -> dict:
     # like a plain retrieval question, override to "lookup" so we skip the
     # heavy correlation/regression pipeline.
     if final_mode == "general" and query_type == "exploratory" and _is_lookup_task(task):
-        logger.info("resolve_task_intent: overriding query_type to 'lookup' via heuristic for task: %s", task[:80])
+        # run_id is the correlation key an operator actually needs here; the
+        # task itself is customer content and stays redacted unless explicitly
+        # opted in via LOG_USER_CONTENT.
+        logger.info(
+            "resolve_task_intent: overriding query_type to 'lookup' via heuristic run=%s task=%s",
+            state.get("run_id", "unknown"),
+            redact(task),
+        )
         query_type = "lookup"
 
     return {
