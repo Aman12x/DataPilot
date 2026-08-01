@@ -26,6 +26,7 @@ import { extractApiError } from "../utils/error";
 import StakeholderDeck from "../components/StakeholderDeck";
 import PackStudio from "../components/PackStudio";
 import MembersPanel from "../components/MembersPanel";
+import AnnotationStudio from "../components/AnnotationStudio";
 import type { DeckData } from "../hooks/useSSE";
 
 // ── Fallback samples (shown even when backend is offline) ─────────────────────
@@ -52,6 +53,7 @@ function ModeSelect({ onSelect, username, onHistory, onSignOut, workspaces, work
   const [showAbSub, setShowAbSub] = useState(false);
   const [showPacks, setShowPacks] = useState(false);
   const [showMembers, setShowMembers] = useState(false);
+  const [showAnnotations, setShowAnnotations] = useState(false);
   const activeWs = workspaces.find((w) => w.workspace_id === workspaceId);
   const canManage = activeWs?.role === "owner";
 
@@ -78,6 +80,7 @@ function ModeSelect({ onSelect, username, onHistory, onSignOut, workspaces, work
           )}
           {username && <span style={ms.username}>{username}</span>}
           <button className="dp-btn dp-btn-ghost" style={{ padding: "6px 14px" }} onClick={() => setShowPacks(true)}>Metrics</button>
+          <button className="dp-btn dp-btn-ghost" style={{ padding: "6px 14px" }} onClick={() => setShowAnnotations(true)}>Schema</button>
           {workspaceId && (
             <button className="dp-btn dp-btn-ghost" style={{ padding: "6px 14px" }} onClick={() => setShowMembers(true)}>Team</button>
           )}
@@ -87,6 +90,11 @@ function ModeSelect({ onSelect, username, onHistory, onSignOut, workspaces, work
       </div>
 
       <PackStudio open={showPacks} onClose={() => setShowPacks(false)} canEdit={!!canManage || !workspaceId} />
+      <AnnotationStudio
+        open={showAnnotations}
+        onClose={() => setShowAnnotations(false)}
+        canEdit={!!canManage || !workspaceId}
+      />
       <MembersPanel
         open={showMembers}
         workspaceId={workspaceId}
@@ -227,6 +235,7 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
   const [savingConn,     setSavingConn]     = useState(false);
   const [connMsg,        setConnMsg]        = useState("");
   const [showPacks,      setShowPacks]      = useState(false);
+  const [showAnnotations, setShowAnnotations] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const reloadPacks = () => {
@@ -463,6 +472,19 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
             </div>
           )}
 
+          {connectionId && !useUpload && (
+            <div style={{ marginTop: 10, display: "flex", justifyContent: "flex-end" }}>
+              <button
+                type="button"
+                className="dp-btn dp-btn-link"
+                style={{ fontSize: 12, padding: 0 }}
+                onClick={() => setShowAnnotations(true)}
+              >
+                Annotate schema →
+              </button>
+            </div>
+          )}
+
           <div style={{ marginTop: 14 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div style={s.sectionLabel}>Metric pack (optional)</div>
@@ -505,6 +527,11 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
           open={showPacks}
           onClose={() => setShowPacks(false)}
           onChanged={() => { reloadPacks(); }}
+        />
+        <AnnotationStudio
+          open={showAnnotations}
+          onClose={() => setShowAnnotations(false)}
+          initialConnectionId={connectionId}
         />
 
         {startError && <div style={s.errorBox} className="fade-in">⚠ {startError}</div>}
