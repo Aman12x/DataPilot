@@ -53,6 +53,15 @@ test("login page renders and its form is usable", async ({ page }) => {
   expect(rootHtml.length, "#root is empty -- the SPA did not mount").toBeGreaterThan(50);
 
   await expect(page.getByRole("button", { name: /sign in|log ?in/i }).first()).toBeVisible();
+
+  // Every field must be reachable by its label: screen readers rely on the
+  // association, and clicking a label should focus its input.
+  for (const name of ["Username or email", "Password"]) {
+    const field = page.getByLabel(name, { exact: true });
+    await expect(field, `"${name}" is not associated with an input`).toHaveCount(1);
+    const id = await field.getAttribute("id");
+    expect(id, `"${name}" input has no id`).toBeTruthy();
+  }
 });
 
 test("signup through the UI reaches the app", async ({ page }) => {
@@ -70,13 +79,13 @@ test("signup through the UI reaches the app", async ({ page }) => {
   const registerTab = page.getByRole("button", { name: /sign ?up|register|create account/i }).first();
   if (await registerTab.count()) await registerTab.click();
 
-  // FormField renders <label> without htmlFor and <input> without id, so the
-  // two are not associated and getByLabel cannot find these fields.
-  await page.getByPlaceholder("john_doe").fill(creds.username);
-  await page.getByPlaceholder("you@example.com").fill(creds.email);
-  const pwds = page.locator('input[type="password"]');
-  await pwds.nth(0).fill(creds.password);
-  if ((await pwds.count()) > 1) await pwds.nth(1).fill(creds.password);
+  // getByLabel doubles as a regression test: FormField previously rendered the
+  // label and input as unassociated siblings, so these queries found nothing.
+  await page.getByLabel("Username", { exact: true }).fill(creds.username);
+  await page.getByLabel("Email", { exact: true }).fill(creds.email);
+  await page.getByLabel("Password", { exact: true }).fill(creds.password);
+  const confirm = page.getByLabel("Confirm password", { exact: true });
+  if (await confirm.count()) await confirm.fill(creds.password);
 
   await page.screenshot({ path: "e2e-out/02-signup-filled.png", fullPage: true });
   await page.getByRole("button", { name: /sign ?up|create account/i }).last().click();
@@ -102,8 +111,8 @@ test("login through the UI with a freshly created account", async ({ page, reque
   expect(reg.status(), `register API failed: ${await reg.text()}`).toBe(201);
 
   await page.goto("/login", { waitUntil: "networkidle" });
-  await page.getByPlaceholder("you@example.com").fill(email);
-  await page.locator('input[type="password"]').first().fill(password);
+  await page.getByLabel("Username or email", { exact: true }).fill(email);
+  await page.getByLabel("Password", { exact: true }).fill(password);
   await page.getByRole("button", { name: /sign in|log ?in/i }).last().click();
 
   await page.waitForTimeout(8000);
