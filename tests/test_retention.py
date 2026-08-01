@@ -376,3 +376,42 @@ def test_schema_drift_is_logged_not_swallowed(tmp_path, caplog):
     with caplog.at_level(logging.WARNING):
         retention.prune_auth_tokens(db)
     assert any("skipped" in r.message for r in caplog.records)
+
+
+def test_vacuum_runs_when_an_earlier_pass_left_free_pages(tmp_path, monkeypatch):
+    """Self-healing: reclaim space freed by a previous pass that did not vacuum.
+
+    Production hit exactly this -- the first pass deleted 267 checkpoints but
+    reclaimed nothing (the WAL bug), and the next pass had no deletions of its
+    own, so the space stayed stranded.
+    """
+    now = datetime.now(timezone.utc)
+    graph = str(tmp_path / "graph.db")
+    _graph_db(graph, {f"t{i}": [now] for i in range(300)})  # all recent: nothing to prune
+
+    con = sqlite3.connect(graph)
+    con.execute("DELETE FROM checkpoints")  # free pages, no vacuum
+    con.commit()
+    con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    con.close()
+
+    assert retention.free_bytes(graph) > 0
+    monkeypatch.setattr(retention, "VACUUM_FREE_BYTES", 1)
+    monkeypatch.setenv("GRAPH_DB_PATH", graph)
+    monkeypatch.setenv("AUTH_DB_PATH", str(tmp_path / "a.db"))
+    monkeypatch.setenv("MEMORY_DB_PATH", str(tmp_path / "m.db"))
+    monkeypatch.setenv("BACKUP_DIR", str(tmp_path / "b"))
+
+    report = retention.run_maintenance()
+    assert report["checkpoints"]["checkpoints"] == 0, "nothing should have been pruned"
+    assert "graph_bytes_reclaimed" in report, "vacuum did not run on stranded free pages"
+    assert retention.free_bytes(graph) == 0
+
+
+def test_free_bytes_is_zero_for_a_compact_database(tmp_path):
+    db = str(tmp_path / "c.db")
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE t (a)")
+    con.commit(); con.close()
+    assert retention.free_bytes(db) == 0
+    assert retention.free_bytes(str(tmp_path / "missing.db")) == 0

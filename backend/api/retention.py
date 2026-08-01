@@ -45,6 +45,8 @@ REVOKED_TOKEN_RETENTION_DAYS = float(
     os.getenv("REVOKED_TOKEN_RETENTION_DAYS", str(_REFRESH_DAYS + 7))
 )
 BACKUP_KEEP = int(os.getenv("BACKUP_KEEP", "7"))
+# Reclaim once this much sits in the freelist, even with no deletions this pass.
+VACUUM_FREE_BYTES = int(os.getenv("VACUUM_FREE_BYTES", str(32 * 1024 * 1024)))
 RETENTION_INTERVAL_SEC = float(os.getenv("RETENTION_INTERVAL_SEC", str(24 * 3600)))
 
 
@@ -174,6 +176,25 @@ def prune_auth_tokens(db_path: str) -> dict:
         con.close()
 
 
+def free_bytes(db_path: str) -> int:
+    """Space held in the file's freelist — reclaimable by VACUUM.
+
+    Lets a pass clean up after an earlier one that deleted rows but failed to
+    return the pages, without waiting for new deletions to trigger it.
+    """
+    if not os.path.exists(db_path):
+        return 0
+    con = _connect(db_path)
+    try:
+        free = con.execute("PRAGMA freelist_count").fetchone()[0]
+        page = con.execute("PRAGMA page_size").fetchone()[0]
+        return int(free) * int(page)
+    except Exception:
+        return 0
+    finally:
+        con.close()
+
+
 def vacuum(db_path: str) -> int:
     """Reclaim freed pages. Returns bytes recovered (negative means it grew).
 
@@ -265,9 +286,14 @@ def run_maintenance() -> dict:
     except Exception:
         logger.warning("token prune failed", exc_info=True)
 
-    # VACUUM only where deletes actually happened — it rewrites the whole file.
+    # VACUUM when this pass deleted something, or when a previous one left
+    # free pages behind. Keying only on "did I delete just now" stranded the
+    # space freed by an earlier pass: the first production run deleted 267
+    # checkpoints but reclaimed nothing, and the next pass had no deletions of
+    # its own, so nothing ever went back to the filesystem.
     cp = report.get("checkpoints") or {}
-    if isinstance(cp, dict) and cp.get("checkpoints"):
+    deleted_now = isinstance(cp, dict) and bool(cp.get("checkpoints"))
+    if deleted_now or free_bytes(paths["graph"]) > VACUUM_FREE_BYTES:
         try:
             report["graph_bytes_reclaimed"] = vacuum(paths["graph"])
         except Exception:
