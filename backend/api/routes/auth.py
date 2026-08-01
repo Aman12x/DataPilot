@@ -132,25 +132,21 @@ async def register(req: RegisterRequest, request: Request):
     from ..email import send_verification_email
 
     token = create_verification_token(result.user_id)
-    email_sent = True
     try:
         send_verification_email(result.email, token)
     except RuntimeError:
-        email_sent = False
+        # Don't trap new accounts when Resend/SMTP is misconfigured.
+        mark_email_verified(result.user_id)
+        user = get_user_by_id(result.user_id) or result
+        return _issue_session(user, status_code=status.HTTP_201_CREATED)
 
-    detail = (
-        "Check your email for a verification link before signing in."
-        if email_sent
-        else "Account created, but we could not send the verification email. "
-             "Use Resend verification or resend below once email is configured."
-    )
     return JSONResponse(
         status_code=status.HTTP_201_CREATED,
         content={
             "user": result.to_dict(),
             "verify_pending": True,
-            "email_sent": email_sent,
-            "detail": detail,
+            "email_sent": True,
+            "detail": "Check your email for a verification link before signing in.",
         },
     )
 
@@ -184,10 +180,9 @@ async def resend_verification(req: ResendVerificationRequest, request: Request):
         try:
             send_verification_email(user.email, token)
         except RuntimeError:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Could not send verification email. Please try again.",
-            )
+            # Same fallback as register/login — unlock the account if mail is down.
+            mark_email_verified(user.user_id)
+            return _issue_session(user)
     return {
         "detail": "If that email is registered and unverified, a new link has been sent.",
     }
@@ -200,6 +195,16 @@ async def login(req: LoginRequest, request: Request):
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     if not user.email_verified:
+        # Recover accounts stuck when verification mail cannot be delivered.
+        from ..email import send_verification_email
+
+        token = create_verification_token(user.user_id)
+        try:
+            send_verification_email(user.email, token)
+        except RuntimeError:
+            mark_email_verified(user.user_id)
+            user = get_user_by_id(user.user_id) or user
+            return _issue_session(user)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Email not verified. Check your inbox or request a new verification link.",
