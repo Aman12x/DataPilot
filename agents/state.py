@@ -58,6 +58,7 @@ class AgentState(TypedDict, total=False):
     schema_drift_warnings: list[str]    # pack / snapshot vs live schema warnings
     dataset_fingerprint: str            # scopes semantic cache + few-shot isolation
     user_id: str                        # authenticated user — scopes memory store queries
+    workspace_id: str                   # active workspace — shared history + resource scope
 
     # ── Caching metadata ──────────────────────────────────────────────────────
     semantic_cache_hit: bool            # True if this run was served from semantic cache

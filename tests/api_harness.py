@@ -60,8 +60,9 @@ class FakeGraph:
         self._known_runs: set[str] = set()
         self._gate_run_ids: set[str] = set()
         self._run_owners: dict[str, str] = {}
+        self._run_workspaces: dict[str, str] = {}
 
-    def invoke(self, state_or_cmd, config, **__):
+    def _record(self, state_or_cmd, config):
         run_id = config.get("configurable", {}).get("thread_id", "")
         mode = _fake_graph_mode["mode"]
         if mode == "crash":
@@ -69,20 +70,19 @@ class FakeGraph:
         self._known_runs.add(run_id)
         if mode == "gate":
             self._gate_run_ids.add(run_id)
-        if isinstance(state_or_cmd, dict) and state_or_cmd.get("user_id"):
-            self._run_owners[run_id] = state_or_cmd["user_id"]
+        if isinstance(state_or_cmd, dict):
+            if state_or_cmd.get("user_id"):
+                self._run_owners[run_id] = state_or_cmd["user_id"]
+            if state_or_cmd.get("workspace_id"):
+                self._run_workspaces[run_id] = state_or_cmd["workspace_id"]
+        return run_id
+
+    def invoke(self, state_or_cmd, config, **__):
+        self._record(state_or_cmd, config)
         return {}
 
     def stream(self, state_or_cmd, config, **__):
-        run_id = config.get("configurable", {}).get("thread_id", "")
-        mode = _fake_graph_mode["mode"]
-        if mode == "crash":
-            raise RuntimeError("simulated node failure")
-        self._known_runs.add(run_id)
-        if mode == "gate":
-            self._gate_run_ids.add(run_id)
-        if isinstance(state_or_cmd, dict) and state_or_cmd.get("user_id"):
-            self._run_owners[run_id] = state_or_cmd["user_id"]
+        self._record(state_or_cmd, config)
         yield {"generate_narrative": {}}
 
     def get_state(self, config, **__):
@@ -96,6 +96,7 @@ class FakeGraph:
             "narrative_draft": "hello",
             "recommendation": "ship it",
             "user_id": owner,
+            "workspace_id": self._run_workspaces.get(run_id),
         }
         state.next = ()
         if run_id in self._gate_run_ids:
@@ -110,8 +111,16 @@ class FakeGraph:
 
 
 class FakeMemoryStore:
-    def get_all_runs(self, **_):
-        return []
+    def __init__(self):
+        self.runs: list[dict] = []
+
+    def get_all_runs(self, user_id=None, workspace_id=None, limit=50, **_):
+        rows = list(self.runs)
+        if workspace_id:
+            rows = [r for r in rows if r.get("workspace_id") == workspace_id]
+        elif user_id:
+            rows = [r for r in rows if r.get("user_id") == user_id]
+        return rows[:limit]
 
 
 @asynccontextmanager

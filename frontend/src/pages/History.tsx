@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import client, { API_BASE, logout } from "../api/client";
+import client, {
+  API_BASE, logout,
+  getActiveWorkspaceId, setActiveWorkspaceId, type WorkspaceSummary,
+} from "../api/client";
 import Markdown from "../components/Markdown";
 import Spinner from "../components/Spinner";
 
@@ -11,6 +14,9 @@ interface Run {
   eval_score?: number;
   metric?:   string;
   analysis_mode?: string;
+  user_id?: string;
+  username?: string;
+  workspace_id?: string;
 }
 
 interface RunDetail {
@@ -28,13 +34,41 @@ export default function History() {
   const [detail,      setDetail]      = useState<Record<string, RunDetail>>({});
   const [loadingDetail, setLoadingDetail] = useState<string | null>(null);
   const [downloading, setDownloading] = useState<string | null>(null);
+  const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
+  const [workspaceId, setWorkspaceId] = useState(getActiveWorkspaceId() || "");
 
-  useEffect(() => {
+  const loadRuns = () => {
+    setLoading(true);
+    setError("");
     client.get("/runs?limit=20")
-      .then(({ data }) => setRuns(data))
+      .then(({ data }) => setRuns(Array.isArray(data) ? data : []))
       .catch(() => setError("Could not load history"))
       .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    client.get<{ workspaces: WorkspaceSummary[] }>("/workspaces")
+      .then((r) => {
+        const list = r.data.workspaces || [];
+        setWorkspaces(list);
+        if (!list.length) return;
+        const saved = getActiveWorkspaceId();
+        const active = list.find((w) => w.workspace_id === saved)?.workspace_id
+          || list[0].workspace_id;
+        setWorkspaceId(active);
+        setActiveWorkspaceId(active);
+      })
+      .catch(() => {})
+      .finally(() => loadRuns());
   }, []);
+
+  const handleWorkspaceChange = (id: string) => {
+    setWorkspaceId(id);
+    setActiveWorkspaceId(id);
+    setExpanded(null);
+    setDetail({});
+    loadRuns();
+  };
 
   const toggleExpand = async (run: Run) => {
     if (expanded === run.run_id) { setExpanded(null); return; }
@@ -77,10 +111,24 @@ export default function History() {
             <span style={s.logoIcon}>✦</span>
             <div>
               <h1 style={s.title}>Analysis History</h1>
-              <p style={s.subtitle}>Your past DataPilot runs</p>
+              <p style={s.subtitle}>
+                {workspaces.length ? "Shared workspace runs" : "Your past DataPilot runs"}
+              </p>
             </div>
           </div>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            {workspaces.length > 0 && (
+              <select
+                aria-label="Workspace"
+                value={workspaceId}
+                onChange={(e) => handleWorkspaceChange(e.target.value)}
+                style={s.wsSelect}
+              >
+                {workspaces.map((w) => (
+                  <option key={w.workspace_id} value={w.workspace_id}>{w.name}</option>
+                ))}
+              </select>
+            )}
             <button className="dp-btn dp-btn-primary" style={{ padding: "10px 20px" }} onClick={() => navigate("/")}>+ New Analysis</button>
             <button className="dp-btn dp-btn-ghost" style={{ padding: "10px 16px" }} onClick={async () => { await logout(); navigate("/login"); }}>Sign out</button>
           </div>
@@ -139,6 +187,7 @@ export default function History() {
                   <span style={s.metaItem}>
                     🕐 {new Date(r.timestamp).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
                   </span>
+                  {r.username && <span style={s.metaItem}>by {r.username}</span>}
                   {r.metric && <span style={s.metricBadge}>{r.metric}</span>}
                   <span style={s.runId}>{r.run_id.slice(0, 8)}</span>
                   <span style={{ ...s.metaItem, marginLeft: "auto" }}>{isOpen ? "▲ collapse" : "▼ view analysis"}</span>
@@ -195,6 +244,7 @@ const s: Record<string, React.CSSProperties> = {
   logoIcon:    { fontSize: 28, color: "#89b4fa" },
   title:       { color: "#cdd6f4", fontSize: 22, fontWeight: 700, margin: 0 },
   subtitle:    { color: "#585b70", fontSize: 13, marginTop: 2 },
+  wsSelect:    { background: "#1e1e2e", border: "1px solid #313244", color: "#a6adc8", padding: "8px 10px", borderRadius: 6, fontSize: 12, maxWidth: 160 },
 
   newBtn:      { padding: "10px 20px", background: "linear-gradient(135deg, #89b4fa, #74c7ec)", color: "#1e1e2e", border: "none", borderRadius: 8, fontWeight: 700, cursor: "pointer", fontSize: 13 },
   logoutBtn:   { padding: "10px 16px", background: "transparent", color: "#585b70", border: "1px solid #313244", borderRadius: 8, fontWeight: 500, cursor: "pointer", fontSize: 13 },
