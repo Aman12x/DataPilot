@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { gateCard, gateTitle, gateMessage, gateActions, gateBtnApprove, gateBtnReject } from "./shared";
+import { gateCard, gateTitle, gateMessage, gateActions, gateBtnApprove, gateBtnSecondary } from "./shared";
 
 type MetricConfigForm = {
   primary_metric: string;
@@ -109,7 +109,7 @@ export default function MetricGate({ payload, onSubmit, submitting }: Props) {
       </div>
 
       <div style={gateActions}>
-        <button style={gateBtnReject} disabled={submitting} onClick={() => onSubmit({ approved: false })}>
+        <button style={gateBtnSecondary} disabled={submitting} onClick={() => onSubmit({ approved: false })}>
           Re-check
         </button>
         <button style={gateBtnApprove} disabled={submitting} onClick={approve}>
