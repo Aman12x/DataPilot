@@ -18,6 +18,13 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+# Connections are made to user-supplied hosts. Without an explicit timeout the
+# drivers inherit the OS TCP timeout, so a host that silently drops packets
+# holds the caller for minutes — and the connection-test endpoints let any
+# authenticated user pick that host.
+DB_CONNECT_TIMEOUT = int(os.getenv("DB_CONNECT_TIMEOUT", "10"))
+DB_READ_TIMEOUT = int(os.getenv("DB_READ_TIMEOUT", "60"))
+
 # Compiled once at import time — blocks any LLM-generated mutation statement.
 # DuckDB already enforces read_only=True at the driver level; this adds a
 # defence-in-depth check that also covers external SQL engines.
@@ -256,6 +263,7 @@ class DBConnection:
             user=kw["user"],
             password=kw["password"],
             sslmode=kw.get("sslmode", "prefer"),
+            connect_timeout=DB_CONNECT_TIMEOUT,
         )
         try:
             return pd.read_sql(sql, conn, params=params)
@@ -285,6 +293,9 @@ class DBConnection:
             password=kw["password"],
             ssl=ssl_kwargs,
             cursorclass=pymysql.cursors.Cursor,
+            connect_timeout=DB_CONNECT_TIMEOUT,
+            read_timeout=DB_READ_TIMEOUT,
+            write_timeout=DB_READ_TIMEOUT,
         )
         try:
             return pd.read_sql(sql, conn)

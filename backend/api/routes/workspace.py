@@ -26,18 +26,21 @@ Endpoints:
 
 from __future__ import annotations
 
+import asyncio
+
 import json
 import logging
 import os
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, field_validator
 
 from auth import org_store, workspace_store
 from config.analysis_config import MetricConfig
 from tools.db_tools import DBConnection
 
+from ..auth_rate import check_auth_rate
 from ..deps import get_current_user, resolve_workspace_id
 
 logger = logging.getLogger(__name__)
@@ -158,6 +161,32 @@ def _test_pg(**kwargs: Any) -> dict[str, Any]:
     return _test_db(**kwargs)
 
 
+# Overall ceiling for a connection test. The drivers already carry
+# DB_CONNECT_TIMEOUT, but schema inspection runs several queries afterwards, so
+# bound the whole thing.
+_TEST_TIMEOUT = float(os.getenv("DB_TEST_TIMEOUT", "25"))
+
+
+async def _test_db_async(**kwargs: Any) -> dict[str, Any]:
+    """Run a connection test off the event loop, with a hard ceiling.
+
+    The host is user-supplied, so this must never be able to pin the loop: the
+    backend runs one worker, and a blackholed host would otherwise stall every
+    other request for as long as the OS TCP timeout.
+    """
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(_test_pg, **kwargs), timeout=_TEST_TIMEOUT
+        )
+    except asyncio.TimeoutError:
+        return {
+            "success": False,
+            "error": f"Connection test timed out after {_TEST_TIMEOUT:.0f}s",
+            "table_count": 0,
+            "tables": [],
+        }
+
+
 # ── Connection models ─────────────────────────────────────────────────────────
 
 class ConnectionCreate(BaseModel):
@@ -224,10 +253,14 @@ async def list_connections(
 
 @router.post("/connections", status_code=status.HTTP_201_CREATED)
 async def create_connection(
+    request: Request,
     body: ConnectionCreate,
     current_user: dict = Depends(get_current_user),
     workspace_id: str | None = Depends(resolve_workspace_id),
 ):
+    # Creating a connection tests it by default, so it reaches out to a
+    # user-chosen host like the explicit test routes do.
+    await check_auth_rate(request, bucket="conn_test")
     user_id = current_user["user_id"]
     _require_owner(user_id, workspace_id)
 
@@ -255,7 +288,7 @@ async def create_connection(
         host, port, username, sslmode = "", 0, "", "prefer"
 
     if body.test:
-        result = _test_pg(
+        result = await _test_db_async(
             backend=backend,
             host=host, port=port, dbname=dbname,
             user=username, password=password, sslmode=sslmode,
@@ -343,6 +376,7 @@ async def delete_connection(
 
 @router.post("/connections/{connection_id}/test")
 async def test_saved_connection(
+    request: Request,
     connection_id: str,
     current_user: dict = Depends(get_current_user),
     metric_pack_id: Optional[str] = None,
@@ -351,12 +385,13 @@ async def test_saved_connection(
     Live-test a saved connection. Optional `metric_pack_id` query param runs
     pack-vs-live drift checks and returns `drift_warnings`.
     """
+    await check_auth_rate(request, bucket="conn_test")
     user_id = current_user["user_id"]
     secrets = workspace_store.get_connection_secrets(user_id, connection_id)
     if not secrets:
         raise HTTPException(status_code=404, detail="Connection not found")
 
-    result = _test_pg(
+    result = await _test_db_async(
         backend=secrets.backend,
         host=secrets.host, port=secrets.port, dbname=secrets.dbname,
         user=secrets.username, password=secrets.password, sslmode=secrets.sslmode,
@@ -421,16 +456,18 @@ async def test_saved_connection(
 
 @router.post("/connections/test-ephemeral")
 async def test_ephemeral(
+    request: Request,
     body: EphemeralTestRequest,
     current_user: dict = Depends(get_current_user),
 ):
+    await check_auth_rate(request, bucket="conn_test")
     if body.backend in ("postgres", "mysql"):
         _validate_host(body.host)
     elif body.backend == "bigquery":
         _validate_bq_credentials(body.password)
         if not body.project_id or not body.dbname:
             raise HTTPException(status_code=400, detail="project_id and dataset required")
-    result = _test_pg(
+    result = await _test_db_async(
         backend=body.backend,
         host=body.host, port=body.port, dbname=body.dbname,
         user=body.username, password=body.password, sslmode=body.sslmode,
