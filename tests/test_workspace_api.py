@@ -1,89 +1,30 @@
 """
 tests/test_workspace_api.py — API tests for connections + metric packs + start-run.
 
-Uses the same FastAPI TestClient + fake-lifespan pattern as test_api.py so
-startup does not build a real LangGraph / generate DuckDB data.
+Uses the shared api_harness so FakeGraph / app.state stay consistent with test_api.py.
 """
 
 from __future__ import annotations
 
 import os
 import sys
-import types
 import uuid
-from contextlib import asynccontextmanager
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
-from fastapi.testclient import TestClient
 
-# ── path setup ────────────────────────────────────────────────────────────────
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 BACKEND = os.path.join(ROOT, "backend")
-for p in (ROOT, BACKEND):
+_TESTS = os.path.dirname(__file__)
+for p in (ROOT, BACKEND, _TESTS):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-
-def _stub(name: str, **attrs):
-    mod = types.ModuleType(name)
-    for k, v in attrs.items():
-        setattr(mod, k, v)
-    return mod
-
-
-def _stub_if_missing(name: str, **attrs):
-    if name not in sys.modules:
-        try:
-            __import__(name)
-        except ImportError:
-            sys.modules[name] = _stub(name, **attrs)
-
-
-_stub_if_missing("anthropic")
-_stub_if_missing("langfuse")
-_stub_if_missing("langfuse.decorators", observe=lambda **kw: (lambda f: f))
-_stub_if_missing("sentence_transformers")
-
-if not hasattr(sys.modules.get("langfuse.decorators", object()), "observe"):
-    sys.modules["langfuse.decorators"] = _stub(
-        "langfuse.decorators", observe=lambda **kw: (lambda f: f)
-    )
-
-
-@asynccontextmanager
-async def _test_lifespan(app):
-    from api.run_manager import set_redis_client
-
-    set_redis_client(None)
-    app.state.graph = MagicMock()
-    app.state.memory_store = MagicMock()
-    yield
-
-
-_AUTH_DB = f"/tmp/test_ws_auth_{uuid.uuid4().hex}.db"
-os.environ["SECRET_KEY"] = "test-secret-key-that-is-long-enough-for-hs256"
-os.environ["AUTH_DB_PATH"] = _AUTH_DB
-os.environ.setdefault("MEMORY_DB_PATH", f"/tmp/test_ws_mem_{uuid.uuid4().hex}.db")
-os.environ.setdefault("UPLOAD_DIR", f"/tmp/test_ws_uploads_{uuid.uuid4().hex}")
-os.environ.setdefault("GRAPH_DB_PATH", f"/tmp/test_ws_graph_{uuid.uuid4().hex}.db")
-os.environ["AUTH_AUTO_VERIFY_EMAIL"] = "true"
-os.environ["AUTH_RETURN_TOKENS"] = "true"
-os.environ["AUTH_RATE_MAX_ATTEMPTS"] = "10000"
-os.environ["ALLOW_PRIVATE_DB_HOSTS"] = "false"
-
-# Reset Fernet cache so SECRET_KEY above is used
-import backend.api.crypto_secrets as _crypto  # noqa: E402
-
-_crypto._FERNET = None
+pytest_plugins = ["api_harness"]
 
 from auth.workspace_store import init_workspace_tables  # noqa: E402
 
-init_workspace_tables(_AUTH_DB)
-
-from api.main import app  # noqa: E402
-
-app.router.lifespan_context = _test_lifespan  # type: ignore[assignment]
+init_workspace_tables(os.environ.get("AUTH_DB_PATH"))
 
 SAMPLE_CONFIG = {
     "primary_metric": "revenue",
@@ -98,18 +39,8 @@ SAMPLE_CONFIG = {
 }
 
 
-@pytest.fixture
-def client():
-    with TestClient(app, raise_server_exceptions=True) as c:
-        yield c
-
-
 def _auth_headers(client) -> dict[str, str]:
-    """Register a user and return Bearer headers.
-
-    Clears cookies so HttpOnly auth cookies from register don't override the
-    Authorization header (cookie wins in get_current_user).
-    """
+    """Register a user and return Bearer headers (cookies cleared)."""
     un = f"smb_{uuid.uuid4().hex[:8]}"
     r = client.post(
         "/auth/register",
@@ -128,15 +59,12 @@ def auth(client):
 
 @pytest.fixture
 def public_dns():
-    """Force host validation to a public IP (avoids real DNS / NXDOMAIN)."""
-    # Dual import paths (api.* vs backend.api.*) exist in this repo — patch both.
     with patch("backend.api.routes.runs.socket.gethostbyname", return_value="8.8.8.8"):
         with patch("api.routes.runs.socket.gethostbyname", return_value="8.8.8.8"):
             yield
 
 
 def _patch_test_pg():
-    """Patch connection tester on whichever module object the router uses."""
     return patch("api.routes.workspace._test_pg")
 
 
@@ -319,11 +247,9 @@ class TestStartRunWithPackAndConnection:
             )
         assert r.status_code == 201, r.text
         assert mock_start.await_count == 1
-        args = mock_start.await_args.args
-        state = args[2]
+        state = mock_start.await_args.args[2]
         assert state["connection_id"] == conn["connection_id"]
         assert state["metric_pack_certified"] is True
         assert state["metric_config"].primary_metric == "revenue"
         assert state["pg_host"] == "pg.example.com"
-        # Password resolved for first load_schema; durable key is connection_id
         assert state["pg_password"] == "p"

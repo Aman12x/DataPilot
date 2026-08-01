@@ -19,158 +19,21 @@ import io
 import json
 import os
 import sys
-import types
 import uuid
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
-# ── path setup ────────────────────────────────────────────────────────────────
-ROOT    = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-BACKEND = os.path.join(ROOT, "backend")
-for p in (ROOT, BACKEND):
-    if p not in sys.path:
-        sys.path.insert(0, p)
+_TESTS = os.path.dirname(__file__)
+if _TESTS not in sys.path:
+    sys.path.insert(0, _TESTS)
 
-# ── Minimal stubs for heavy deps not needed at test time ─────────────────────
+# Shared harness (stubs, FakeGraph, app, client / fake_mode fixtures)
+pytest_plugins = ["api_harness"]
 
-def _stub(name: str, **attrs):
-    mod = types.ModuleType(name)
-    for k, v in attrs.items():
-        setattr(mod, k, v)
-    return mod
-
-
-# Only stub modules that are genuinely absent — never override installed packages
-# (stubs leaking into sys.modules break other tests that need the real package).
-def _stub_if_missing(name: str, **attrs):
-    if name not in sys.modules:
-        try:
-            __import__(name)
-        except ImportError:
-            sys.modules[name] = _stub(name, **attrs)
-
-
-_stub_if_missing("anthropic")
-_stub_if_missing("langfuse")
-_stub_if_missing("langfuse.decorators", observe=lambda **kw: (lambda f: f))
-_stub_if_missing("sentence_transformers")
-
-# Ensure langfuse.decorators.observe exists (some envs have langfuse but not decorators)
-if not hasattr(sys.modules.get("langfuse.decorators", object()), "observe"):
-    sys.modules["langfuse.decorators"] = _stub("langfuse.decorators", observe=lambda **kw: (lambda f: f))
-
-
-# ── Fake graph mode — controls _FakeGraph behaviour per test ─────────────────
-
-_fake_graph_mode: dict[str, str] = {"mode": "complete"}
-# modes: "complete" | "gate" | "crash"
-
-
-# ── Fake graph that never actually runs ──────────────────────────────────────
-
-class _FakeGraph:
-    """
-    Simulates the LangGraph graph.
-    - Known run IDs (added via _known_runs) return a fake state.
-    - Unknown IDs raise an exception so 404 paths are exercised.
-    - Behaviour controlled by _fake_graph_mode["mode"]:
-        "complete" → invoke returns {}, get_state has no tasks (terminal)
-        "gate"     → invoke returns {}, get_state has an interrupt task
-        "crash"    → invoke raises RuntimeError
-    """
-    def __init__(self):
-        self._known_runs:   set[str] = set()
-        self._gate_run_ids: set[str] = set()
-
-    def invoke(self, state_or_cmd, config, **__):
-        run_id = config.get("configurable", {}).get("thread_id", "")
-        mode = _fake_graph_mode["mode"]
-        if mode == "crash":
-            raise RuntimeError("simulated node failure")
-        self._known_runs.add(run_id)
-        if mode == "gate":
-            self._gate_run_ids.add(run_id)
-        return {}
-
-    def stream(self, state_or_cmd, config, **__):
-        """Delegate to invoke (same side-effects) and yield one synthetic chunk."""
-        run_id = config.get("configurable", {}).get("thread_id", "")
-        mode = _fake_graph_mode["mode"]
-        if mode == "crash":
-            raise RuntimeError("simulated node failure")
-        self._known_runs.add(run_id)
-        if mode == "gate":
-            self._gate_run_ids.add(run_id)
-        # Yield one step chunk so _stream_graph has something to iterate over
-        yield {"generate_narrative": {}}
-
-    def get_state(self, config, **__):
-        run_id = config.get("configurable", {}).get("thread_id", "")
-        if run_id not in self._known_runs:
-            raise Exception("run not found")
-        state = MagicMock()
-        state.values = {"task": "test", "narrative_draft": "hello", "recommendation": "ship it", "user_id": "test-user"}
-        state.next = ()
-        if run_id in self._gate_run_ids:
-            interrupt_obj = MagicMock()
-            interrupt_obj.value = {"gate": "intent", "payload": {"question": "What analysis?"}}
-            task = MagicMock()
-            task.interrupts = [interrupt_obj]
-            state.tasks = [task]
-        else:
-            state.tasks = []
-        return state
-
-
-# ── Fake memory store ─────────────────────────────────────────────────────────
-
-class _FakeMemoryStore:
-    def get_all_runs(self, **_):
-        return []
-
-
-# ── Test lifespan: skips all real startup ─────────────────────────────────────
-
-@asynccontextmanager
-async def _test_lifespan(app):
-    from api.run_manager import set_redis_client
-    set_redis_client(None)   # force in-memory mode
-
-    app.state.graph        = _FakeGraph()
-    app.state.memory_store = _FakeMemoryStore()
-    yield
-
-
-# ── Build app under test ──────────────────────────────────────────────────────
-
-os.environ.setdefault("SECRET_KEY", "test-secret-key-that-is-long-enough")
-os.environ.setdefault("AUTH_DB_PATH",   f"/tmp/test_auth_{uuid.uuid4().hex}.db")
-os.environ.setdefault("MEMORY_DB_PATH", f"/tmp/test_mem_{uuid.uuid4().hex}.db")
-os.environ.setdefault("UPLOAD_DIR",     f"/tmp/test_uploads_{uuid.uuid4().hex}")
-os.environ.setdefault("GRAPH_DB_PATH",  f"/tmp/test_graph_{uuid.uuid4().hex}.db")
-os.environ.setdefault("AUTH_AUTO_VERIFY_EMAIL", "true")
-os.environ.setdefault("AUTH_RETURN_TOKENS", "true")
-os.environ.setdefault("AUTH_RATE_MAX_ATTEMPTS", "10000")
-
-from api.main import app
-app.router.lifespan_context = _test_lifespan   # type: ignore[assignment]
-
-
-@pytest.fixture(scope="module")
-def client():
-    with TestClient(app, raise_server_exceptions=True) as c:
-        yield c
-
-
-@pytest.fixture
-def fake_mode():
-    """Set fake graph mode for a test and reset to 'complete' afterwards."""
-    yield _fake_graph_mode
-    _fake_graph_mode["mode"] = "complete"
+from api_harness import _fake_graph_mode, app  # noqa: E402
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
