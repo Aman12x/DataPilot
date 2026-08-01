@@ -76,6 +76,25 @@ def init_workspace_tables(path: str | None = None) -> None:
             "CREATE INDEX IF NOT EXISTS idx_metric_packs_user "
             "ON metric_packs(user_id)"
         )
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS schema_annotations (
+                connection_id   TEXT PRIMARY KEY,
+                user_id         TEXT NOT NULL,
+                annotations_json TEXT NOT NULL,
+                synonyms_json   TEXT NOT NULL DEFAULT '{}',
+                updated_at      TEXT NOT NULL
+            )
+        """)
+        # Schema snapshot columns on connections (idempotent ALTERs)
+        for col, defn in (
+            ("schema_snapshot_json", "TEXT"),
+            ("schema_hash", "TEXT"),
+            ("schema_snapshot_at", "TEXT"),
+        ):
+            try:
+                con.execute(f"ALTER TABLE db_connections ADD COLUMN {col} {defn}")
+            except Exception:
+                pass  # already exists
 
 
 # ── Connection DTOs ───────────────────────────────────────────────────────────
@@ -555,3 +574,152 @@ def delete_metric_pack(user_id: str, pack_id: str, path: str | None = None) -> b
                 (pack_id, user_id),
             ).fetchone()
             return row is not None
+
+
+# ── Schema annotations (Phase 2) ──────────────────────────────────────────────
+
+@dataclass
+class SchemaAnnotationsPublic:
+    connection_id: str
+    annotations: dict[str, Any]
+    synonyms: dict[str, str]
+    updated_at: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "connection_id": self.connection_id,
+            "annotations": self.annotations,
+            "synonyms": self.synonyms,
+            "updated_at": self.updated_at,
+        }
+
+
+def get_annotations(
+    user_id: str, connection_id: str, path: str | None = None
+) -> SchemaAnnotationsPublic | None:
+    path = path or _auth_db_path()
+    init_workspace_tables(path)
+    # Ownership: connection must belong to user
+    if not get_connection(user_id, connection_id, path=path):
+        return None
+    with _connect(path) as con:
+        row = con.execute(
+            """
+            SELECT * FROM schema_annotations
+            WHERE connection_id = ? AND user_id = ?
+            """,
+            (connection_id, user_id),
+        ).fetchone()
+    if not row:
+        return SchemaAnnotationsPublic(
+            connection_id=connection_id,
+            annotations={},
+            synonyms={},
+            updated_at="",
+        )
+    d = dict(row)
+    return SchemaAnnotationsPublic(
+        connection_id=d["connection_id"],
+        annotations=json.loads(d.get("annotations_json") or "{}"),
+        synonyms=json.loads(d.get("synonyms_json") or "{}"),
+        updated_at=d.get("updated_at") or "",
+    )
+
+
+def upsert_annotations(
+    user_id: str,
+    connection_id: str,
+    *,
+    annotations: dict[str, Any],
+    synonyms: dict[str, str] | None = None,
+    path: str | None = None,
+) -> SchemaAnnotationsPublic:
+    from agents.analyze.semantic_layer import validate_annotations_payload
+
+    path = path or _auth_db_path()
+    init_workspace_tables(path)
+    if not get_connection(user_id, connection_id, path=path):
+        raise ValueError("connection_id not found or not owned by user")
+
+    clean = validate_annotations_payload(annotations)
+    syn = synonyms or {}
+    if not isinstance(syn, dict):
+        raise ValueError("synonyms must be an object")
+    clean_syn = {str(k).strip(): str(v).strip() for k, v in syn.items() if str(k).strip()}
+    now = _utcnow()
+
+    with _connect(path) as con:
+        existing = con.execute(
+            "SELECT connection_id FROM schema_annotations WHERE connection_id = ?",
+            (connection_id,),
+        ).fetchone()
+        if existing:
+            con.execute(
+                """
+                UPDATE schema_annotations
+                SET annotations_json = ?, synonyms_json = ?, updated_at = ?, user_id = ?
+                WHERE connection_id = ?
+                """,
+                (json.dumps(clean), json.dumps(clean_syn), now, user_id, connection_id),
+            )
+        else:
+            con.execute(
+                """
+                INSERT INTO schema_annotations
+                    (connection_id, user_id, annotations_json, synonyms_json, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (connection_id, user_id, json.dumps(clean), json.dumps(clean_syn), now),
+            )
+    return get_annotations(user_id, connection_id, path=path)  # type: ignore[return-value]
+
+
+def record_schema_snapshot(
+    user_id: str,
+    connection_id: str,
+    *,
+    schema_context: str,
+    schema_hash: str,
+    path: str | None = None,
+) -> None:
+    """Persist last-seen schema for drift-vs-previous-connect checks."""
+    path = path or _auth_db_path()
+    init_workspace_tables(path)
+    if not get_connection(user_id, connection_id, path=path):
+        return
+    now = _utcnow()
+    # Cap stored schema text
+    snap = (schema_context or "")[:50_000]
+    with _connect(path) as con:
+        con.execute(
+            """
+            UPDATE db_connections
+            SET schema_snapshot_json = ?, schema_hash = ?, schema_snapshot_at = ?, updated_at = ?
+            WHERE connection_id = ? AND user_id = ? AND deleted_at IS NULL
+            """,
+            (snap, schema_hash, now, now, connection_id, user_id),
+        )
+
+
+def get_schema_snapshot(
+    user_id: str, connection_id: str, path: str | None = None
+) -> dict[str, Any] | None:
+    path = path or _auth_db_path()
+    init_workspace_tables(path)
+    with _connect(path) as con:
+        row = con.execute(
+            """
+            SELECT schema_snapshot_json, schema_hash, schema_snapshot_at
+            FROM db_connections
+            WHERE connection_id = ? AND user_id = ? AND deleted_at IS NULL
+            """,
+            (connection_id, user_id),
+        ).fetchone()
+    if not row:
+        return None
+    d = dict(row)
+    return {
+        "schema_context": d.get("schema_snapshot_json") or "",
+        "schema_hash": d.get("schema_hash") or "",
+        "schema_snapshot_at": d.get("schema_snapshot_at"),
+    }

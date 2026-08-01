@@ -51,8 +51,12 @@ class AgentState(TypedDict, total=False):
     pg_sslmode:  str                    # prefer | require | disable | …
     metric_config: MetricConfig         # single source of truth for all metric references
     metric_pack_id: str                 # saved metric pack id (if any)
+    metric_pack_version: int            # pack version used for fingerprinting
     metric_pack_certified: bool         # True → skip Metric Config Gate
     metric_config_approved: bool        # HITL: metric mapping approved
+    force_metric_gate: bool             # True when drift forces re-confirm of certified pack
+    schema_drift_warnings: list[str]    # pack / snapshot vs live schema warnings
+    dataset_fingerprint: str            # scopes semantic cache + few-shot isolation
     user_id: str                        # authenticated user — scopes memory store queries
 
     # ── Caching metadata ──────────────────────────────────────────────────────

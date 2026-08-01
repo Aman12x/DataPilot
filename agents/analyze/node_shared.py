@@ -198,14 +198,24 @@ def _to_dict(v: Any) -> dict:
 
 def _metric_context(mc: MetricConfig) -> str:
     """Format a MetricConfig into a human-readable block for prompt injection."""
+    from agents.analyze.semantic_layer import format_join_graph, format_synonyms
+
     lines = [
         f"Primary metric:    {mc.primary_metric}",
         f"Direction:         {mc.metric_direction}",
         f"Covariate:         {mc.covariate}",
+        f"Events table:      {mc.events_table}",
+        f"Experiment table:  {mc.experiment_table}",
         f"Guardrail metrics: {', '.join(mc.guardrail_metrics) or '(none)'}",
         f"Segment columns:   {', '.join(mc.segment_cols) or '(none)'}",
         f"Funnel steps:      {', '.join(mc.funnel_steps) or '(none)'}",
+        "Join graph:",
+        format_join_graph(getattr(mc, "joins", None)),
     ]
+    syn = format_synonyms(getattr(mc, "synonyms", None) or {})
+    if syn:
+        lines.append("Synonyms:")
+        lines.append(syn)
     return "\n".join(lines)
 
 

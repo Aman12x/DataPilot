@@ -19,7 +19,15 @@ import json
 import os
 from typing import Literal, Optional
 
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+class JoinSpec(BaseModel):
+    """Declared entity join to steer SQL away from fan-out mistakes."""
+    left_table: str
+    right_table: str
+    on: str                          # e.g. "left.user_id = right.user_id"
+    note: str = ""
 
 
 # ── Model ─────────────────────────────────────────────────────────────────────
@@ -59,6 +67,12 @@ class MetricConfig(BaseModel):
     # Values: 'increase' | 'decrease' | 'both'
     # When None, guardrail_tools falls back to keyword inference.
     guardrail_harm_directions: Optional[dict[str, str]] = None
+
+    # ── Semantic-layer extensions (Phase 2) ───────────────────────────────────
+    # Declared joins for prompt injection + certified allowlists.
+    joins: list[JoinSpec] = Field(default_factory=list)
+    # Business synonym → physical column (e.g. "WAU" → "weekly_active_users").
+    synonyms: dict[str, str] = Field(default_factory=dict)
 
     # ── Field validators ──────────────────────────────────────────────────────
 
