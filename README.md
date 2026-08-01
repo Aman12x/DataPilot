@@ -177,6 +177,7 @@ SMBs can save Postgres connections and reusable metric definitions:
 - Soft per-connection schema cache + dataset fingerprint (`connection|pack|version|schema`) scopes semantic cache and few-shot history.
 - Private DB hosts are blocked by default (SSRF guard); set `ALLOW_PRIVATE_DB_HOSTS=true` for VPC / self-hosted Postgres.
 - The Analysis UI can select saved connections / packs and save a new connection after a live test.
+- **Workspaces** (`GET/POST /workspaces`, members under `/workspaces/{id}/members`) with `owner` / `analyst` roles. Send `X-Workspace-Id` to scope connections, packs, and shared run history. Analysts can read teammate runs; only the creator can resume live HITL gates.
 
 ## Security
 

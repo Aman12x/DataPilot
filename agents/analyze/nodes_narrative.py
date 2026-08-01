@@ -500,6 +500,7 @@ def log_run_node(state: AgentState) -> dict:
         task=task,
         run_id=run_id,
         user_id=state.get("user_id"),
+        workspace_id=state.get("workspace_id") or None,
         analysis_mode=state.get("analysis_mode") or "ab_test",
         metric=state.get("metric") or "",
         covariate=state.get("covariate") or "",

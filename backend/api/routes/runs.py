@@ -32,6 +32,7 @@ from ..deps import (
     create_pdf_token,
     create_stream_token,
     get_current_user,
+    resolve_workspace_id,
     verify_scoped_token,
 )
 from ..run_manager import (
@@ -135,33 +136,72 @@ def _user_from_stream_token(stream_token: str, run_id: str) -> dict[str, str]:
     return verify_scoped_token(stream_token, "stream", run_id)
 
 
-async def _check_ownership(graph: Any, run_id: str, user_id: str) -> None:
-    owner = await get_owner(run_id)
-    if owner is not None:
-        if owner != user_id:
-            raise HTTPException(status_code=403, detail="Not your run")
-        return
-
+def _workspace_of_run(graph: Any, run_id: str) -> tuple[str | None, str | None]:
+    """Return (owner_user_id, workspace_id) from graph state or memory store."""
+    state_uid: str | None = None
+    ws_id: str | None = None
     config = {"configurable": {"thread_id": run_id}}
     try:
-        state     = graph.get_state(config)
-        state_uid = (state.values or {}).get("user_id") if hasattr(state, "values") else None
-        if state_uid and state_uid != user_id:
-            raise HTTPException(status_code=403, detail="Not your run")
-        if state_uid:
-            return
-    except HTTPException:
-        raise
+        state = graph.get_state(config)
+        values = state.values if hasattr(state, "values") else {}
+        if values:
+            state_uid = values.get("user_id") or None
+            ws_id = values.get("workspace_id") or None
     except Exception:
         pass
+    if not ws_id or not state_uid:
+        try:
+            from memory.store import get_run
+            row = get_run(run_id)
+            if row:
+                state_uid = state_uid or row.get("user_id") or None
+                ws_id = ws_id or row.get("workspace_id") or None
+        except Exception:
+            pass
+    return state_uid, ws_id
 
+
+async def _check_run_access(
+    graph: Any,
+    run_id: str,
+    user_id: str,
+    *,
+    mutate: bool = False,
+) -> None:
+    """
+    Authorise access to a run.
+
+    - mutate=True  → creator only (resume, live stream tokens)
+    - mutate=False → creator OR workspace teammate (history detail/PDF)
+    """
+    owner = await get_owner(run_id)
+    if owner == user_id:
+        return
+
+    state_uid, ws_id = _workspace_of_run(graph, run_id)
+    if state_uid == user_id:
+        return
+
+    if not mutate and ws_id:
+        from auth.org_store import get_membership
+        if get_membership(user_id, ws_id) is not None:
+            return
+
+    if owner is not None or state_uid:
+        raise HTTPException(status_code=403, detail="Not your run")
     raise HTTPException(status_code=403, detail="Not your run")
+
+
+async def _check_ownership(graph: Any, run_id: str, user_id: str) -> None:
+    """Creator-only check (live gates / resume)."""
+    await _check_run_access(graph, run_id, user_id, mutate=True)
 
 
 async def _check_parent_ownership(graph: Any, parent_run_id: str, user_id: str) -> None:
     if not _UUID_RE.match(parent_run_id):
         raise HTTPException(status_code=400, detail="Invalid parent_run_id")
-    await _check_ownership(graph, parent_run_id, user_id)
+    # Follow-ups allowed for workspace teammates (read + branch)
+    await _check_run_access(graph, parent_run_id, user_id, mutate=False)
 
 
 def _snap_to_interrupt_payload(graph: Any, run_id: str) -> dict | None:
@@ -293,6 +333,7 @@ async def create_run(
     req: StartRunRequest,
     request: Request,
     current_user: dict = Depends(get_current_user),
+    workspace_id: str | None = Depends(resolve_workspace_id),
 ):
     t0 = time.perf_counter()
     await check_rate_limit(current_user["user_id"])
@@ -384,6 +425,7 @@ async def create_run(
         "metric_pack_version":    metric_pack_version,
         "metric_pack_certified":  metric_pack_certified,
         "user_id":                user_id,
+        "workspace_id":           workspace_id,
         "run_id":                 run_id,
         "context_narrative":      context_narrative,
     }
@@ -565,13 +607,31 @@ def list_runs(
     request: Request,
     limit: int = Query(default=10, le=100),
     current_user: dict = Depends(get_current_user),
+    workspace_id: str | None = Depends(resolve_workspace_id),
 ):
     store = _get_memory_store(request)
     try:
-        return store.get_all_runs(user_id=current_user["user_id"], limit=limit)
+        if workspace_id:
+            runs = store.get_all_runs(workspace_id=workspace_id, limit=limit)
+        else:
+            runs = store.get_all_runs(user_id=current_user["user_id"], limit=limit)
     except Exception as exc:
         logger.warning("list_runs failed: %s", exc)
         return []
+
+    # Enrich with username for team history UI (best-effort)
+    try:
+        from auth.store import get_user_by_id
+        for r in runs:
+            if not isinstance(r, dict):
+                continue
+            uid = r.get("user_id") or ""
+            if uid and not r.get("username"):
+                user = get_user_by_id(uid)
+                r["username"] = user.username if user else ""
+    except Exception:
+        pass
+    return runs
 
 
 @router.get("/runs/{run_id}/detail")
@@ -581,7 +641,7 @@ async def get_run_detail(
     current_user: dict = Depends(get_current_user),
 ):
     graph = _get_graph(request)
-    await _check_ownership(graph, run_id, current_user["user_id"])
+    await _check_run_access(graph, run_id, current_user["user_id"], mutate=False)
     config = {"configurable": {"thread_id": run_id}}
     try:
         state  = graph.get_state(config)
@@ -593,6 +653,8 @@ async def get_run_detail(
         "task":           values.get("task", ""),
         "narrative":      values.get("final_narrative") or values.get("narrative_draft", ""),
         "recommendation": values.get("recommendation", ""),
+        "user_id":        values.get("user_id", ""),
+        "workspace_id":   values.get("workspace_id") or "",
     }
 
 
@@ -603,7 +665,7 @@ async def pdf_token(
     current_user: dict = Depends(get_current_user),
 ):
     graph = _get_graph(request)
-    await _check_ownership(graph, run_id, current_user["user_id"])
+    await _check_run_access(graph, run_id, current_user["user_id"], mutate=False)
     return {"pdf_token": create_pdf_token(current_user["user_id"], run_id)}
 
 
@@ -615,7 +677,7 @@ async def get_pdf(
 ):
     current_user = verify_scoped_token(pdf_token, "pdf", run_id)
     graph        = _get_graph(request)
-    await _check_ownership(graph, run_id, current_user["user_id"])
+    await _check_run_access(graph, run_id, current_user["user_id"], mutate=False)
 
     config = {"configurable": {"thread_id": run_id}}
     try:
