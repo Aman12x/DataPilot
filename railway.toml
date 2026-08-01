@@ -32,4 +32,7 @@ restartPolicyMaxRetries = 3
 # Without a volume, all SQLite files are wiped on every redeploy and
 # users lose their accounts + history.
 #
-# Railway CLI: railway volume create --service backend --mount /app/db
+# Railway CLI:
+#   new volume:            railway volume add -m /app/db
+#   move an existing one:  railway volume update -v <name> -m /app/db
+# `update` re-points the same disk, so existing auth.db / graph.db survive.
