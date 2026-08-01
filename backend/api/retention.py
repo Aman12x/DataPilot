@@ -35,6 +35,15 @@ _GREGORIAN_OFFSET = 0x01B21DD213814000
 
 CHECKPOINT_RETENTION_DAYS = float(os.getenv("CHECKPOINT_RETENTION_DAYS", "30"))
 RUN_RETENTION_DAYS = float(os.getenv("RUN_RETENTION_DAYS", "180"))
+
+try:  # source of truth for how long a refresh token stays valid
+    from .deps import REFRESH_TOKEN_EXPIRE_DAYS as _REFRESH_DAYS
+except Exception:  # pragma: no cover - deps validates SECRET_KEY at import
+    _REFRESH_DAYS = 30
+# A revocation is redundant once the JWT it names has expired on its own.
+REVOKED_TOKEN_RETENTION_DAYS = float(
+    os.getenv("REVOKED_TOKEN_RETENTION_DAYS", str(_REFRESH_DAYS + 7))
+)
 BACKUP_KEEP = int(os.getenv("BACKUP_KEEP", "7"))
 RETENTION_INTERVAL_SEC = float(os.getenv("RETENTION_INTERVAL_SEC", str(24 * 3600)))
 
@@ -131,25 +140,34 @@ def prune_runs(db_path: str, older_than_days: float = RUN_RETENTION_DAYS) -> int
 def prune_auth_tokens(db_path: str) -> dict:
     """Clear spent and expired tokens.
 
-    revoked_tokens gains a row on every /auth/refresh and was never cleared, so
-    it grows for the life of the deployment and is read on each refresh.
+    revoked_tokens gains a row on every /auth/refresh and is read on every
+    refresh, so it grows for the life of the deployment. It stores
+    (jti, revoked_at) with no expiry column: a revocation only has to outlive
+    the token it revokes, because verify_refresh_token rejects an expired JWT
+    on its own. Hence the cutoff is the refresh-token lifetime plus a margin.
     """
     if not os.path.exists(db_path):
         return {}
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    revoked_cutoff = (now - timedelta(days=REVOKED_TOKEN_RETENTION_DAYS)).isoformat()
+
     removed: dict[str, int] = {}
     con = _connect(db_path)
     try:
         for table, where, params in (
-            ("revoked_tokens", "expires_at < ?", (now,)),
-            ("password_reset_tokens", "used = 1 OR expires_at < ?", (now,)),
-            ("email_verification_tokens", "used = 1 OR expires_at < ?", (now,)),
+            ("revoked_tokens", "revoked_at < ?", (revoked_cutoff,)),
+            ("password_reset_tokens", "used = 1 OR expires_at < ?", (now_iso,)),
+            ("email_verification_tokens", "used = 1 OR expires_at < ?", (now_iso,)),
         ):
             try:
                 cur = con.execute(f"DELETE FROM {table} WHERE {where}", params)
                 removed[table] = cur.rowcount or 0
             except sqlite3.OperationalError as exc:
-                logger.debug("prune_auth_tokens: %s skipped (%s)", table, exc)
+                # Warning, not debug: a silent skip here is how the original
+                # revoked_tokens bug hid — it assumed an expires_at column that
+                # this table does not have, so the prune never ran.
+                logger.warning("prune_auth_tokens: %s skipped (%s)", table, exc)
         con.commit()
         return removed
     finally:
@@ -157,13 +175,21 @@ def prune_auth_tokens(db_path: str) -> dict:
 
 
 def vacuum(db_path: str) -> int:
-    """Reclaim freed pages. Returns bytes recovered (negative means it grew)."""
+    """Reclaim freed pages. Returns bytes recovered (negative means it grew).
+
+    The wal_checkpoint(TRUNCATE) is load-bearing, not tidiness. Under WAL —
+    which is how the app opens graph.db — VACUUM writes the rebuilt database
+    into the WAL, and the main file keeps its old size until a checkpoint folds
+    it back. Without this the space is not returned to the filesystem and the
+    reported figure is always 0.
+    """
     if not os.path.exists(db_path):
         return 0
     before = os.path.getsize(db_path)
     con = _connect(db_path)
     try:
         con.execute("VACUUM")
+        con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     finally:
         con.close()
     return before - os.path.getsize(db_path)

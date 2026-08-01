@@ -30,8 +30,13 @@ def _uuid6_at(when: datetime) -> str:
 
 
 def _graph_db(path, threads):
-    """threads: {thread_id: [datetime, ...]}"""
+    """threads: {thread_id: [datetime, ...]}
+
+    WAL, because that is how main.py opens graph.db -- and VACUUM behaves
+    differently under WAL, which an earlier version of this file missed.
+    """
     con = sqlite3.connect(path)
+    con.execute("PRAGMA journal_mode=WAL")
     con.execute(
         "CREATE TABLE checkpoints (thread_id TEXT, checkpoint_ns TEXT, checkpoint_id TEXT,"
         " parent_checkpoint_id TEXT, type TEXT, checkpoint BLOB, metadata BLOB)"
@@ -162,11 +167,13 @@ def test_prune_auth_tokens_clears_spent_and_expired(tmp_path):
     db = str(tmp_path / "auth.db")
     now = datetime.now(timezone.utc)
     con = sqlite3.connect(db)
-    con.execute("CREATE TABLE revoked_tokens (jti TEXT, expires_at TEXT)")
+    con.execute("CREATE TABLE revoked_tokens (jti TEXT PRIMARY KEY, revoked_at TEXT NOT NULL)")
     con.execute("CREATE TABLE password_reset_tokens (token TEXT, used INT, expires_at TEXT)")
     con.execute("CREATE TABLE email_verification_tokens (token TEXT, used INT, expires_at TEXT)")
-    con.execute("INSERT INTO revoked_tokens VALUES ('a', ?)", ((now - timedelta(days=1)).isoformat(),))
-    con.execute("INSERT INTO revoked_tokens VALUES ('b', ?)", ((now + timedelta(days=1)).isoformat(),))
+    # Old enough that the refresh token it names has expired anyway.
+    con.execute("INSERT INTO revoked_tokens VALUES ('a', ?)", ((now - timedelta(days=200)).isoformat(),))
+    # Recent: the token is still live, so the revocation must be kept.
+    con.execute("INSERT INTO revoked_tokens VALUES ('b', ?)", ((now - timedelta(days=1)).isoformat(),))
     con.execute("INSERT INTO password_reset_tokens VALUES ('t', 1, ?)", ((now + timedelta(days=1)).isoformat(),))
     con.commit(); con.close()
 
@@ -287,3 +294,85 @@ def test_run_maintenance_never_raises(tmp_path, monkeypatch):
     monkeypatch.setenv("MEMORY_DB_PATH", "/nonexistent/dir/mem.db")
     monkeypatch.setenv("BACKUP_DIR", str(tmp_path / "b"))
     assert isinstance(retention.run_maintenance(), dict)
+
+
+# ── Regressions found by deploying and reading the logs ───────────────────────
+
+
+def test_vacuum_reclaims_space_under_wal(tmp_path):
+    """VACUUM alone does not shrink a WAL database with a live reader.
+
+    The rebuilt file goes into the WAL, and the main file keeps its old size
+    until a checkpoint folds it back. SQLite auto-checkpoints when the LAST
+    connection closes, which is why this needs a second connection held open --
+    production always has one, since the LangGraph checkpointer keeps graph.db
+    open for the life of the process. The first version of vacuum() omitted the
+    checkpoint and reported 0 bytes reclaimed in production while the disk
+    stayed full.
+    """
+    db = str(tmp_path / "wal.db")
+    writer = sqlite3.connect(db)
+    writer.execute("PRAGMA journal_mode=WAL")
+    writer.execute("CREATE TABLE t (a, b)")
+    writer.executemany("INSERT INTO t VALUES (?,?)", [(i, b"x" * 4000) for i in range(2000)])
+    writer.commit()
+    writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    before = os.path.getsize(db)
+    writer.execute("DELETE FROM t")
+    writer.commit()
+
+    # Held open across the vacuum, exactly as the checkpointer holds graph.db.
+    holder = sqlite3.connect(db)
+    holder.execute("SELECT COUNT(*) FROM t").fetchone()
+    try:
+        freed = retention.vacuum(db)
+    finally:
+        holder.close()
+        writer.close()
+
+    assert freed > 0, "vacuum reported no reclamation under WAL"
+    assert os.path.getsize(db) < before / 2
+
+
+def test_revoked_tokens_are_pruned_on_revoked_at(tmp_path):
+    """The table is (jti, revoked_at) -- there is no expires_at column.
+
+    Querying one made the DELETE raise OperationalError, which was swallowed,
+    so the table that grows on every /auth/refresh was never pruned at all.
+    """
+    db = str(tmp_path / "auth.db")
+    now = datetime.now(timezone.utc)
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE revoked_tokens (jti TEXT PRIMARY KEY, revoked_at TEXT NOT NULL)")
+    con.execute("INSERT INTO revoked_tokens VALUES ('stale', ?)", ((now - timedelta(days=400)).isoformat(),))
+    con.execute("INSERT INTO revoked_tokens VALUES ('fresh', ?)", (now.isoformat(),))
+    con.commit(); con.close()
+
+    removed = retention.prune_auth_tokens(db)
+    assert "revoked_tokens" in removed, "prune silently skipped the table"
+    assert removed["revoked_tokens"] == 1
+
+    con = sqlite3.connect(db)
+    assert [r[0] for r in con.execute("SELECT jti FROM revoked_tokens")] == ["fresh"]
+    con.close()
+
+
+def test_revocation_outlives_the_token_it_revokes():
+    """Pruning too early would un-revoke a token that is still valid."""
+    from backend.api.deps import REFRESH_TOKEN_EXPIRE_DAYS
+
+    assert retention.REVOKED_TOKEN_RETENTION_DAYS > REFRESH_TOKEN_EXPIRE_DAYS
+
+
+def test_schema_drift_is_logged_not_swallowed(tmp_path, caplog):
+    """A missing table must be visible; a debug-level skip is how this hid."""
+    import logging
+
+    db = str(tmp_path / "auth.db")
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE unrelated (x)")
+    con.commit(); con.close()
+
+    with caplog.at_level(logging.WARNING):
+        retention.prune_auth_tokens(db)
+    assert any("skipped" in r.message for r in caplog.records)
