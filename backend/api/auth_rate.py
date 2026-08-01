@@ -6,12 +6,18 @@ Uses Redis ZSET when available (via run_manager client), otherwise in-memory deq
 from __future__ import annotations
 
 import ipaddress
+import logging
 import os
 import time
 from collections import deque
 from typing import Deque
 
 from fastapi import HTTPException, Request, status
+
+logger = logging.getLogger(__name__)
+
+# One-shot diagnostic: logs how the bucket key was derived. Off by default.
+_DEBUG_IP = os.getenv("DEBUG_CLIENT_IP", "").lower() in ("1", "true", "yes")
 
 _local_rate: dict[str, Deque[float]] = {}
 
@@ -99,6 +105,13 @@ async def check_auth_rate(request: Request, *, bucket: str = "auth") -> None:
     window, max_attempts = _limits()
     ip = client_ip(request)
     key = f"{bucket}:{ip}"
+    if _DEBUG_IP:
+        logger.info(
+            "auth_rate.key bucket=%s ip=%s xff=%r peer=%s",
+            bucket, ip,
+            request.headers.get("X-Forwarded-For"),
+            request.client.host if request.client else None,
+        )
 
     from .run_manager import get_redis_client
 
