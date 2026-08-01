@@ -36,6 +36,7 @@ from ..deps import (
     create_pdf_token,
     create_stream_token,
     get_current_user,
+    resolve_workspace_id,
     verify_scoped_token,
 )
 from ..run_manager import (
@@ -147,10 +148,10 @@ _UUID_RE = re.compile(
 )
 
 _ALLOWED_GATES = frozenset({
-    "semantic_cache", "intent", "query", "analysis", "narrative", "srm",
+    "semantic_cache", "intent", "metric", "query", "analysis", "narrative", "srm",
 })
 
-_ALLOWED_DB_BACKENDS = frozenset({"duckdb", "postgres"})
+_ALLOWED_DB_BACKENDS = frozenset({"duckdb", "postgres", "mysql", "bigquery"})
 
 
 # ── JSON helpers ──────────────────────────────────────────────────────────────
@@ -182,33 +183,72 @@ def _user_from_stream_token(stream_token: str, run_id: str) -> dict[str, str]:
     return verify_scoped_token(stream_token, "stream", run_id)
 
 
-async def _check_ownership(graph: Any, run_id: str, user_id: str) -> None:
-    owner = await get_owner(run_id)
-    if owner is not None:
-        if owner != user_id:
-            raise HTTPException(status_code=403, detail="Not your run")
-        return
-
+def _workspace_of_run(graph: Any, run_id: str) -> tuple[str | None, str | None]:
+    """Return (owner_user_id, workspace_id) from graph state or memory store."""
+    state_uid: str | None = None
+    ws_id: str | None = None
     config = {"configurable": {"thread_id": run_id}}
     try:
-        state     = graph.get_state(config)
-        state_uid = (state.values or {}).get("user_id") if hasattr(state, "values") else None
-        if state_uid and state_uid != user_id:
-            raise HTTPException(status_code=403, detail="Not your run")
-        if state_uid:
-            return
-    except HTTPException:
-        raise
+        state = graph.get_state(config)
+        values = state.values if hasattr(state, "values") else {}
+        if values:
+            state_uid = values.get("user_id") or None
+            ws_id = values.get("workspace_id") or None
     except Exception:
         pass
+    if not ws_id or not state_uid:
+        try:
+            from memory.store import get_run
+            row = get_run(run_id)
+            if row:
+                state_uid = state_uid or row.get("user_id") or None
+                ws_id = ws_id or row.get("workspace_id") or None
+        except Exception:
+            pass
+    return state_uid, ws_id
 
+
+async def _check_run_access(
+    graph: Any,
+    run_id: str,
+    user_id: str,
+    *,
+    mutate: bool = False,
+) -> None:
+    """
+    Authorise access to a run.
+
+    - mutate=True  → creator only (resume, live stream tokens)
+    - mutate=False → creator OR workspace teammate (history detail/PDF)
+    """
+    owner = await get_owner(run_id)
+    if owner == user_id:
+        return
+
+    state_uid, ws_id = _workspace_of_run(graph, run_id)
+    if state_uid == user_id:
+        return
+
+    if not mutate and ws_id:
+        from auth.org_store import get_membership
+        if get_membership(user_id, ws_id) is not None:
+            return
+
+    if owner is not None or state_uid:
+        raise HTTPException(status_code=403, detail="Not your run")
     raise HTTPException(status_code=403, detail="Not your run")
+
+
+async def _check_ownership(graph: Any, run_id: str, user_id: str) -> None:
+    """Creator-only check (live gates / resume)."""
+    await _check_run_access(graph, run_id, user_id, mutate=True)
 
 
 async def _check_parent_ownership(graph: Any, parent_run_id: str, user_id: str) -> None:
     if not _UUID_RE.match(parent_run_id):
         raise HTTPException(status_code=400, detail="Invalid parent_run_id")
-    await _check_ownership(graph, parent_run_id, user_id)
+    # Follow-ups allowed for workspace teammates (read + branch)
+    await _check_run_access(graph, parent_run_id, user_id, mutate=False)
 
 
 def _snap_to_interrupt_payload(graph: Any, run_id: str) -> dict | None:
@@ -231,11 +271,18 @@ class StartRunRequest(BaseModel):
     analysis_mode: str = ""       # empty = auto-detect via resolve_task_intent
     db_backend:    str = "duckdb"
     duckdb_path:   str = ""
+    connection_id: str = ""       # saved DB connection (preferred over inline pg_*)
+    metric_pack_id: str = ""      # saved metric pack
     pg_host:       str = ""
     pg_port:       int = 5432
     pg_dbname:     str = ""
     pg_user:       str = ""
     pg_password:   str = ""
+    pg_sslmode:    str = "prefer"
+    # BigQuery (inline ephemeral; prefer connection_id in production)
+    bq_project_id: str = ""
+    bq_dataset: str = ""
+    bq_credentials_json: str = ""
     parent_run_id: str = ""       # set for follow-up queries; injects parent narrative as context
 
     @field_validator("analysis_mode")
@@ -249,21 +296,25 @@ class StartRunRequest(BaseModel):
     @classmethod
     def _check_backend(cls, v: str) -> str:
         if v not in _ALLOWED_DB_BACKENDS:
-            raise ValueError("db_backend must be 'duckdb' or 'postgres'")
+            raise ValueError(
+                "db_backend must be one of: duckdb, postgres, mysql, bigquery"
+            )
         return v
 
     @field_validator("pg_port")
     @classmethod
     def _check_port(cls, v: int) -> int:
+        if v == 0:
+            return v
         if not (1 <= v <= 65535):
             raise ValueError("pg_port out of range")
         return v
 
-    @field_validator("parent_run_id")
+    @field_validator("connection_id", "metric_pack_id", "parent_run_id")
     @classmethod
-    def _check_parent(cls, v: str) -> str:
+    def _check_uuidish(cls, v: str) -> str:
         if v and not _UUID_RE.match(v):
-            raise ValueError("parent_run_id must be a valid UUID")
+            raise ValueError("must be a valid UUID")
         return v
 
 
@@ -337,9 +388,11 @@ async def create_run(
     req: StartRunRequest,
     request: Request,
     current_user: dict = Depends(get_current_user),
+    workspace_id: str | None = Depends(resolve_workspace_id),
 ):
     t0 = time.perf_counter()
     await check_rate_limit(current_user["user_id"])
+    user_id = current_user["user_id"]
 
     ip = client_ip(request)
     await check_budget(current_user["user_id"], ip)
@@ -347,20 +400,80 @@ async def create_run(
 
     task = _sanitise_task(req.task)
 
-    if req.pg_host:
-        _validate_pg_host(req.pg_host)
+    # ── Resolve saved connection (preferred over inline pg_*) ─────────────────
+    from auth import workspace_store
+    from config.analysis_config import MetricConfig
+
+    connection_id = req.connection_id
+    pg_host = req.pg_host
+    pg_port = req.pg_port
+    pg_dbname = req.pg_dbname
+    pg_user = req.pg_user
+    pg_password = req.pg_password
+    pg_sslmode = req.pg_sslmode
+    db_backend = req.db_backend
+    bq_project_id = req.bq_project_id
+    bq_dataset = req.bq_dataset
+    bq_credentials_json = req.bq_credentials_json
+
+    if connection_id:
+        secrets = workspace_store.get_connection_secrets(user_id, connection_id)
+        if not secrets:
+            raise HTTPException(status_code=404, detail="Connection not found")
+        db_backend = secrets.backend
+        if secrets.backend == "bigquery":
+            bq_project_id = secrets.project_id
+            bq_dataset = secrets.dbname
+            bq_credentials_json = secrets.password
+            pg_host = pg_user = pg_password = ""
+            pg_dbname = ""
+            pg_port = 0
+        else:
+            pg_host = secrets.host
+            pg_port = secrets.port
+            pg_dbname = secrets.dbname
+            pg_user = secrets.username
+            pg_password = secrets.password
+            pg_sslmode = secrets.sslmode
+    elif db_backend == "bigquery":
+        if not (bq_project_id and bq_dataset and bq_credentials_json):
+            raise HTTPException(
+                status_code=400,
+                detail="BigQuery requires project_id, dataset, and credentials JSON "
+                       "(or a saved connection_id)",
+            )
+    elif pg_host:
+        _validate_pg_host(pg_host)
+
+    # ── Resolve metric pack ───────────────────────────────────────────────────
+    metric_config = None
+    metric_pack_certified = False
+    metric_pack_id = req.metric_pack_id
+    metric_pack_version = None
+    if metric_pack_id:
+        pack = workspace_store.get_metric_pack(user_id, metric_pack_id)
+        if not pack:
+            raise HTTPException(status_code=404, detail="Metric pack not found")
+        try:
+            metric_config = MetricConfig(**pack.config)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400, detail=f"Metric pack config invalid: {exc}"
+            ) from exc
+        metric_pack_certified = bool(pack.certified)
+        metric_pack_version = int(pack.version)
 
     graph  = _get_graph(request)
     run_id = str(uuid.uuid4())
 
     resolved_duckdb_path = ""
     if req.duckdb_path:
-        resolved_duckdb_path = resolve_upload_path(req.duckdb_path, current_user["user_id"])
+        resolved_duckdb_path = resolve_upload_path(req.duckdb_path, user_id)
 
     # Extract parent narrative for follow-up context injection
     context_narrative = ""
     if req.parent_run_id:
-        await _check_parent_ownership(graph, req.parent_run_id, current_user["user_id"])
+        await _check_parent_ownership(graph, req.parent_run_id, user_id)
         try:
             parent_config = {"configurable": {"thread_id": req.parent_run_id}}
             parent_state  = graph.get_state(parent_config)
@@ -373,24 +486,39 @@ async def create_run(
         except Exception:
             logger.warning("Could not read parent run state for %s", req.parent_run_id)
 
+    initial_state: dict[str, Any] = {
+        "task":                   task,
+        "analysis_mode":          req.analysis_mode,
+        "db_backend":             db_backend,
+        "duckdb_path":            resolved_duckdb_path,
+        "connection_id":          connection_id,
+        "pg_host":                pg_host,
+        "pg_port":                pg_port,
+        "pg_dbname":              pg_dbname,
+        "pg_user":                pg_user,
+        "pg_password":            pg_password,
+        "pg_sslmode":             pg_sslmode,
+        "bq_project_id":          bq_project_id,
+        "bq_dataset":             bq_dataset,
+        "bq_credentials_json":    bq_credentials_json,
+        "metric_pack_id":         metric_pack_id,
+        "metric_pack_version":    metric_pack_version,
+        "metric_pack_certified":  metric_pack_certified,
+        "user_id":                user_id,
+        "workspace_id":           workspace_id,
+        "run_id":                 run_id,
+        "context_narrative":      context_narrative,
+    }
+    if metric_config is not None:
+        initial_state["metric_config"] = metric_config
+        initial_state["metric"] = metric_config.primary_metric
+        initial_state["covariate"] = metric_config.covariate
+
     await start_run(
         graph,
         run_id,
-        {
-            "task":               task,
-            "analysis_mode":      req.analysis_mode,
-            "db_backend":         req.db_backend,
-            "duckdb_path":        resolved_duckdb_path,
-            "pg_host":            req.pg_host,
-            "pg_port":            req.pg_port,
-            "pg_dbname":          req.pg_dbname,
-            "pg_user":            req.pg_user,
-            "pg_password":        req.pg_password,
-            "user_id":            current_user["user_id"],
-            "run_id":             run_id,
-            "context_narrative":  context_narrative,
-        },
-        user_id=current_user["user_id"],
+        initial_state,
+        user_id=user_id,
         budget_scope=budget_scope,
     )
 
@@ -564,13 +692,31 @@ def list_runs(
     request: Request,
     limit: int = Query(default=10, le=100),
     current_user: dict = Depends(get_current_user),
+    workspace_id: str | None = Depends(resolve_workspace_id),
 ):
     store = _get_memory_store(request)
     try:
-        return store.get_all_runs(user_id=current_user["user_id"], limit=limit)
+        if workspace_id:
+            runs = store.get_all_runs(workspace_id=workspace_id, limit=limit)
+        else:
+            runs = store.get_all_runs(user_id=current_user["user_id"], limit=limit)
     except Exception as exc:
         logger.warning("list_runs failed: %s", exc)
         return []
+
+    # Enrich with username for team history UI (best-effort)
+    try:
+        from auth.store import get_user_by_id
+        for r in runs:
+            if not isinstance(r, dict):
+                continue
+            uid = r.get("user_id") or ""
+            if uid and not r.get("username"):
+                user = get_user_by_id(uid)
+                r["username"] = user.username if user else ""
+    except Exception:
+        pass
+    return runs
 
 
 @router.get("/runs/{run_id}/detail")
@@ -580,7 +726,7 @@ async def get_run_detail(
     current_user: dict = Depends(get_current_user),
 ):
     graph = _get_graph(request)
-    await _check_ownership(graph, run_id, current_user["user_id"])
+    await _check_run_access(graph, run_id, current_user["user_id"], mutate=False)
     config = {"configurable": {"thread_id": run_id}}
     try:
         state  = graph.get_state(config)
@@ -592,6 +738,8 @@ async def get_run_detail(
         "task":           values.get("task", ""),
         "narrative":      values.get("final_narrative") or values.get("narrative_draft", ""),
         "recommendation": values.get("recommendation", ""),
+        "user_id":        values.get("user_id", ""),
+        "workspace_id":   values.get("workspace_id") or "",
     }
 
 
@@ -602,7 +750,7 @@ async def pdf_token(
     current_user: dict = Depends(get_current_user),
 ):
     graph = _get_graph(request)
-    await _check_ownership(graph, run_id, current_user["user_id"])
+    await _check_run_access(graph, run_id, current_user["user_id"], mutate=False)
     return {"pdf_token": create_pdf_token(current_user["user_id"], run_id)}
 
 
@@ -614,7 +762,7 @@ async def get_pdf(
 ):
     current_user = verify_scoped_token(pdf_token, "pdf", run_id)
     graph        = _get_graph(request)
-    await _check_ownership(graph, run_id, current_user["user_id"])
+    await _check_run_access(graph, run_id, current_user["user_id"], mutate=False)
 
     config = {"configurable": {"thread_id": run_id}}
     try:

@@ -53,6 +53,10 @@ class _PGCursorAdapter:
     def __init__(self, cur: Any) -> None:
         self._cur = cur
 
+    @property
+    def rowcount(self) -> int:
+        return int(self._cur.rowcount or 0)
+
     def fetchone(self) -> Any:
         return self._cur.fetchone()
 

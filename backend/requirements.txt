@@ -7,13 +7,17 @@ resend>=2.0
 uvicorn[standard]==0.32.0
 sse-starlette==2.1.0
 python-jose[cryptography]==3.3.0
+cryptography>=42.0.0
 email-validator==2.2.0
 langgraph-checkpoint-sqlite==3.0.3
 openpyxl>=3.1
 # Redis (optional — set REDIS_URL to activate multi-pod run state + rate limiting)
 redis>=5.0
-# PostgreSQL external-database support and integration tests
+# External database connectors (BYO)
 psycopg2-binary>=2.9
+pymysql>=1.1.0
+google-cloud-bigquery>=3.25.0
+db-dtypes>=1.2.0
 # Optional — set DATABASE_URL to activate:
 # langgraph-checkpoint-postgres
 

@@ -37,7 +37,7 @@ export default function IntentGate({ payload, onSubmit, submitting }: Props) {
 }
 
 const s: Record<string, React.CSSProperties> = {
-  tag:      { fontSize: 11, fontWeight: 700, color: "#89b4fa", background: "#89b4fa11", border: "1px solid #89b4fa33", borderRadius: 20, padding: "3px 10px", display: "inline-block", marginBottom: 10 },
-  question: { color: "#cdd6f4", fontWeight: 600, fontSize: 15, marginBottom: 16, lineHeight: 1.5 },
+  tag:      { fontSize: 11, fontWeight: 700, color: "var(--dp-accent)", background: "var(--dp-accent)11", border: "1px solid var(--dp-accent)33", borderRadius: 20, padding: "3px 10px", display: "inline-block", marginBottom: 10 },
+  question: { color: "var(--dp-ink)", fontWeight: 600, fontSize: 15, marginBottom: 16, lineHeight: 1.5 },
   disabled: { opacity: 0.45, cursor: "not-allowed" as const },
 };

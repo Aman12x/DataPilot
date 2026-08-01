@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - "cursor/**"   # feature branches get CI without opening a PR
   pull_request:
     branches:
       - main

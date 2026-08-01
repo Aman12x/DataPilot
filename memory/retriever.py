@@ -4,6 +4,8 @@ memory/retriever.py — Query past runs for history injection.
 Takes the current task string, finds the top-N most relevant past runs by
 keyword overlap, and returns them for injection into the agent's system prompt.
 Keyword overlap is cheap and fast — semantic similarity lives in semantic_cache.py.
+
+Phase 2: prefer same metric_pack_id / connection_id when retrieving.
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ from typing import Any
 
 import numpy as np
 
-from memory.store import _connect, _db_path, get_all_runs, init_db
+from memory.store import _connect, _db_path, init_db
 
 logger = logging.getLogger(__name__)
 
@@ -32,25 +34,32 @@ def _overlap_score(task_tokens: set[str], run: dict[str, Any]) -> int:
     return len(task_tokens & run_tokens)
 
 
+def _scope_boost(run: dict[str, Any], pack_id: str | None, connection_id: str | None) -> float:
+    """Prefer same pack, then same connection, over cross-scope history."""
+    boost = 0.0
+    if pack_id and run.get("metric_pack_id") == pack_id:
+        boost += 2.0
+    if connection_id and run.get("connection_id") == connection_id:
+        boost += 1.0
+    # Mild penalty when a pack-scoped run is pulled into a different pack
+    if pack_id and run.get("metric_pack_id") and run.get("metric_pack_id") != pack_id:
+        boost -= 1.5
+    if connection_id and run.get("connection_id") and run.get("connection_id") != connection_id:
+        boost -= 1.0
+    return boost
+
+
 def retrieve_relevant_history(
     task: str,
     top_n: int = 3,
     path: str | None = None,
     user_id: str | None = None,
+    metric_pack_id: str | None = None,
+    connection_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """
     Return the top-N most relevant past runs for the given task, ranked by
-    keyword overlap. Scoped to user_id when provided.
-
-    Args:
-        task:    Current analyst task string.
-        top_n:   Maximum number of runs to return.
-        path:    Optional override for the SQLite DB path.
-        user_id: When set, only considers runs belonging to this user.
-
-    Returns:
-        List of run dicts (subset of fields useful for prompt injection):
-        [{run_id, task, metric, top_segment, analyst_override, eval_score, timestamp}]
+    keyword overlap (+ pack/connection boost). Scoped to user_id when provided.
     """
     path = path or _db_path()
     init_db(path)
@@ -58,19 +67,21 @@ def retrieve_relevant_history(
         if user_id:
             rows = con.execute(
                 """SELECT run_id, task, metric, top_segment,
-                          analyst_override, eval_score, timestamp
+                          analyst_override, eval_score, timestamp,
+                          metric_pack_id, connection_id
                    FROM   runs
                    WHERE  user_id = ? AND audit_passed = 1
-                   ORDER  BY timestamp DESC LIMIT 50""",
+                   ORDER  BY timestamp DESC LIMIT 80""",
                 (user_id,),
             ).fetchall()
         else:
             rows = con.execute(
                 """SELECT run_id, task, metric, top_segment,
-                          analyst_override, eval_score, timestamp
+                          analyst_override, eval_score, timestamp,
+                          metric_pack_id, connection_id
                    FROM   runs
                    WHERE  audit_passed = 1
-                   ORDER  BY timestamp DESC LIMIT 50""",
+                   ORDER  BY timestamp DESC LIMIT 80""",
             ).fetchall()
     all_runs = [dict(r) for r in rows]
 
@@ -79,22 +90,16 @@ def retrieve_relevant_history(
 
     task_tokens = _tokenize(task)
 
-    # Combined score: keyword overlap (primary signal) boosted by eval quality.
-    # Runs with high eval_score surface before runs with equal overlap but poor
-    # quality.  eval_score=None (rare) treated as 0.5 (neutral).
     def _combined_score(run: dict[str, Any]) -> float:
-        overlap  = _overlap_score(task_tokens, run)
-        quality  = run.get("eval_score") or 0.5
-        return overlap * 0.7 + quality * 0.3
+        overlap = _overlap_score(task_tokens, run)
+        quality = run.get("eval_score") or 0.5
+        return overlap * 0.7 + quality * 0.3 + _scope_boost(run, metric_pack_id, connection_id)
 
     scored = [(run, _combined_score(run)) for run in all_runs]
     scored.sort(key=lambda x: x[1], reverse=True)
 
-    # Only include runs that have at least one overlapping keyword (score > 0.3
-    # because even a zero-overlap run gets 0.3 * eval_score from the quality term).
     top = [run for run, score in scored[:top_n] if _overlap_score(task_tokens, run) > 0]
 
-    # Return only the fields useful for history injection
     return [
         {
             "run_id":            r["run_id"],
@@ -104,6 +109,8 @@ def retrieve_relevant_history(
             "analyst_override":  r["analyst_override"],
             "eval_score":        r["eval_score"],
             "timestamp":         r["timestamp"],
+            "metric_pack_id":    r.get("metric_pack_id"),
+            "connection_id":     r.get("connection_id"),
         }
         for r in top
     ]
@@ -115,34 +122,19 @@ def retrieve_sql_examples(
     min_similarity: float = 0.40,
     path: str | None = None,
     user_id: str | None = None,
+    metric_pack_id: str | None = None,
+    connection_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """
-    Retrieve verified question-SQL pairs from the memory store, ranked by
-    embedding similarity to the current task.
+    Retrieve verified question-SQL pairs ranked by embedding similarity.
 
-    Used for few-shot injection into SQL_GENERATION_PROMPT: including similar
-    past (question, SQL) pairs as in-context examples consistently improves
-    accuracy on BIRD and Spider benchmarks (DAIL-SQL pattern).
-
-    Args:
-        task:            Current analyst task string.
-        top_n:           Maximum number of examples to return.
-        min_similarity:  Minimum cosine similarity threshold (0.40 = loosely related).
-                         Lower than semantic-cache thresholds (0.80/0.92) because
-                         even loosely related examples help the model understand
-                         the schema and query structure.
-        path:            Optional DB path override.
-
-    Returns:
-        List of dicts: [{"task": str, "sql": str, "similarity": float}]
-        Sorted by similarity descending.  Empty list if no examples exist or
-        sentence-transformers is not installed.
+    When metric_pack_id / connection_id are set, same-scope examples are
+    preferred (score boost). Cross-connection examples are still allowed
+    but demoted — `_filter_few_shot_by_schema` removes incompatible tables.
     """
     path = path or _db_path()
     init_db(path)
 
-    # Lazy import — semantic_cache carries the sentence-transformers dependency.
-    # Return empty list gracefully if the model isn't available.
     try:
         from memory.semantic_cache import cosine_similarity, embed
     except Exception:
@@ -157,7 +149,7 @@ def retrieve_sql_examples(
         if user_id:
             rows = con.execute(
                 """
-                SELECT task, task_embedding, cached_result
+                SELECT task, task_embedding, cached_result, metric_pack_id, connection_id
                 FROM   runs
                 WHERE  cache_node_name = 'generate_sql'
                   AND  task_embedding  IS NOT NULL
@@ -171,7 +163,7 @@ def retrieve_sql_examples(
         else:
             rows = con.execute(
                 """
-                SELECT task, task_embedding, cached_result
+                SELECT task, task_embedding, cached_result, metric_pack_id, connection_id
                 FROM   runs
                 WHERE  cache_node_name = 'generate_sql'
                   AND  task_embedding  IS NOT NULL
@@ -184,14 +176,22 @@ def retrieve_sql_examples(
     scored: list[dict[str, Any]] = []
     for row in rows:
         try:
-            stored_vec = np.frombuffer(row["task_embedding"], dtype=np.float32)
+            d = dict(row)
+            stored_vec = np.frombuffer(d["task_embedding"], dtype=np.float32)
             sim = cosine_similarity(query_vec, stored_vec)
+            sim += 0.05 * _scope_boost(d, metric_pack_id, connection_id)
             if sim < min_similarity:
                 continue
-            result = json.loads(row["cached_result"])
+            result = json.loads(d["cached_result"])
             sql = result.get("sql", "").strip()
             if sql:
-                scored.append({"task": row["task"], "sql": sql, "similarity": sim})
+                scored.append({
+                    "task": d["task"],
+                    "sql": sql,
+                    "similarity": float(sim),
+                    "metric_pack_id": d.get("metric_pack_id"),
+                    "connection_id": d.get("connection_id"),
+                })
         except Exception as exc:
             logger.debug("retrieve_sql_examples: skipping malformed cache row: %s", exc)
             continue

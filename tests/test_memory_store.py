@@ -42,6 +42,21 @@ def test_analyst_override_roundtrips_as_dict(tmp_path):
     assert result["analyst_override"] == override
 
 
+def test_get_all_runs_workspace_scoped(tmp_path):
+    """Workspace filter returns shared team runs, not just the requester's."""
+    db = str(tmp_path / "test.db")
+    log_run("owner task", path=db, user_id="u1", workspace_id="ws-a")
+    log_run("analyst task", path=db, user_id="u2", workspace_id="ws-a")
+    log_run("other ws", path=db, user_id="u1", workspace_id="ws-b")
+
+    shared = get_all_runs(path=db, workspace_id="ws-a")
+    assert len(shared) == 2
+    assert {r["user_id"] for r in shared} == {"u1", "u2"}
+
+    personal = get_all_runs(path=db, user_id="u1")
+    assert len(personal) == 2  # both of u1's runs across workspaces
+
+
 def test_get_all_runs_ordered_by_recency(tmp_path):
     """get_all_runs returns most recent run first."""
     db = str(tmp_path / "test.db")

@@ -71,9 +71,9 @@ export default function NarrativeGate({ payload, onSubmit, submitting }: Props) 
 
 const s: Record<string, React.CSSProperties> = {
   section:          { marginBottom: 18 },
-  label:            { color: "#585b70", fontSize: 11, fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.08em", marginBottom: 6 },
-  rec:              { color: "#a6e3a1", fontWeight: 600, fontSize: 15, lineHeight: 1.5 },
-  narrativeWrapper: { background: "#181825", borderRadius: 8, padding: "16px 20px", maxHeight: 340, overflowY: "auto" as const, border: "1px solid #313244" },
-  input:            { width: "100%", background: "#181825", color: "#cdd6f4", border: "1px solid #313244", borderRadius: 8, padding: "9px 12px", fontSize: 13, marginBottom: 10, boxSizing: "border-box" as const },
-  btnRevise:        { padding: "10px 22px", background: "transparent", color: "#cba6f7", border: "1px solid #cba6f744", borderRadius: 8, cursor: "pointer", fontSize: 14 },
+  label:            { color: "var(--dp-ink-muted)", fontSize: 11, fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.08em", marginBottom: 6 },
+  rec:              { color: "var(--dp-success)", fontWeight: 600, fontSize: 15, lineHeight: 1.5 },
+  narrativeWrapper: { background: "var(--dp-surface-2)", borderRadius: 8, padding: "16px 20px", maxHeight: 340, overflowY: "auto" as const, border: "1px solid var(--dp-line)" },
+  input:            { width: "100%", background: "var(--dp-surface-2)", color: "var(--dp-ink)", border: "1px solid var(--dp-line)", borderRadius: 8, padding: "9px 12px", fontSize: 13, marginBottom: 10, boxSizing: "border-box" as const },
+  btnRevise:        { padding: "10px 22px", background: "transparent", color: "var(--dp-info)", border: "1px solid var(--dp-info)44", borderRadius: 8, cursor: "pointer", fontSize: 14 },
 };

@@ -272,6 +272,10 @@ def infer_metric_config_node(state: AgentState) -> dict:
     LLM infers MetricConfig from schema. Result stored in state for UI form pre-fill.
     Only runs when metric_config is not already set in state.
     """
+    # Skip if a saved/certified metric pack was injected at run start.
+    if state.get("metric_pack_id") and state.get("metric_config"):
+        return {}
+
     # Skip if config is already set — UNLESS this is an uploaded file.
     # Uploads have a unique schema that differs from the DAU demo defaults that
     # load_schema/resolve_task_intent fall back to; inference must always run

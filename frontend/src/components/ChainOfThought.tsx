@@ -59,15 +59,15 @@ export default function ChainOfThought({ steps, isRunning }: Props) {
 }
 
 const s: Record<string, React.CSSProperties> = {
-  wrap:         { marginTop: 12, borderRadius: 8, border: "1px solid #313244", overflow: "hidden" },
-  toggle:       { width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "8px 14px", background: "#181825", border: "none", cursor: "pointer", color: "#585b70", fontSize: 12, textAlign: "left" as const },
-  toggleIcon:   { fontSize: 10, color: "#45475a" },
-  badge:        { marginLeft: "auto", background: "#313244", color: "#a6adc8", fontSize: 11, padding: "1px 7px", borderRadius: 10 },
-  list:         { padding: "10px 14px 12px", background: "#11111b", display: "flex", flexDirection: "column" as const, gap: 4, maxHeight: 260, overflowY: "auto" as const },
+  wrap:         { marginTop: 12, borderRadius: 8, border: "1px solid var(--dp-line)", overflow: "hidden" },
+  toggle:       { width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "8px 14px", background: "var(--dp-surface-2)", border: "none", cursor: "pointer", color: "var(--dp-ink-muted)", fontSize: 12, textAlign: "left" as const },
+  toggleIcon:   { fontSize: 10, color: "var(--dp-ink-faint)" },
+  badge:        { marginLeft: "auto", background: "var(--dp-line)", color: "var(--dp-ink-secondary)", fontSize: 11, padding: "1px 7px", borderRadius: 10 },
+  list:         { padding: "10px 14px 12px", background: "var(--dp-bg)", display: "flex", flexDirection: "column" as const, gap: 4, maxHeight: 260, overflowY: "auto" as const },
   row:          { display: "flex", alignItems: "baseline", gap: 8, fontFamily: "monospace", fontSize: 12 },
-  dotDone:      { color: "#a6e3a1", flexShrink: 0, width: 12 },
-  dotRunning:   { color: "#89b4fa", flexShrink: 0, width: 12, animation: "pulse 1.2s ease-in-out infinite" },
-  label:        { color: "#a6adc8", minWidth: 180 },
-  detail:       { color: "#585b70", fontSize: 11 },
-  runningLabel: { color: "#45475a", fontSize: 11, fontStyle: "italic" as const },
+  dotDone:      { color: "var(--dp-success)", flexShrink: 0, width: 12 },
+  dotRunning:   { color: "var(--dp-accent)", flexShrink: 0, width: 12, animation: "pulse 1.2s ease-in-out infinite" },
+  label:        { color: "var(--dp-ink-secondary)", minWidth: 180 },
+  detail:       { color: "var(--dp-ink-muted)", fontSize: 11 },
+  runningLabel: { color: "var(--dp-ink-faint)", fontSize: 11, fontStyle: "italic" as const },
 };

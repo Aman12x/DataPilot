@@ -149,9 +149,21 @@ def init_db(path: str | None = None) -> None:
             ("user_id",       "TEXT"),
             ("analysis_mode", "TEXT"),
             ("audit_passed",  "INTEGER DEFAULT 0"),
+            ("metric_pack_id", "TEXT"),
+            ("connection_id", "TEXT"),
+            ("workspace_id",  "TEXT"),
         ]:
             if col_name not in existing:
                 con.execute(f"ALTER TABLE runs ADD COLUMN {col_name} {col_defn}")
+
+        # Index for workspace-scoped history lists
+        try:
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_runs_workspace "
+                "ON runs(workspace_id)"
+            )
+        except Exception:
+            pass
 
 
 def log_run(
@@ -160,6 +172,7 @@ def log_run(
     path: str | None = None,
     run_id: str | None = None,
     user_id: str | None = None,
+    workspace_id: str | None = None,
     analysis_mode: str = "ab_test",
     metric: str = "",
     covariate: str = "",
@@ -175,6 +188,8 @@ def log_run(
     task_embedding: bytes | None = None,
     notes: str = "",
     audit_passed: bool = False,
+    metric_pack_id: str = "",
+    connection_id: str = "",
 ) -> str:
     """
     Persist one run to the memory store.
@@ -196,15 +211,16 @@ def log_run(
                 db_backend, analyst_override, top_segment, eval_score,
                 cache_read_tokens, cache_write_tokens, uncached_tokens,
                 semantic_cache_hits, estimated_cost_usd, notes, user_id, analysis_mode,
-                audit_passed
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                audit_passed, metric_pack_id, connection_id, workspace_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id, ts, task, task_embedding, metric, covariate,
                 db_backend, override_json, top_segment, eval_score,
                 cache_read_tokens, cache_write_tokens, uncached_tokens,
                 semantic_cache_hits, estimated_cost_usd, notes, user_id, analysis_mode,
-                int(audit_passed),
+                int(audit_passed), metric_pack_id or None, connection_id or None,
+                workspace_id or None,
             ),
         )
     return run_id
@@ -238,20 +254,29 @@ def get_run(run_id: str, path: str | None = None) -> dict[str, Any] | None:
 def get_all_runs(
     path: str | None = None,
     user_id: str | None = None,
+    workspace_id: str | None = None,
     limit: int = 50,
 ) -> list[dict[str, Any]]:
     """
     Return runs ordered by timestamp descending.
 
     Args:
-        user_id: When provided, return only this user's runs.
-                 When None, return all runs (used by eval harness).
+        workspace_id: When provided, return all runs in this workspace
+                      (shared team history). Takes precedence over user_id.
+        user_id: When provided (and no workspace_id), return only this
+                 user's runs. When both None, return all runs (eval harness).
         limit:   Maximum number of runs to return.
     """
     path = path or _db_path()
     init_db(path)
     with _connect(path) as con:
-        if user_id:
+        if workspace_id:
+            rows = con.execute(
+                "SELECT * FROM runs WHERE workspace_id = ? "
+                "ORDER BY timestamp DESC LIMIT ?",
+                (workspace_id, limit),
+            ).fetchall()
+        elif user_id:
             rows = con.execute(
                 "SELECT * FROM runs WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?",
                 (user_id, limit),

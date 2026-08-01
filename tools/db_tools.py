@@ -1,5 +1,5 @@
 """
-tools/db_tools.py — Unified DB layer: DuckDB + Postgres.
+tools/db_tools.py — Unified DB layer: DuckDB + Postgres + MySQL + BigQuery.
 
 All database interaction in DataPilot goes through DBConnection.
 No LangGraph or Streamlit imports. Pure Python.
@@ -20,11 +20,20 @@ logger = logging.getLogger(__name__)
 
 # Compiled once at import time — blocks any LLM-generated mutation statement.
 # DuckDB already enforces read_only=True at the driver level; this adds a
-# defence-in-depth check that also covers PostgreSQL connections.
+# defence-in-depth check that also covers external SQL engines.
 _MUTATION_RE = re.compile(
-    r"\b(INSERT|UPDATE|DELETE|DROP|TRUNCATE|ALTER|CREATE|REPLACE|MERGE|COPY|GRANT|REVOKE|CALL|DO|ATTACH|DETACH)\b",
+    r"\b(INSERT|UPDATE|DELETE|DROP|TRUNCATE|ALTER|CREATE|REPLACE|MERGE|COPY|"
+    r"GRANT|REVOKE|CALL|DO|ATTACH|DETACH|EXPORT|LOAD)\b",
     re.IGNORECASE,
 )
+
+_SUPPORTED_BACKENDS = frozenset({"duckdb", "postgres", "mysql", "bigquery"})
+_DIALECT_LABELS = {
+    "duckdb": "DuckDB SQL",
+    "postgres": "PostgreSQL",
+    "mysql": "MySQL",
+    "bigquery": "BigQuery Standard SQL",
+}
 
 # DuckDB table functions that can read arbitrary host files.
 _FILE_READ_RE = re.compile(
@@ -83,12 +92,23 @@ def _ensure_limit(sql: str) -> str:
     return f"{sql.rstrip()} LIMIT {_MAX_SQL_LIMIT}"
 
 
-def quote_ident(name: str) -> str:
-    """Quote a table or column name for interpolation into DuckDB/Postgres SQL.
+# Strict allowlist, kept for the few places that interpolate a name where
+# quoting is not possible — BigQuery's `project.dataset.table` path and the
+# MySQL information_schema guards. Prefer quote_ident() everywhere else: this
+# rejects legitimate Unicode and digit-leading column names.
+_SAFE_IDENT_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
-    Doubling embedded quotes is the SQL-standard escape, and it is what makes an
-    arbitrary CSV header safe: there is no sequence that terminates a quoted
-    identifier early once `"` is doubled.
+# MySQL and BigQuery delimit identifiers with backticks; the rest use the
+# SQL-standard double quote.
+_BACKTICK_BACKENDS = frozenset({"mysql", "bigquery"})
+
+
+def quote_ident(name: str, backend: str = "postgres") -> str:
+    """Quote a table or column name for interpolation into SQL.
+
+    Doubling the delimiter is the standard escape, and it is what makes an
+    arbitrary CSV header safe: once `"` (or a backtick) is doubled there is no
+    sequence that terminates the identifier early.
 
     Escaping rather than allowlisting is deliberate. Uploaded columns are
     normalised with `re.sub(r"[^\\w]", "_", ...)`, and `\\w` is Unicode-aware, so
@@ -100,11 +120,17 @@ def quote_ident(name: str) -> str:
         raise ValueError("SQL identifier must be a non-empty string")
     if "\x00" in name:
         raise ValueError("SQL identifier contains a NUL byte")
+    if backend in _BACKTICK_BACKENDS:
+        return "`" + name.replace("`", "``") + "`"
     return '"' + name.replace('"', '""') + '"'
 
 
 # Back-compat alias for callers that imported the private name.
 _quote_ident = quote_ident
+
+
+def dialect_label(backend: str) -> str:
+    return _DIALECT_LABELS.get(backend, "SQL")
 
 
 # Schema comments: human-readable column descriptions injected into inspect_schema() output.
@@ -154,21 +180,20 @@ SCHEMA_COMMENTS: dict[str, dict[str, str]] = {
 
 class DBConnection:
     """
-    Unified database interface for DuckDB and Postgres.
+    Unified database interface for DuckDB, Postgres, MySQL, and BigQuery.
 
     Usage:
-        # DuckDB (built-in demo)
         db = DBConnection("duckdb", path="data/dau_experiment.db")
-
-        # Postgres (user-supplied)
-        db = DBConnection("postgres", host="localhost", port=5432,
-                          dbname="mydb", user="me", password="secret",
-                          sslmode="require")
+        db = DBConnection("postgres", host=..., port=5432, dbname=..., user=..., password=...)
+        db = DBConnection("mysql", host=..., port=3306, dbname=..., user=..., password=...)
+        db = DBConnection("bigquery", project_id=..., dataset=..., credentials_json=...)
     """
 
     def __init__(self, backend: str, **kwargs: Any) -> None:
-        if backend not in ("duckdb", "postgres"):
-            raise ValueError(f"backend must be 'duckdb' or 'postgres', got '{backend}'")
+        if backend not in _SUPPORTED_BACKENDS:
+            raise ValueError(
+                f"backend must be one of {sorted(_SUPPORTED_BACKENDS)}, got '{backend}'"
+            )
 
         self.backend = backend
         self._kwargs = kwargs
@@ -179,11 +204,21 @@ class DBConnection:
                 raise ValueError("DuckDB backend requires 'path' kwarg")
             self._path = path
 
-        elif backend == "postgres":
+        elif backend in ("postgres", "mysql"):
             required = ("host", "port", "dbname", "user", "password")
             missing = [k for k in required if k not in kwargs]
             if missing:
-                raise ValueError(f"Postgres backend missing kwargs: {missing}")
+                raise ValueError(f"{backend} backend missing kwargs: {missing}")
+
+        elif backend == "bigquery":
+            required = ("project_id", "dataset")
+            missing = [k for k in required if not str(kwargs.get(k) or "").strip()]
+            if missing:
+                raise ValueError(f"BigQuery backend missing kwargs: {missing}")
+            if not (kwargs.get("credentials_json") or kwargs.get("credentials_path")):
+                raise ValueError(
+                    "BigQuery backend requires credentials_json or credentials_path"
+                )
 
     # ── Query ──────────────────────────────────────────────────────────────────
 
@@ -193,7 +228,11 @@ class DBConnection:
         sql = _ensure_limit(sql)
         if self.backend == "duckdb":
             return self._query_duckdb(sql)
-        return self._query_postgres(sql)
+        if self.backend == "postgres":
+            return self._query_postgres(sql)
+        if self.backend == "mysql":
+            return self._query_mysql(sql)
+        return self._query_bigquery(sql)
 
     def _query_duckdb(self, sql: str) -> pd.DataFrame:
         con = duckdb.connect(self._path, read_only=True)
@@ -223,9 +262,69 @@ class DBConnection:
         finally:
             conn.close()
 
+    def _query_mysql(self, sql: str) -> pd.DataFrame:
+        try:
+            import pymysql
+        except ImportError as e:
+            raise ImportError(
+                "pymysql is required for MySQL connections. "
+                "Install it with: pip install pymysql"
+            ) from e
+
+        kw = self._kwargs
+        sslmode = (kw.get("sslmode") or "prefer").lower()
+        ssl_kwargs: dict[str, Any] | None = None
+        if sslmode in ("require", "verify-ca", "verify-full"):
+            ssl_kwargs = {}
+
+        conn = pymysql.connect(
+            host=kw["host"],
+            port=int(kw["port"]),
+            database=kw["dbname"],
+            user=kw["user"],
+            password=kw["password"],
+            ssl=ssl_kwargs,
+            cursorclass=pymysql.cursors.Cursor,
+        )
+        try:
+            return pd.read_sql(sql, conn)
+        finally:
+            conn.close()
+
+    def _bq_client(self):
+        try:
+            from google.cloud import bigquery
+            from google.oauth2 import service_account
+        except ImportError as e:
+            raise ImportError(
+                "google-cloud-bigquery is required for BigQuery connections. "
+                "Install it with: pip install google-cloud-bigquery db-dtypes"
+            ) from e
+
+        kw = self._kwargs
+        project_id = kw["project_id"]
+        creds = None
+        creds_json = kw.get("credentials_json") or ""
+        creds_path = kw.get("credentials_path") or ""
+        if creds_json:
+            info = json.loads(creds_json) if isinstance(creds_json, str) else creds_json
+            creds = service_account.Credentials.from_service_account_info(info)
+        elif creds_path:
+            creds = service_account.Credentials.from_service_account_file(creds_path)
+        return bigquery.Client(project=project_id, credentials=creds)
+
+    def _query_bigquery(self, sql: str) -> pd.DataFrame:
+        client = self._bq_client()
+        job = client.query(sql)
+        return job.to_dataframe(create_bqstorage_client=False)
+
     # ── Schema inspection ──────────────────────────────────────────────────────
 
-    def inspect_schema(self, annotation_path: str | None = None) -> str:
+    def inspect_schema(
+        self,
+        annotation_path: str | None = None,
+        annotations: dict | None = None,
+    ) -> str:
         """
         Return a formatted schema string for all tables.
 
@@ -234,10 +333,12 @@ class DBConnection:
               user_id   STRING   -- unique user identifier
               ...
 
-        Inline comments come from SCHEMA_COMMENTS (built-in dataset) or from
-        the annotation_path JSON file (external databases).
+        Inline comments come from (in priority order):
+          1. `annotations` dict passed in-memory (saved connection annotations)
+          2. `annotation_path` JSON file
+          3. SCHEMA_COMMENTS for the built-in DuckDB demo
         """
-        annotations = self._load_annotations(annotation_path)
+        loaded = self._load_annotations(annotation_path, annotations=annotations)
 
         if self.backend == "duckdb":
             tables = self._get_tables_duckdb()
@@ -248,7 +349,7 @@ class DBConnection:
                 lines.append(f"TABLE: {table}{row_note}")
                 cols = self._get_columns_duckdb(table)
                 for col_name, col_type in cols:
-                    comment = annotations.get(table, {}).get(col_name, "")
+                    comment = loaded.get(table, {}).get(col_name, "")
                     if not comment and profile:
                         col_info = profile["columns"].get(col_name, {})
                         parts = []
@@ -264,26 +365,32 @@ class DBConnection:
                 lines.append("")
             return "\n".join(lines).rstrip()
 
-        else:
-            tables = self._get_tables_postgres()
-            lines = []
-            for table in tables:
-                lines.append(f"TABLE: {table}")
-                cols = self._get_columns_postgres(table)
-                for col_name, col_type in cols:
-                    comment = annotations.get(table, {}).get(col_name, "")
-                    # For unannotated string columns on external DBs, sample values
-                    # so the LLM knows valid enum values and doesn't hallucinate them.
-                    if not comment and col_type.lower() in self._POSTGRES_STRING_TYPES:
-                        samples = self._sample_distinct_values_postgres(table, col_name)
-                        if samples:
-                            comment = "SAMPLE VALUES: " + " | ".join(f"'{v}'" for v in samples)
-                    comment_str = f"  -- {comment}" if comment else ""
-                    lines.append(f"  {col_name:<22} {col_type:<10}{comment_str}")
-                lines.append("")
-            return "\n".join(lines).rstrip()
+        tables = self._get_tables()
+        string_types = self._string_types()
+        lines = []
+        for table in tables:
+            lines.append(f"TABLE: {table}")
+            cols = self._get_columns(table)
+            for col_name, col_type in cols:
+                comment = loaded.get(table, {}).get(col_name, "")
+                # For unannotated string columns on external DBs, sample values
+                # so the LLM knows valid enum values and doesn't hallucinate them.
+                if not comment and col_type.lower() in string_types:
+                    samples = self._sample_distinct_values(table, col_name)
+                    if samples:
+                        comment = "SAMPLE VALUES: " + " | ".join(f"'{v}'" for v in samples)
+                comment_str = f"  -- {comment}" if comment else ""
+                lines.append(f"  {col_name:<22} {col_type:<10}{comment_str}")
+            lines.append("")
+        return "\n".join(lines).rstrip()
 
-    def _load_annotations(self, annotation_path: str | None) -> dict:
+    def _load_annotations(
+        self,
+        annotation_path: str | None,
+        annotations: dict | None = None,
+    ) -> dict:
+        if annotations:
+            return annotations
         if annotation_path and os.path.exists(annotation_path):
             with open(annotation_path) as f:
                 return json.load(f)
@@ -367,6 +474,31 @@ class DBConnection:
         except Exception:
             return None
 
+    def _get_tables(self) -> list[str]:
+        if self.backend == "postgres":
+            return self._get_tables_postgres()
+        if self.backend == "mysql":
+            return self._get_tables_mysql()
+        if self.backend == "bigquery":
+            return self._get_tables_bigquery()
+        return self._get_tables_duckdb()
+
+    def _get_columns(self, table: str) -> list[tuple[str, str]]:
+        if self.backend == "postgres":
+            return self._get_columns_postgres(table)
+        if self.backend == "mysql":
+            return self._get_columns_mysql(table)
+        if self.backend == "bigquery":
+            return self._get_columns_bigquery(table)
+        return self._get_columns_duckdb(table)
+
+    def _string_types(self) -> frozenset[str]:
+        if self.backend == "mysql":
+            return self._MYSQL_STRING_TYPES
+        if self.backend == "bigquery":
+            return self._BQ_STRING_TYPES
+        return self._POSTGRES_STRING_TYPES
+
     def _get_tables_postgres(self) -> list[str]:
         df = self._query_postgres(
             "SELECT table_name FROM information_schema.tables "
@@ -384,13 +516,56 @@ class DBConnection:
         )
         return list(zip(df["column_name"], df["data_type"]))
 
-    # String-ish Postgres types that may contain categorical values worth sampling.
+    def _get_tables_mysql(self) -> list[str]:
+        dbname = self._kwargs["dbname"]
+        if not _SAFE_IDENT_RE.match(dbname):
+            raise ValueError(f"Unsafe database name: {dbname!r}")
+        df = self._query_mysql(
+            "SELECT table_name AS table_name FROM information_schema.tables "
+            f"WHERE table_schema = '{dbname}' ORDER BY table_name"
+        )
+        return df["table_name"].tolist()
+
+    def _get_columns_mysql(self, table: str) -> list[tuple[str, str]]:
+        if not _SAFE_IDENT_RE.match(table):
+            raise ValueError(f"Unsafe table name: {table!r}")
+        dbname = self._kwargs["dbname"]
+        if not _SAFE_IDENT_RE.match(dbname):
+            raise ValueError(f"Unsafe database name: {dbname!r}")
+        df = self._query_mysql(
+            "SELECT column_name, data_type FROM information_schema.columns "
+            f"WHERE table_schema = '{dbname}' AND table_name = '{table}' "
+            "ORDER BY ordinal_position"
+        )
+        return list(zip(df["column_name"], df["data_type"]))
+
+    def _get_tables_bigquery(self) -> list[str]:
+        client = self._bq_client()
+        dataset = self._kwargs["dataset"]
+        return [t.table_id for t in client.list_tables(dataset)]
+
+    def _get_columns_bigquery(self, table: str) -> list[tuple[str, str]]:
+        if not _SAFE_IDENT_RE.match(table):
+            raise ValueError(f"Unsafe table name: {table!r}")
+        client = self._bq_client()
+        project = self._kwargs["project_id"]
+        dataset = self._kwargs["dataset"]
+        full = f"{project}.{dataset}.{table}"
+        meta = client.get_table(full)
+        return [(f.name, f.field_type) for f in meta.schema]
+
+    # String-ish types that may contain categorical values worth sampling.
     _POSTGRES_STRING_TYPES = frozenset({
         "text", "varchar", "character varying", "character", "char",
         "bpchar", "name", "citext",
     })
+    _MYSQL_STRING_TYPES = frozenset({
+        "char", "varchar", "tinytext", "text", "mediumtext", "longtext",
+        "enum", "set",
+    })
+    _BQ_STRING_TYPES = frozenset({"STRING", "string", "BYTES", "bytes"})
 
-    def _sample_distinct_values_postgres(
+    def _sample_distinct_values(
         self,
         table: str,
         col: str,
@@ -398,25 +573,56 @@ class DBConnection:
         max_show: int = 10,
     ) -> list[str] | None:
         """
-        Return up to `max_show` distinct values for a Postgres column if
-        its cardinality is <= max_cardinality.  Returns None on failure or
-        when the column looks high-cardinality.
+        Return up to `max_show` distinct values if cardinality is low.
+        Returns None on failure or high-cardinality columns.
         """
         try:
-            safe_table = quote_ident(table)
-            safe_col = quote_ident(col)
-            df = self._query_postgres(
-                f"SELECT DISTINCT {safe_col}::TEXT AS v "
-                f"FROM {safe_table} "
-                f"WHERE {safe_col} IS NOT NULL "
-                f"ORDER BY 1 LIMIT {max_cardinality + 1}"
-            )
+            safe_table = quote_ident(table, self.backend)
+            safe_col = quote_ident(col, self.backend)
+            if self.backend == "postgres":
+                sql = (
+                    f"SELECT DISTINCT {safe_col}::TEXT AS v "
+                    f"FROM {safe_table} "
+                    f"WHERE {safe_col} IS NOT NULL "
+                    f"ORDER BY 1 LIMIT {max_cardinality + 1}"
+                )
+                df = self._query_postgres(sql)
+            elif self.backend == "mysql":
+                sql = (
+                    f"SELECT DISTINCT CAST({safe_col} AS CHAR) AS v "
+                    f"FROM {safe_table} "
+                    f"WHERE {safe_col} IS NOT NULL "
+                    f"ORDER BY 1 LIMIT {max_cardinality + 1}"
+                )
+                df = self._query_mysql(sql)
+            elif self.backend == "bigquery":
+                project = self._kwargs["project_id"]
+                dataset = self._kwargs["dataset"]
+                if not (_SAFE_IDENT_RE.match(project) and _SAFE_IDENT_RE.match(dataset)):
+                    return None
+                # The table name was interpolated raw here while project and
+                # dataset were guarded — escape it like every other identifier.
+                # BigQuery quotes the whole path, so the backticks go outside.
+                safe_path = "`" + f"{project}.{dataset}.{table}".replace("`", "``") + "`"
+                sql = (
+                    f"SELECT DISTINCT CAST({safe_col} AS STRING) AS v "
+                    f"FROM {safe_path} "
+                    f"WHERE {safe_col} IS NOT NULL "
+                    f"ORDER BY 1 LIMIT {max_cardinality + 1}"
+                )
+                df = self._query_bigquery(sql)
+            else:
+                return None
             vals = df["v"].dropna().astype(str).tolist()
             if len(vals) <= max_cardinality:
                 return vals[:max_show]
-            return None      # too many distinct values — skip annotation
+            return None
         except Exception:
             return None
+
+    # Back-compat aliases used by API routes
+    def _get_tables_postgres_public(self) -> list[str]:
+        return self._get_tables_postgres()
 
     # ── Connection test ────────────────────────────────────────────────────────
 
@@ -429,7 +635,7 @@ class DBConnection:
             if self.backend == "duckdb":
                 tables = self._get_tables_duckdb()
             else:
-                tables = self._get_tables_postgres()
+                tables = self._get_tables()
             return {"success": True, "error": None, "table_count": len(tables)}
         except Exception as e:
             return {"success": False, "error": str(e), "table_count": 0}

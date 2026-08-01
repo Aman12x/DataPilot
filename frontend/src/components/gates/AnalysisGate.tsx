@@ -23,13 +23,13 @@ type Tone = "good" | "warn" | "neutral";
 
 function Stat({ label, value, tone }: { label: string; value: string | null; tone?: Tone }) {
   if (value == null) return null;
-  const color = tone === "good" ? "#a6e3a1" : tone === "warn" ? "#f38ba8" : "#cdd6f4";
+  const color = tone === "good" ? "var(--dp-success)" : tone === "warn" ? "var(--dp-danger)" : "var(--dp-ink)";
   const icon  = tone === "good" ? "✓" : tone === "warn" ? "⚠" : "·";
   return (
     <div style={{ display: "flex", alignItems: "flex-start", gap: 8, marginBottom: 8 }}>
       <span style={{ color, fontSize: 13, marginTop: 1, flexShrink: 0 }}>{icon}</span>
       <div>
-        <span style={{ color: "#585b70", fontSize: 12 }}>{label} </span>
+        <span style={{ color: "var(--dp-ink-muted)", fontSize: 12 }}>{label} </span>
         <span style={{ color, fontWeight: 600, fontSize: 13 }}>{value}</span>
       </div>
     </div>
@@ -77,9 +77,9 @@ export default function AnalysisGate({ payload, onSubmit, submitting }: Props) {
             checked={srmAcked}
             onChange={(e) => setSrmAcked(e.target.checked)}
             disabled={submitting}
-            style={{ accentColor: "#f38ba8", width: 15, height: 15, flexShrink: 0 }}
+            style={{ accentColor: "var(--dp-danger)", width: 15, height: 15, flexShrink: 0 }}
           />
-          <span style={{ color: "#f38ba8", fontSize: 13, lineHeight: 1.4 }}>
+          <span style={{ color: "var(--dp-danger)", fontSize: 13, lineHeight: 1.4 }}>
             I understand the statistical results are unreliable due to sample ratio mismatch
             and wish to proceed anyway.
           </span>
@@ -118,10 +118,10 @@ export default function AnalysisGate({ payload, onSubmit, submitting }: Props) {
 }
 
 const s: Record<string, React.CSSProperties> = {
-  stats:        { background: "#181825", borderRadius: 8, padding: "14px 18px", marginBottom: 16, border: "1px solid #313244" },
-  breachedBox:  { background: "#f38ba811", border: "1px solid #f38ba833", borderRadius: 8, padding: "12px 16px", marginBottom: 14 },
-  breachedLabel:{ color: "#f38ba8", fontSize: 12, fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.06em" },
-  badge:        { background: "#f38ba822", color: "#f38ba8", borderRadius: 6, padding: "3px 10px", fontSize: 12, fontWeight: 500 },
-  btnReject:    { padding: "10px 22px", background: "transparent", color: "#f38ba8", border: "1px solid #f38ba844", borderRadius: 8, cursor: "pointer", fontSize: 14 },
-  srmAck:       { display: "flex", alignItems: "flex-start", gap: 10, background: "#f38ba811", border: "1px solid #f38ba844", borderRadius: 8, padding: "12px 14px", marginBottom: 12, cursor: "pointer" },
+  stats:        { background: "var(--dp-surface-2)", borderRadius: 8, padding: "14px 18px", marginBottom: 16, border: "1px solid var(--dp-line)" },
+  breachedBox:  { background: "var(--dp-danger)11", border: "1px solid var(--dp-danger)33", borderRadius: 8, padding: "12px 16px", marginBottom: 14 },
+  breachedLabel:{ color: "var(--dp-danger)", fontSize: 12, fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.06em" },
+  badge:        { background: "var(--dp-danger)22", color: "var(--dp-danger)", borderRadius: 6, padding: "3px 10px", fontSize: 12, fontWeight: 500 },
+  btnReject:    { padding: "10px 22px", background: "transparent", color: "var(--dp-danger)", border: "1px solid var(--dp-danger)44", borderRadius: 8, cursor: "pointer", fontSize: 14 },
+  srmAck:       { display: "flex", alignItems: "flex-start", gap: 10, background: "var(--dp-danger)11", border: "1px solid var(--dp-danger)44", borderRadius: 8, padding: "12px 14px", marginBottom: 12, cursor: "pointer" },
 };

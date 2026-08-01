@@ -118,7 +118,7 @@ async def lifespan(app: FastAPI):
     else:
         checkpointer = _make_sqlite_checkpointer()
 
-    # ── Auth DB WAL mode ──────────────────────────────────────────────────────
+    # ── Auth DB WAL mode + workspace tables ───────────────────────────────────
     try:
         import sqlite3 as _sqlite3
         auth_path = os.getenv("AUTH_DB_PATH", "memory/auth.db")
@@ -130,6 +130,13 @@ async def lifespan(app: FastAPI):
         _ac.close()
     except Exception as exc:
         logger.warning("Could not set WAL on auth.db: %s", exc)
+
+    try:
+        from auth.workspace_store import init_workspace_tables
+        init_workspace_tables()
+        logger.info("Workspace tables ready (connections + metric packs)")
+    except Exception as exc:
+        logger.warning("Could not init workspace tables: %s", exc)
 
     # ── Graph ─────────────────────────────────────────────────────────────────
     from agents.analyze.graph import build_graph
@@ -300,8 +307,12 @@ from .routes.auth import router as auth_router
 from .routes.runs import router as runs_router
 from .routes.upload import router as upload_router
 from .routes.samples import router as samples_router
+from .routes.workspace import router as workspace_router
+from .routes.orgs import router as orgs_router
 
 app.include_router(auth_router)
 app.include_router(runs_router)
 app.include_router(upload_router)
 app.include_router(samples_router)
+app.include_router(workspace_router)
+app.include_router(orgs_router)
