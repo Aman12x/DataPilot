@@ -152,7 +152,7 @@ def _test_db(
     return result
 
 
-# Back-compat alias for tests that patch `_test_pg`
+# Public entrypoint used by routes — tests patch this name for live-test isolation.
 def _test_pg(**kwargs: Any) -> dict[str, Any]:
     kwargs.setdefault("backend", "postgres")
     return _test_db(**kwargs)
@@ -255,7 +255,7 @@ async def create_connection(
         host, port, username, sslmode = "", 0, "", "prefer"
 
     if body.test:
-        result = _test_db(
+        result = _test_pg(
             backend=backend,
             host=host, port=port, dbname=dbname,
             user=username, password=password, sslmode=sslmode,
@@ -356,7 +356,7 @@ async def test_saved_connection(
     if not secrets:
         raise HTTPException(status_code=404, detail="Connection not found")
 
-    result = _test_db(
+    result = _test_pg(
         backend=secrets.backend,
         host=secrets.host, port=secrets.port, dbname=secrets.dbname,
         user=secrets.username, password=secrets.password, sslmode=secrets.sslmode,
@@ -430,7 +430,7 @@ async def test_ephemeral(
         _validate_bq_credentials(body.password)
         if not body.project_id or not body.dbname:
             raise HTTPException(status_code=400, detail="project_id and dataset required")
-    result = _test_db(
+    result = _test_pg(
         backend=body.backend,
         host=body.host, port=body.port, dbname=body.dbname,
         user=body.username, password=body.password, sslmode=body.sslmode,
