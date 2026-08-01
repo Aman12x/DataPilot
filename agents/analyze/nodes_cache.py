@@ -79,10 +79,18 @@ def inject_history(state: AgentState) -> dict:
 def load_schema(state: AgentState) -> dict:
     task      = state.get("task", "")
     is_upload = bool(state.get("duckdb_path"))
+    # Saved / ephemeral BYO connections must never share the demo schema cache.
+    is_byo_db = bool(state.get("connection_id")) or (
+        state.get("db_backend") == "postgres" and bool(state.get("pg_host"))
+    )
 
-    # Uploads always get a fresh schema inspection — each file is unique and
-    # must never read from or write to the shared demo-DB cache.
-    refresh = is_upload or "schema changed" in task.lower() or "refresh schema" in task.lower()
+    # Uploads and BYO DBs always get a fresh schema inspection.
+    refresh = (
+        is_upload
+        or is_byo_db
+        or "schema changed" in task.lower()
+        or "refresh schema" in task.lower()
+    )
 
     if not refresh and os.path.exists(_SCHEMA_CACHE_PATH):
         try:
@@ -96,8 +104,8 @@ def load_schema(state: AgentState) -> dict:
 
     if schema_context is None:
         schema_context = _db_conn(state).inspect_schema()
-        if not is_upload:
-            # Only cache the shared demo-DB schema, never per-upload schemas.
+        if not is_upload and not is_byo_db:
+            # Only cache the shared demo-DB schema, never per-upload / BYO schemas.
             os.makedirs(os.path.dirname(_SCHEMA_CACHE_PATH), exist_ok=True)
             with open(_SCHEMA_CACHE_PATH, "w") as f:
                 json.dump({"schema_context": schema_context}, f, indent=2)
@@ -116,9 +124,9 @@ def load_schema(state: AgentState) -> dict:
         "metric_config":  mc,
         "metric":         mc.primary_metric,
         "covariate":      mc.covariate,
-        # Wipe Postgres credentials from the checkpoint immediately after use.
-        # They are only needed for _db_conn(); keeping them in state leaks
-        # them into the SQLite/Postgres checkpoint file on disk.
+        # Wipe inline Postgres credentials from the checkpoint immediately.
+        # Saved connections keep `connection_id` so _db_conn can re-resolve
+        # secrets from the vault at query time without leaking passwords to disk.
         "pg_password": "",
         "pg_user":     "",
         "pg_host":     "",

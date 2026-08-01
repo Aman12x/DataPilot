@@ -166,11 +166,20 @@ Treatment/control comparison with covariate adjustment, subgroup HTE, guardrail 
 
 ---
 
+## Saved connections & metric packs
+
+SMBs can save Postgres connections and reusable metric definitions:
+
+- `POST/GET/PATCH/DELETE /connections` — passwords encrypted at rest (Fernet; key from `SECRET_KEY` or `CONNECTIONS_ENCRYPTION_KEY`). Passwords are wiped from LangGraph checkpoints after schema load and re-resolved via `connection_id`.
+- `POST/GET/PATCH/DELETE /metric-packs` — versioned `MetricConfig` packs; `certified: true` skips the Metric Config HITL gate.
+- Private DB hosts are blocked by default (SSRF guard); set `ALLOW_PRIVATE_DB_HOSTS=true` for VPC / self-hosted Postgres.
+- The Analysis UI can select saved connections / packs and save a new connection after a live test.
+
 ## Security
 
 Production deployments must set the variables documented in [`.env.example`](.env.example):
 
-- **`SECRET_KEY`** — JWT signing key (required in production; server refuses to start without it)
+- **`SECRET_KEY`** — JWT signing key (required in production; server refuses to start without it). Also derives connection-password encryption when `CONNECTIONS_ENCRYPTION_KEY` is unset.
 - **`CORS_ORIGINS`** — comma-separated frontend origin(s)
 - **`REDIS_URL`** — recommended for multi-pod run state and rate limits
 
@@ -184,6 +193,8 @@ Other controls:
 - Auth required on API routes; guest sessions use ephemeral `guest-{uuid}` tokens
 - Semantic cache scoped per user and dataset fingerprint
 - SQL guardrails (read-only, no file-read functions, auto `LIMIT`)
+- Saved Postgres passwords encrypted at rest; never returned by the API; wiped from checkpoints after schema load
+- SSRF guard on database hosts (private/link-local blocked unless `ALLOW_PRIVATE_DB_HOSTS=true`)
 - Short-lived scoped tokens for SSE/PDF streams
 - Refresh token rotation; password reset invalidates all sessions
 - User tasks and schema excerpts wrapped in delimiters before LLM calls

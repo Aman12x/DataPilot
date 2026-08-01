@@ -9,11 +9,15 @@ import ChartCard, { type ChartSpec } from "../components/ChartCard";
 import ChainOfThought from "../components/ChainOfThought";
 import IntentGate from "../components/gates/IntentGate";
 import SemanticCacheGate from "../components/gates/SemanticCacheGate";
+import MetricGate from "../components/gates/MetricGate";
 import QueryGate from "../components/gates/QueryGate";
 import AnalysisGate from "../components/gates/AnalysisGate";
 import GeneralAnalysisGate from "../components/gates/GeneralAnalysisGate";
 import NarrativeGate from "../components/gates/NarrativeGate";
-import { type Mode, type PgCreds, type Sample, MODE_META } from "../types/analysis";
+import {
+  type Mode, type PgCreds, type Sample, type SavedConnection,
+  type MetricPackSummary, type RunOptions, MODE_META,
+} from "../types/analysis";
 import { stripMarkdown, sanitiseNarrative } from "../utils/markdown";
 import { extractApiError } from "../utils/error";
 import StakeholderDeck from "../components/StakeholderDeck";
@@ -160,7 +164,7 @@ const ms: Record<string, React.CSSProperties> = {
 
 function TaskInput({ mode, onSubmit, onBack, startError }: {
   mode: Mode;
-  onSubmit: (task: string, db: string, pg?: PgCreds, uploadId?: string) => void;
+  onSubmit: (task: string, db: string, pg?: PgCreds, uploadId?: string, opts?: RunOptions) => void;
   onBack: () => void;
   startError?: string;
 }) {
@@ -176,12 +180,24 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
   const [samples,        setSamples]        = useState<Sample[]>(FALLBACK_SAMPLES.filter(s => s.mode === mode));
   const [loadingSample,  setLoadingSample]  = useState<string | null>(null);
   const [submitting,     setSubmitting]     = useState(false);
+  const [connections,    setConnections]    = useState<SavedConnection[]>([]);
+  const [packs,          setPacks]          = useState<MetricPackSummary[]>([]);
+  const [connectionId,   setConnectionId]   = useState("");
+  const [metricPackId,   setMetricPackId]   = useState("");
+  const [savingConn,     setSavingConn]     = useState(false);
+  const [connMsg,        setConnMsg]        = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setSamples(FALLBACK_SAMPLES.filter(s => s.mode === mode));
     client.get<Sample[]>("/samples")
       .then(r => setSamples(r.data.filter(s => s.mode === mode)))
+      .catch(() => {});
+    client.get<{ connections: SavedConnection[] }>("/connections")
+      .then(r => setConnections(r.data.connections || []))
+      .catch(() => {});
+    client.get<{ metric_packs: MetricPackSummary[] }>("/metric-packs")
+      .then(r => setPacks(r.data.metric_packs || []))
       .catch(() => {});
   }, [mode]);
 
@@ -218,7 +234,8 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
     } finally { setLoadingSample(null); }
   };
 
-  const pgValid     = db !== "postgres" || (pg.host && pg.dbname && pg.user);
+  const usingSavedConn = !!connectionId && !useUpload;
+  const pgValid     = db !== "postgres" || usingSavedConn || (pg.host && pg.dbname && pg.user);
   const uploadReady = !useUpload || !!uploadResult;
   const canSubmit   = task.trim() && pgValid && uploadReady && !uploading && !loadingSample && !submitting;
 
@@ -226,9 +243,40 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
     if (!canSubmit) return;
     setSubmitting(true);
     try {
-      if (useUpload && uploadResult) await onSubmit(task, "duckdb", undefined, uploadResult.upload_id);
-      else await onSubmit(task, db, db === "postgres" ? pg : undefined);
+      const opts: RunOptions = {};
+      if (metricPackId) opts.metricPackId = metricPackId;
+      if (usingSavedConn) opts.connectionId = connectionId;
+      if (useUpload && uploadResult) {
+        await onSubmit(task, "duckdb", undefined, uploadResult.upload_id, opts);
+      } else if (usingSavedConn) {
+        await onSubmit(task, "postgres", undefined, undefined, opts);
+      } else {
+        await onSubmit(task, db, db === "postgres" ? pg : undefined, undefined, opts);
+      }
     } finally { setSubmitting(false); }
+  };
+
+  const saveCurrentConnection = async () => {
+    if (!pg.host || !pg.dbname || !pg.user) return;
+    setSavingConn(true); setConnMsg("");
+    try {
+      const { data } = await client.post<SavedConnection>("/connections", {
+        name: `${pg.dbname}@${pg.host}`,
+        host: pg.host,
+        port: parseInt(pg.port) || 5432,
+        dbname: pg.dbname,
+        username: pg.user,
+        password: pg.password,
+        sslmode: "prefer",
+        test: true,
+      });
+      setConnections((c) => [data, ...c]);
+      setConnectionId(data.connection_id);
+      setDb("postgres");
+      setConnMsg("Connection saved and tested.");
+    } catch (err) {
+      setConnMsg(extractApiError(err, "Could not save connection."));
+    } finally { setSavingConn(false); }
   };
 
   return (
@@ -315,14 +363,33 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
             </div>
           ) : (
             <div style={s.dbRow}>
-              <select style={s.select} value={db} onChange={(e) => setDb(e.target.value)}>
+              <select
+                style={s.select}
+                value={connectionId ? `conn:${connectionId}` : db}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v.startsWith("conn:")) {
+                    setConnectionId(v.slice(5));
+                    setDb("postgres");
+                  } else {
+                    setConnectionId("");
+                    setDb(v);
+                  }
+                }}
+              >
                 <option value="duckdb">Built-in sample data</option>
-                <option value="postgres">PostgreSQL</option>
+                <option value="postgres">PostgreSQL (enter credentials)</option>
+                {connections.map((c) => (
+                  <option key={c.connection_id} value={`conn:${c.connection_id}`}>
+                    {c.name} ({c.host}/{c.dbname})
+                    {c.last_test_ok === false ? " — last test failed" : ""}
+                  </option>
+                ))}
               </select>
             </div>
           )}
 
-          {db === "postgres" && !useUpload && (
+          {db === "postgres" && !useUpload && !connectionId && (
             <div style={s.pgGrid} className="fade-in">
               {([
                 { k: "host",     label: "Host",     placeholder: "localhost", type: "text" },
@@ -336,6 +403,39 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
                   <input style={s.pgInput} type={type} placeholder={placeholder} value={pg[k]} onChange={setP(k)} />
                 </div>
               ))}
+              <div style={{ gridColumn: "1 / -1", display: "flex", gap: 10, alignItems: "center" }}>
+                <button
+                  type="button"
+                  className="dp-btn dp-btn-ghost"
+                  style={{ padding: "6px 12px", fontSize: 12 }}
+                  onClick={saveCurrentConnection}
+                  disabled={savingConn || !pg.host || !pg.dbname || !pg.user}
+                >
+                  {savingConn ? "Testing & saving…" : "Save connection"}
+                </button>
+                {connMsg && <span style={{ fontSize: 12, color: connMsg.includes("saved") ? "#a6e3a1" : "#f38ba8" }}>{connMsg}</span>}
+              </div>
+            </div>
+          )}
+
+          {packs.length > 0 && (
+            <div style={{ marginTop: 14 }}>
+              <div style={s.sectionLabel}>Metric pack (optional)</div>
+              <select
+                style={s.select}
+                value={metricPackId}
+                onChange={(e) => setMetricPackId(e.target.value)}
+              >
+                <option value="">Infer from schema</option>
+                {packs.map((p) => (
+                  <option key={p.pack_id} value={p.pack_id}>
+                    {p.name}{p.certified ? " ✓ certified" : ""}
+                  </option>
+                ))}
+              </select>
+              <p style={{ color: "#585b70", fontSize: 11, margin: "6px 0 0" }}>
+                Certified packs skip the metric confirmation gate and constrain SQL to your definitions.
+              </p>
             </div>
           )}
         </div>
@@ -754,6 +854,8 @@ function ActiveRun({
     return renderGate(<IntentGate payload={payload as Parameters<typeof IntentGate>[0]["payload"]} onSubmit={resume} submitting={submitting} />);
   if (gate?.gate === "semantic_cache")
     return renderGate(<SemanticCacheGate payload={payload as Parameters<typeof SemanticCacheGate>[0]["payload"]} onSubmit={resume} submitting={submitting} />);
+  if (gate?.gate === "metric")
+    return renderGate(<MetricGate payload={payload as Parameters<typeof MetricGate>[0]["payload"]} onSubmit={resume} submitting={submitting} />);
   if (gate?.gate === "query")
     return renderGate(<QueryGate payload={payload as Parameters<typeof QueryGate>[0]["payload"]} onSubmit={resume} submitting={submitting} />);
   if (gate?.gate === "analysis") {
@@ -823,13 +925,22 @@ export default function Analysis() {
     setThread([]); setSelectedMode(null); setStartError(""); setRunError(""); setExpanded(new Set());
   };
 
-  const startRun = async (task: string, db_backend: string, pg?: PgCreds, uploadId?: string, parentRunId = "") => {
+  const startRun = async (
+    task: string,
+    db_backend: string,
+    pg?: PgCreds,
+    uploadId?: string,
+    parentRunId = "",
+    opts?: RunOptions,
+  ) => {
     setStartError("");
     try {
       const body: Record<string, unknown> = { task, db_backend };
       if (selectedMode) body.analysis_mode = selectedMode;
       if (uploadId) body.duckdb_path = uploadId;
       if (parentRunId) body.parent_run_id = parentRunId;
+      if (opts?.connectionId) body.connection_id = opts.connectionId;
+      if (opts?.metricPackId) body.metric_pack_id = opts.metricPackId;
       if (pg) { body.pg_host = pg.host; body.pg_port = parseInt(pg.port) || 5432; body.pg_dbname = pg.dbname; body.pg_user = pg.user; body.pg_password = pg.password; }
       const { data } = await client.post("/runs", body);
       const newExchange: Exchange = {
@@ -896,7 +1007,14 @@ export default function Analysis() {
     );
 
   if (selectedMode && thread.length === 0)
-    return <TaskInput mode={selectedMode} onSubmit={startRun} onBack={() => setSelectedMode(null)} startError={startError} />;
+    return (
+      <TaskInput
+        mode={selectedMode}
+        onSubmit={(task, db, pg, uploadId, opts) => startRun(task, db, pg, uploadId, "", opts)}
+        onBack={() => setSelectedMode(null)}
+        startError={startError}
+      />
+    );
 
   // Active run: show thread with last exchange running
   const activeMode = (thread[0]?.analysisMode || selectedMode || "ab_test") as string;

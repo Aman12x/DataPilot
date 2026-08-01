@@ -32,6 +32,7 @@ const GENERAL_STEPS: Step[] = [
 const GATE_TO_STEP: Record<string, string> = {
   intent:        "schema",
   semantic_cache:"schema",
+  metric:        "schema",
   query:         "sql",
   analysis:      "stats",
   narrative:     "narrative",

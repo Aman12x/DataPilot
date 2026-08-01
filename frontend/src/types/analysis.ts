@@ -4,6 +4,31 @@ export interface PgCreds {
   host: string; port: string; dbname: string; user: string; password: string;
 }
 
+export interface SavedConnection {
+  connection_id: string;
+  name: string;
+  backend: string;
+  host: string;
+  port: number;
+  dbname: string;
+  username: string;
+  sslmode: string;
+  last_test_ok: boolean | null;
+}
+
+export interface MetricPackSummary {
+  pack_id: string;
+  name: string;
+  description: string;
+  certified: boolean;
+  connection_id: string | null;
+}
+
+export interface RunOptions {
+  connectionId?: string;
+  metricPackId?: string;
+}
+
 export interface Sample {
   name: string; label: string; domain: string; icon: string; mode: string; suggested_task: string;
 }
