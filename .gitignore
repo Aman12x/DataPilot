@@ -7,6 +7,8 @@ data/dau_experiment.db
 memory/*.db
 memory/*.db-shm
 memory/*.db-wal
+memory/backups/
+backups/
 memory/schema_cache.json
 tmp_uploads/
 

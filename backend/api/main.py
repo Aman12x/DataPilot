@@ -205,6 +205,26 @@ async def lifespan(app: FastAPI):
 
     _sweep_task = asyncio.create_task(_sweep_uploads())
 
+    # ── Retention + backups ────────────────────────────────────────────────────
+    # graph.db grows without bound (full DataFrames land in every checkpoint)
+    # and shares a fixed-size volume with auth.db, so an unpruned disk takes
+    # user accounts down with it.
+    from .retention import RETENTION_INTERVAL_SEC, run_maintenance
+
+    async def _maintain():
+        # Stagger the first pass so it does not compete with startup work.
+        await asyncio.sleep(120)
+        while True:
+            try:
+                await asyncio.to_thread(run_maintenance)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("Retention pass failed: %s", exc)
+            await asyncio.sleep(RETENTION_INTERVAL_SEC)
+
+    _retention_task = asyncio.create_task(_maintain())
+
     yield
 
     # ── Cleanup ───────────────────────────────────────────────────────────────
@@ -212,7 +232,10 @@ async def lifespan(app: FastAPI):
     await cancel_active_runs()
     _sweep_task.cancel()
     _background_task.cancel()
-    await asyncio.gather(_sweep_task, _background_task, return_exceptions=True)
+    _retention_task.cancel()
+    await asyncio.gather(
+        _sweep_task, _background_task, _retention_task, return_exceptions=True
+    )
     if redis_client:
         await redis_client.aclose()
     logger.info("DataPilot backend shut down")
