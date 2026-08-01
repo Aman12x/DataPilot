@@ -376,11 +376,19 @@ class TestRunAccess:
         assert isinstance(r.json(), list)
 
     def test_detail_found(self, client):
+        import time
+
         access, _, _ = _login(client)
         hdrs = {"Authorization": f"Bearer {access}"}
         run_id = client.post("/runs", json={"task": "test detail"}, headers=hdrs).json()["run_id"]
-        r = client.get(f"/runs/{run_id}/detail", headers=hdrs)
-        assert r.status_code == 200
+        # FakeGraph invoke is async — wait until checkpoint is readable
+        r = None
+        for _ in range(50):
+            r = client.get(f"/runs/{run_id}/detail", headers=hdrs)
+            if r.status_code == 200:
+                break
+            time.sleep(0.05)
+        assert r is not None and r.status_code == 200, getattr(r, "text", None)
         body = r.json()
         assert body["run_id"] == run_id
         assert "narrative" in body
