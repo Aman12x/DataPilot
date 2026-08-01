@@ -5,6 +5,7 @@ Uses Redis ZSET when available (via run_manager client), otherwise in-memory deq
 """
 from __future__ import annotations
 
+import ipaddress
 import os
 import time
 from collections import deque
@@ -26,33 +27,67 @@ _IS_PRODUCTION = (
 ).lower() in ("production", "prod")
 
 
-def _trusted_hops() -> int:
-    """How many reverse proxies sit in front of this app.
+# Addresses that can only be infrastructure, never a real client. 100.64.0.0/10
+# is CGNAT, which is what Railway's internal proxy hops use.
+_INFRA_NETS = [
+    ipaddress.ip_network(n)
+    for n in (
+        "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8",
+        "169.254.0.0/16", "100.64.0.0/10",
+        "::1/128", "fc00::/7", "fe80::/10",
+    )
+]
 
-    Railway terminates one. Default to 0 in dev, where the app is reached
-    directly and X-Forwarded-For is pure client input.
+
+def _is_infra(addr: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return True  # not an address at all — never use it as a bucket key
+    return any(ip in net for net in _INFRA_NETS)
+
+
+def _trusted_hops() -> int:
+    """Explicit hop count, when an operator knows their exact topology.
+
+    0 (the default) selects the scan strategy in client_ip instead, which does
+    not need the number of hops to be known or stable.
     """
-    return int(os.getenv("TRUSTED_PROXY_HOPS", "1" if _IS_PRODUCTION else "0"))
+    return int(os.getenv("TRUSTED_PROXY_HOPS", "0"))
 
 
 def client_ip(request: Request) -> str:
-    """Resolve the client IP, counting back from the right of X-Forwarded-For.
+    """Resolve the client IP from X-Forwarded-For, right to left.
 
     Taking the leftmost entry trusts the client: anyone can send
-    `X-Forwarded-For: 1.2.3.4` and be treated as a new IP, which defeats every
-    per-IP limit. Each proxy *appends* the address it actually saw, so the Nth
-    entry from the right is the last hop the client could not forge.
+    `X-Forwarded-For: 1.2.3.4` and land in a fresh bucket, defeating every
+    per-IP limit. Each proxy *appends* the address it saw, so the truth is on
+    the right.
+
+    A fixed hop count is not enough either. Railway's internal hop addresses
+    come from 100.64.0.0/10 and differ per request, so pinning "one hop from
+    the right" produced a new bucket every time and silently disabled rate
+    limiting entirely -- 20 concurrent bad logins all returned 401, none 429.
+
+    So: scan right to left and take the first address that could plausibly be a
+    client. Infrastructure ranges are skipped, and anything a client forged
+    sits to the left of the addresses the proxies appended, so it is never
+    reached.
     """
-    hops = _trusted_hops()
-    if hops > 0:
-        forwarded = request.headers.get("X-Forwarded-For")
-        if forwarded:
-            parts = [p.strip() for p in forwarded.split(",") if p.strip()]
-            if parts:
-                return parts[-min(hops, len(parts))]
-    if request.client:
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        parts = [p.strip() for p in forwarded.split(",") if p.strip()]
+        hops = _trusted_hops()
+        if hops > 0 and parts:
+            return parts[-min(hops, len(parts))]
+        for candidate in reversed(parts):
+            if not _is_infra(candidate):
+                return candidate
+    if request.client and not _is_infra(request.client.host):
         return request.client.host
-    return "unknown"
+    # Everything looked internal: fall back to the peer so callers still share
+    # a bucket rather than each getting an unlimited one.
+    return request.client.host if request.client else "unknown"
 
 
 async def check_auth_rate(request: Request, *, bucket: str = "auth") -> None:

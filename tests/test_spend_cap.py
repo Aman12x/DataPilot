@@ -233,27 +233,52 @@ def _request(xff=None, peer="192.0.2.1"):
     )
 
 
-def test_client_supplied_forwarded_header_is_ignored_without_a_proxy(monkeypatch):
-    """Trusting the leftmost hop let anyone mint unlimited fresh IPs."""
-    monkeypatch.setenv("TRUSTED_PROXY_HOPS", "0")
+def test_proxy_appended_address_wins_over_a_client_forgery(monkeypatch):
+    """The client's own value sits left of what the proxies appended."""
+    monkeypatch.delenv("TRUSTED_PROXY_HOPS", raising=False)
     from backend.api import auth_rate
 
-    assert auth_rate.client_ip(_request(xff="1.2.3.4")) == "192.0.2.1"
-
-
-def test_one_trusted_proxy_uses_the_hop_the_client_cannot_forge(monkeypatch):
-    monkeypatch.setenv("TRUSTED_PROXY_HOPS", "1")
-    from backend.api import auth_rate
-
-    # Client forged "1.2.3.4"; the proxy appended the address it actually saw.
     assert auth_rate.client_ip(_request(xff="1.2.3.4, 203.0.113.7")) == "203.0.113.7"
 
 
+def test_internal_proxy_hops_are_skipped(monkeypatch):
+    """Railway appends a CGNAT hop that differs per request.
+
+    Keying on it gave every request its own bucket and silently disabled rate
+    limiting in production -- 20 concurrent bad logins, zero 429s.
+    """
+    monkeypatch.delenv("TRUSTED_PROXY_HOPS", raising=False)
+    from backend.api import auth_rate
+
+    a = auth_rate.client_ip(_request(xff="203.0.113.7, 100.64.0.13"))
+    b = auth_rate.client_ip(_request(xff="203.0.113.7, 100.64.0.99"))
+    assert a == b == "203.0.113.7", "varying infra hop leaked into the bucket key"
+
+
+def test_same_client_gets_one_bucket_across_requests(monkeypatch):
+    monkeypatch.delenv("TRUSTED_PROXY_HOPS", raising=False)
+    from backend.api import auth_rate
+
+    seen = {
+        auth_rate.client_ip(_request(xff=f"203.0.113.7, 100.64.0.{i}"))
+        for i in range(1, 30)
+    }
+    assert seen == {"203.0.113.7"}
+
+
 def test_falls_back_to_peer_when_no_forwarded_header(monkeypatch):
-    monkeypatch.setenv("TRUSTED_PROXY_HOPS", "1")
+    monkeypatch.delenv("TRUSTED_PROXY_HOPS", raising=False)
     from backend.api import auth_rate
 
     assert auth_rate.client_ip(_request()) == "192.0.2.1"
+
+
+def test_explicit_hop_count_still_honoured(monkeypatch):
+    """An operator who knows their topology can pin it."""
+    monkeypatch.setenv("TRUSTED_PROXY_HOPS", "1")
+    from backend.api import auth_rate
+
+    assert auth_rate.client_ip(_request(xff="1.2.3.4, 203.0.113.7")) == "203.0.113.7"
 
 
 # ── Run billing ───────────────────────────────────────────────────────────────
