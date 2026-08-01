@@ -90,12 +90,16 @@ test("signup through the UI reaches the app", async ({ page }) => {
   await page.screenshot({ path: "e2e-out/02-signup-filled.png", fullPage: true });
   await page.getByRole("button", { name: /sign ?up|create account/i }).last().click();
 
-  await page.waitForTimeout(8000);
+  // Wait on the post-auth shell, not a fixed sleep: a timeout-based wait made
+  // this suite report success while the browser was still sitting on /login.
+  const signedIn = page.getByRole("button", { name: /sign out/i });
+  await expect(signedIn, "signup did not reach the authenticated app").toBeVisible({
+    timeout: 30_000,
+  });
+
   await page.screenshot({ path: "e2e-out/03-after-signup.png", fullPage: true });
   dump("signup", d);
-
-  console.log("URL after signup:", page.url());
-  console.log("visible text:", (await page.locator("body").innerText()).slice(0, 600));
+  expect(page.url(), "still on /login after signup").not.toContain("/login");
 });
 
 test("login through the UI with a freshly created account", async ({ page, request }) => {
@@ -115,10 +119,13 @@ test("login through the UI with a freshly created account", async ({ page, reque
   await page.getByLabel("Password", { exact: true }).fill(password);
   await page.getByRole("button", { name: /sign in|log ?in/i }).last().click();
 
-  await page.waitForTimeout(8000);
+  const signedIn = page.getByRole("button", { name: /sign out/i });
+  await expect(signedIn, "login did not reach the authenticated app").toBeVisible({
+    timeout: 30_000,
+  });
+
   await page.screenshot({ path: "e2e-out/04-after-login.png", fullPage: true });
   dump("login", d);
-
-  console.log("URL after login:", page.url());
-  console.log("visible text:", (await page.locator("body").innerText()).slice(0, 600));
+  expect(page.url(), "still on /login after login").not.toContain("/login");
+  await expect(page.getByText(email.split("@")[0]), "signed-in user not shown").toBeVisible();
 });
