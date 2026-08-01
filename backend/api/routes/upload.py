@@ -6,6 +6,7 @@ DELETE /upload/{upload_id}                                     → {status: "ok"
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import os
@@ -24,6 +25,8 @@ _UUID_RE = re.compile(
 import duckdb
 import pandas as pd
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+
+from tools.db_tools import quote_ident
 
 from ..deps import get_current_user
 
@@ -163,6 +166,82 @@ def _infer_tables(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
     return {"events": events_df, "experiment": exp_df}
 
 
+# Everything below runs off the event loop. This handler used to do the pandas
+# parse, the temp-CSV round trip and the DuckDB load synchronously inside
+# `async def`, and the backend runs with --workers 1, so the entire API stopped
+# serving for the duration of every upload. Graph execution has its own thread
+# pool (run_manager._get_graph_executor), so this work borrowing asyncio's
+# default executor cannot starve an analysis.
+
+_READ_CHUNK = 1024 * 1024  # 1 MB
+
+
+async def _read_capped(file: UploadFile, limit: int) -> bytes:
+    """Read the body in chunks, rejecting as soon as it passes `limit`.
+
+    Reading it whole and then checking meant an oversized body was fully
+    buffered in memory before it could be refused.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(_READ_CHUNK)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > limit:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail="File exceeds 50 MB limit",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _parse_dataframe(raw: bytes, suffix: str) -> pd.DataFrame:
+    """Blocking: pandas parse + column normalisation. Call via asyncio.to_thread."""
+    df = (
+        pd.read_csv(io.BytesIO(raw))
+        if suffix == ".csv"
+        else pd.read_excel(io.BytesIO(raw), engine="openpyxl")
+    )
+    return _normalise_cols(df)
+
+
+def _build_duckdb(df: pd.DataFrame, db_path: str) -> None:
+    """Blocking: table inference, temp-CSV round trip and DuckDB load.
+
+    Call via asyncio.to_thread.
+    """
+    tables = _infer_tables(df)
+    con = duckdb.connect(db_path)
+    try:
+        for table_name, tdf in tables.items():
+            # Write through a temp CSV so DuckDB's read_csv_auto can infer types
+            # properly (e.g. ISO dates → DATE, 0/1 strings → INTEGER) rather than
+            # inheriting the coarser pandas object dtype for those columns.
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".csv", delete=False, encoding="utf-8"
+            ) as tmp:
+                tdf.to_csv(tmp, index=False)
+                tmp_path = tmp.name
+            try:
+                con.execute(
+                    f"CREATE TABLE {quote_ident(table_name)} AS "
+                    f"SELECT * FROM read_csv_auto(?, header=true)",
+                    [tmp_path],
+                )
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+    finally:
+        # Previously only closed on the success path, leaking the handle (and
+        # the file lock) whenever CREATE TABLE raised.
+        con.close()
+
+
 @router.post("/upload", status_code=status.HTTP_201_CREATED)
 async def upload_file(
     file: UploadFile = File(...),
@@ -175,21 +254,14 @@ async def upload_file(
             detail=f"Unsupported file type '{suffix}'. Allowed: {', '.join(sorted(_ALLOWED_EXT))}",
         )
 
-    raw = await file.read()
-    if len(raw) > _MAX_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail="File exceeds 50 MB limit",
-        )
+    raw = await _read_capped(file, _MAX_BYTES)
 
     try:
-        df = pd.read_csv(io.BytesIO(raw)) if suffix == ".csv" \
-            else pd.read_excel(io.BytesIO(raw), engine="openpyxl")
+        df = await asyncio.to_thread(_parse_dataframe, raw, suffix)
     except Exception:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                             detail="Could not parse file. Ensure it is a valid CSV or Excel file.")
 
-    df = _normalise_cols(df)
     if df.empty:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is empty")
     if len(df) > _MAX_ROWS:
@@ -208,29 +280,8 @@ async def upload_file(
     os.makedirs(user_dir, exist_ok=True)
     db_path   = os.path.join(user_dir, f"{upload_id}.db")
 
-    tables = _infer_tables(df)
     try:
-        con = duckdb.connect(db_path)
-        for table_name, tdf in tables.items():
-            # Write through a temp CSV so DuckDB's read_csv_auto can infer types
-            # properly (e.g. ISO dates → DATE, 0/1 strings → INTEGER) rather than
-            # inheriting the coarser pandas object dtype for those columns.
-            with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".csv", delete=False, encoding="utf-8"
-            ) as tmp:
-                tdf.to_csv(tmp, index=False)
-                tmp_path = tmp.name
-            try:
-                con.execute(
-                    f"CREATE TABLE {table_name} AS "
-                    f"SELECT * FROM read_csv_auto('{tmp_path}', header=true)"
-                )
-            finally:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-        con.close()
+        await asyncio.to_thread(_build_duckdb, df, db_path)
     except Exception:
         logger.exception("DuckDB write failed for upload %s", upload_id)
         raise HTTPException(
