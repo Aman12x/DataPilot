@@ -6,9 +6,9 @@ interface Props {
 }
 
 const VERDICT_CONFIG = {
-  positive: { label: "Ship It",    color: "#a6e3a1", bg: "#a6e3a115", icon: "▲" },
-  negative: { label: "Don't Ship", color: "#f38ba8", bg: "#f38ba815", icon: "▼" },
-  neutral:  { label: "Investigate", color: "#f9e2af", bg: "#f9e2af15", icon: "◆" },
+  positive: { label: "Ship It",    color: "var(--dp-success)", bg: "var(--dp-success)15", icon: "▲" },
+  negative: { label: "Don't Ship", color: "var(--dp-danger)", bg: "var(--dp-danger)15", icon: "▼" },
+  neutral:  { label: "Investigate", color: "var(--dp-warning)", bg: "var(--dp-warning)15", icon: "◆" },
 };
 
 export default function StakeholderDeck({ deck, onViewReport }: Props) {
@@ -70,25 +70,25 @@ export default function StakeholderDeck({ deck, onViewReport }: Props) {
 }
 
 const s: Record<string, React.CSSProperties> = {
-  card:          { background: "#1e1e2e", border: "1px solid #313244", borderRadius: 14, padding: "28px 32px", maxWidth: 760 },
+  card:          { background: "var(--dp-surface)", border: "1px solid var(--dp-line)", borderRadius: 14, padding: "28px 32px", maxWidth: 760 },
   header:        { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 },
   verdictBadge:  { display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 14px", borderRadius: 20, fontWeight: 700, fontSize: 13, letterSpacing: "0.04em" },
-  fullReportBtn: { background: "transparent", border: "1px solid #45475a", color: "#cdd6f4", padding: "6px 16px", borderRadius: 8, cursor: "pointer", fontSize: 13 },
-  headline:      { color: "#cdd6f4", fontSize: 17, fontWeight: 600, lineHeight: 1.5, margin: "0 0 22px" },
+  fullReportBtn: { background: "transparent", border: "1px solid var(--dp-ink-faint)", color: "var(--dp-ink)", padding: "6px 16px", borderRadius: 8, cursor: "pointer", fontSize: 13 },
+  headline:      { color: "var(--dp-ink)", fontSize: 17, fontWeight: 600, lineHeight: 1.5, margin: "0 0 22px" },
   heroRow:       { display: "flex", alignItems: "center", gap: 16, marginBottom: 24 },
-  heroBox:       { background: "#181825", border: "2px solid", borderRadius: 10, padding: "16px 24px", minWidth: 140, textAlign: "center" as const },
+  heroBox:       { background: "var(--dp-surface-2)", border: "2px solid", borderRadius: 10, padding: "16px 24px", minWidth: 140, textAlign: "center" as const },
   heroMetric:    { fontSize: 28, fontWeight: 800, letterSpacing: "-0.5px" },
-  heroLabel:     { color: "#585b70", fontSize: 11, fontWeight: 600, textTransform: "uppercase" as const, letterSpacing: "0.06em", marginTop: 4 },
-  confidencePill:{ background: "#181825", border: "1px solid #313244", borderRadius: 8, padding: "10px 16px", color: "#a6adc8", fontSize: 13, lineHeight: 1.5 },
+  heroLabel:     { color: "var(--dp-ink-muted)", fontSize: 11, fontWeight: 600, textTransform: "uppercase" as const, letterSpacing: "0.06em", marginTop: 4 },
+  confidencePill:{ background: "var(--dp-surface-2)", border: "1px solid var(--dp-line)", borderRadius: 8, padding: "10px 16px", color: "var(--dp-ink-secondary)", fontSize: 13, lineHeight: 1.5 },
   section:       { marginBottom: 20 },
-  sectionLabel:  { color: "#585b70", fontSize: 11, fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.08em", marginBottom: 10 },
+  sectionLabel:  { color: "var(--dp-ink-muted)", fontSize: 11, fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.08em", marginBottom: 10 },
   evidenceList:  { listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column" as const, gap: 7 },
-  evidenceItem:  { display: "flex", gap: 10, color: "#cdd6f4", fontSize: 14, lineHeight: 1.5 },
-  bullet:        { color: "#6c7086", flexShrink: 0, paddingTop: 1 },
-  recBox:        { background: "#181825", border: "1px solid", borderRadius: 10, padding: "14px 18px", marginBottom: 16 },
+  evidenceItem:  { display: "flex", gap: 10, color: "var(--dp-ink)", fontSize: 14, lineHeight: 1.5 },
+  bullet:        { color: "var(--dp-ink-muted)", flexShrink: 0, paddingTop: 1 },
+  recBox:        { background: "var(--dp-surface-2)", border: "1px solid", borderRadius: 10, padding: "14px 18px", marginBottom: 16 },
   recLabel:      { fontSize: 11, fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.08em", display: "block", marginBottom: 6 },
-  recText:       { color: "#cdd6f4", fontSize: 14, fontWeight: 500, margin: 0, lineHeight: 1.6 },
+  recText:       { color: "var(--dp-ink)", fontSize: 14, fontWeight: 500, margin: 0, lineHeight: 1.6 },
   watchOut:      { display: "flex", gap: 8, alignItems: "flex-start" },
-  watchIcon:     { color: "#f9e2af", fontSize: 13, flexShrink: 0, paddingTop: 1 },
-  watchText:     { color: "#a6adc8", fontSize: 13, lineHeight: 1.5 },
+  watchIcon:     { color: "var(--dp-warning)", fontSize: 13, flexShrink: 0, paddingTop: 1 },
+  watchText:     { color: "var(--dp-ink-secondary)", fontSize: 13, lineHeight: 1.5 },
 };

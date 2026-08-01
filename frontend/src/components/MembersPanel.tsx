@@ -123,7 +123,7 @@ export default function MembersPanel({ open, workspaceId, workspaceName, canMana
                   <div style={s.meta}>{m.email} · {m.role}</div>
                 </div>
                 {canManage && (
-                  <button className="dp-btn dp-btn-link" style={{ color: "#f38ba8" }} onClick={() => remove(m.user_id)}>
+                  <button className="dp-btn dp-btn-link" style={{ color: "var(--dp-danger)" }} onClick={() => remove(m.user_id)}>
                     Remove
                   </button>
                 )}
@@ -139,19 +139,19 @@ export default function MembersPanel({ open, workspaceId, workspaceName, canMana
 
 const s: Record<string, React.CSSProperties> = {
   backdrop: { position: "fixed", inset: 0, background: "#000000aa", zIndex: 80, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 },
-  modal: { width: "min(560px, 100%)", background: "#1e1e2e", border: "1px solid #313244", borderRadius: 16, padding: 20 },
+  modal: { width: "min(560px, 100%)", background: "var(--dp-surface)", border: "1px solid var(--dp-line)", borderRadius: 16, padding: 20 },
   header: { display: "flex", justifyContent: "space-between", gap: 16, marginBottom: 16 },
-  kicker: { color: "#89b4fa", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" },
-  title: { color: "#cdd6f4", fontSize: 20, fontWeight: 700, margin: "4px 0" },
-  sub: { color: "#585b70", fontSize: 13, margin: 0 },
-  error: { background: "#f38ba811", border: "1px solid #f38ba844", color: "#f38ba8", borderRadius: 8, padding: "10px 12px", marginBottom: 12, fontSize: 13 },
-  ok: { background: "#a6e3a111", border: "1px solid #a6e3a144", color: "#a6e3a1", borderRadius: 8, padding: "10px 12px", marginBottom: 12, fontSize: 13 },
+  kicker: { color: "var(--dp-accent)", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" },
+  title: { color: "var(--dp-ink)", fontSize: 20, fontWeight: 700, margin: "4px 0" },
+  sub: { color: "var(--dp-ink-muted)", fontSize: 13, margin: 0 },
+  error: { background: "var(--dp-danger)11", border: "1px solid var(--dp-danger)44", color: "var(--dp-danger)", borderRadius: 8, padding: "10px 12px", marginBottom: 12, fontSize: 13 },
+  ok: { background: "var(--dp-success)11", border: "1px solid var(--dp-success)44", color: "var(--dp-success)", borderRadius: 8, padding: "10px 12px", marginBottom: 12, fontSize: 13 },
   addRow: { display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" },
-  input: { flex: "1 1 180px", background: "#11111b", border: "1px solid #313244", borderRadius: 8, color: "#cdd6f4", padding: "8px 10px", fontSize: 13 },
-  select: { background: "#11111b", border: "1px solid #313244", borderRadius: 8, color: "#cdd6f4", padding: "8px 10px", fontSize: 13 },
+  input: { flex: "1 1 180px", background: "var(--dp-bg)", border: "1px solid var(--dp-line)", borderRadius: 8, color: "var(--dp-ink)", padding: "8px 10px", fontSize: 13 },
+  select: { background: "var(--dp-bg)", border: "1px solid var(--dp-line)", borderRadius: 8, color: "var(--dp-ink)", padding: "8px 10px", fontSize: 13 },
   list: { display: "flex", flexDirection: "column", gap: 8 },
-  row: { display: "flex", justifyContent: "space-between", alignItems: "center", background: "#181825", border: "1px solid #313244", borderRadius: 10, padding: "12px 14px" },
-  name: { color: "#cdd6f4", fontSize: 14, fontWeight: 600 },
-  meta: { color: "#585b70", fontSize: 12, marginTop: 2 },
-  muted: { color: "#585b70", fontSize: 13 },
+  row: { display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--dp-surface-2)", border: "1px solid var(--dp-line)", borderRadius: 10, padding: "12px 14px" },
+  name: { color: "var(--dp-ink)", fontSize: 14, fontWeight: 600 },
+  meta: { color: "var(--dp-ink-muted)", fontSize: 12, marginTop: 2 },
+  muted: { color: "var(--dp-ink-muted)", fontSize: 13 },
 };

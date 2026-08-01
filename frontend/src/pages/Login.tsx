@@ -104,15 +104,15 @@ export default function Login() {
     return (
       <AuthCard tagline="Almost there">
         <div style={s.pendingBox} className="fade-in">
-          <div style={s.pendingIcon}>✉</div>
+          <div style={s.pendingIcon}>Inbox</div>
           <p style={s.pendingTitle}>Check your email</p>
           <p style={s.pendingSub}>
-            We sent a verification link to <strong style={{ color: "#cdd6f4" }}>{pendingEmail}</strong>.
+            We sent a verification link to <strong style={{ color: "var(--dp-ink)" }}>{pendingEmail}</strong>.
             Click the link to activate your account, then sign in.
           </p>
           {error && (
             <div style={authShared.errorBox} role="alert" aria-live="polite">
-              <span>⚠</span> {error}
+              {error}
             </div>
           )}
           <button style={authShared.btn} type="button" disabled={loading} onClick={resendVerification}>
@@ -213,7 +213,7 @@ export default function Login() {
 
         {error && (
           <div style={authShared.errorBox} role="alert" aria-live="polite" className="fade-in">
-            <span>⚠</span> {error}
+            {error}
           </div>
         )}
 
@@ -224,7 +224,7 @@ export default function Login() {
 
       <div style={s.divider}>
         <div style={s.dividerLine} />
-        <span style={{ color: "#45475a", fontSize: 12, flexShrink: 0 }}>or</span>
+        <span style={{ color: "var(--dp-ink-faint)", fontSize: 12, flexShrink: 0 }}>or</span>
         <div style={s.dividerLine} />
       </div>
       <button
@@ -241,18 +241,18 @@ export default function Login() {
 }
 
 const s: Record<string, React.CSSProperties> = {
-  tabs:       { display: "flex", background: "#181825", borderRadius: 8, padding: 3, marginBottom: 24, gap: 3 },
-  tab:        { flex: 1, padding: "8px 0", background: "transparent", color: "#585b70", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13, fontWeight: 500, transition: "all 0.2s" },
-  tabActive:  { flex: 1, padding: "8px 0", background: "#313244", color: "#cdd6f4", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13, fontWeight: 600, transition: "all 0.2s" },
+  tabs:       { display: "flex", background: "var(--dp-surface-2)", borderRadius: 10, padding: 3, marginBottom: 24, gap: 3 },
+  tab:        { flex: 1, padding: "8px 0", background: "transparent", color: "var(--dp-ink-muted)", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 500, transition: "all 0.2s" },
+  tabActive:  { flex: 1, padding: "8px 0", background: "var(--dp-surface)", color: "var(--dp-ink)", border: "1px solid var(--dp-line)", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 650, transition: "all 0.2s", boxShadow: "var(--dp-shadow-sm)" },
   form:       { display: "flex", flexDirection: "column", gap: 16 },
-  hint:       { color: "#585b70", fontSize: 12, marginTop: 6, lineHeight: 1.4 },
-  matchErr:   { color: "#f38ba8", fontSize: 12, marginTop: -8 },
-  forgotLink: { background: "none", border: "none", color: "#585b70", fontSize: 12, cursor: "pointer", marginTop: 4, padding: 0, textAlign: "right" as const, width: "100%", display: "block" },
+  hint:       { color: "var(--dp-ink-muted)", fontSize: 12, marginTop: 6, lineHeight: 1.4 },
+  matchErr:   { color: "var(--dp-danger)", fontSize: 12, marginTop: -8 },
+  forgotLink: { background: "none", border: "none", color: "var(--dp-ink-muted)", fontSize: 12, cursor: "pointer", marginTop: 4, padding: 0, textAlign: "right" as const, width: "100%", display: "block" },
   divider:    { display: "flex", alignItems: "center", gap: 12, margin: "18px 0 0" },
-  dividerLine:{ flex: 1, height: 1, background: "#313244" },
-  guestBtn:   { width: "100%", marginTop: 10, padding: "10px 0", background: "transparent", color: "#585b70", border: "1px solid #313244", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 500 },
+  dividerLine:{ flex: 1, height: 1, background: "var(--dp-line)" },
+  guestBtn:   { width: "100%", marginTop: 10, padding: "10px 0", background: "transparent", color: "var(--dp-ink-secondary)", border: "1px solid var(--dp-line)", borderRadius: 10, cursor: "pointer", fontSize: 13, fontWeight: 500 },
   pendingBox: { textAlign: "center" },
-  pendingIcon:{ fontSize: 36, marginBottom: 12 },
-  pendingTitle:{ fontSize: 18, fontWeight: 600, color: "#cdd6f4", marginBottom: 8 },
-  pendingSub: { color: "#a6adc8", fontSize: 14, lineHeight: 1.6, marginBottom: 20 },
+  pendingIcon:{ fontSize: 28, marginBottom: 12, color: "var(--dp-accent)", fontWeight: 700 },
+  pendingTitle:{ fontSize: 18, fontWeight: 700, color: "var(--dp-ink)", marginBottom: 8, fontFamily: "var(--dp-display)" },
+  pendingSub: { color: "var(--dp-ink-secondary)", fontSize: 14, lineHeight: 1.6, marginBottom: 20 },
 };

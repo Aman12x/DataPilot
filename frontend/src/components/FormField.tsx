@@ -1,6 +1,12 @@
 const f: Record<string, React.CSSProperties> = {
   group: { display: "flex", flexDirection: "column", gap: 6 },
-  label: { fontSize: 11, fontWeight: 600, color: "#a6adc8", letterSpacing: "0.06em", textTransform: "uppercase" },
+  label: {
+    fontSize: 11,
+    fontWeight: 650,
+    color: "var(--dp-ink-muted)",
+    letterSpacing: "0.06em",
+    textTransform: "uppercase",
+  },
 };
 
 export default function FormField({ label, type, value, onChange, placeholder, required = true, autoFocus, autoComplete }: {

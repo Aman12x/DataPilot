@@ -317,7 +317,7 @@ export default function AnnotationStudio({
                     {editable && (
                       <button
                         className="dp-btn dp-btn-link"
-                        style={{ color: "#f38ba8" }}
+                        style={{ color: "var(--dp-danger)" }}
                         onClick={() => setRows((prev) => prev.filter((_, i) => i !== idx))}
                       >
                         ✕
@@ -361,7 +361,7 @@ export default function AnnotationStudio({
                     {editable && (
                       <button
                         className="dp-btn dp-btn-link"
-                        style={{ color: "#f38ba8" }}
+                        style={{ color: "var(--dp-danger)" }}
                         onClick={() => setSynRows((prev) => prev.filter((_, i) => i !== idx))}
                       >
                         ✕
@@ -397,28 +397,28 @@ export default function AnnotationStudio({
 
 const s: Record<string, React.CSSProperties> = {
   backdrop: { position: "fixed", inset: 0, background: "#000000aa", zIndex: 80, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 },
-  modal: { width: "min(860px, 100%)", maxHeight: "90vh", overflow: "auto", background: "#1e1e2e", border: "1px solid #313244", borderRadius: 16, padding: 20 },
+  modal: { width: "min(860px, 100%)", maxHeight: "90vh", overflow: "auto", background: "var(--dp-surface)", border: "1px solid var(--dp-line)", borderRadius: 16, padding: 20 },
   header: { display: "flex", justifyContent: "space-between", gap: 16, marginBottom: 16 },
-  kicker: { color: "#f9e2af", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" },
-  title: { color: "#cdd6f4", fontSize: 20, fontWeight: 700, margin: "4px 0" },
-  sub: { color: "#585b70", fontSize: 13, margin: 0, maxWidth: 560 },
-  error: { background: "#f38ba811", border: "1px solid #f38ba844", color: "#f38ba8", borderRadius: 8, padding: "10px 12px", marginBottom: 12, fontSize: 13 },
-  ok: { background: "#a6e3a111", border: "1px solid #a6e3a144", color: "#a6e3a1", borderRadius: 8, padding: "10px 12px", marginBottom: 12, fontSize: 13 },
-  warn: { background: "#f9e2af11", border: "1px solid #f9e2af44", color: "#f9e2af", borderRadius: 8, padding: "10px 12px", marginBottom: 12, fontSize: 12 },
-  muted: { color: "#585b70", fontSize: 13 },
-  hint: { color: "#585b70", fontSize: 11, margin: "0 0 8px" },
+  kicker: { color: "var(--dp-warning)", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" },
+  title: { color: "var(--dp-ink)", fontSize: 20, fontWeight: 700, margin: "4px 0" },
+  sub: { color: "var(--dp-ink-muted)", fontSize: 13, margin: 0, maxWidth: 560 },
+  error: { background: "var(--dp-danger)11", border: "1px solid var(--dp-danger)44", color: "var(--dp-danger)", borderRadius: 8, padding: "10px 12px", marginBottom: 12, fontSize: 13 },
+  ok: { background: "var(--dp-success)11", border: "1px solid var(--dp-success)44", color: "var(--dp-success)", borderRadius: 8, padding: "10px 12px", marginBottom: 12, fontSize: 13 },
+  warn: { background: "var(--dp-warning)11", border: "1px solid var(--dp-warning)44", color: "var(--dp-warning)", borderRadius: 8, padding: "10px 12px", marginBottom: 12, fontSize: 12 },
+  muted: { color: "var(--dp-ink-muted)", fontSize: 13 },
+  hint: { color: "var(--dp-ink-muted)", fontSize: 11, margin: "0 0 8px" },
   connRow: { display: "flex", gap: 10, alignItems: "end", marginBottom: 12, flexWrap: "wrap" },
   field: { display: "flex", flexDirection: "column", gap: 4, flex: "1 1 240px" },
-  label: { color: "#a6adc8", fontSize: 11, fontWeight: 600 },
-  input: { background: "#11111b", border: "1px solid #313244", borderRadius: 8, color: "#cdd6f4", padding: "8px 10px", fontSize: 13, width: "100%" },
+  label: { color: "var(--dp-ink-secondary)", fontSize: 11, fontWeight: 600 },
+  input: { background: "var(--dp-bg)", border: "1px solid var(--dp-line)", borderRadius: 8, color: "var(--dp-ink)", padding: "8px 10px", fontSize: 13, width: "100%" },
   tableChips: { display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 },
-  chip: { background: "#181825", border: "1px solid #313244", color: "#a6adc8", borderRadius: 999, padding: "4px 10px", fontSize: 11, cursor: "pointer" },
+  chip: { background: "var(--dp-surface-2)", border: "1px solid var(--dp-line)", color: "var(--dp-ink-secondary)", borderRadius: 8, padding: "4px 10px", fontSize: 11, cursor: "pointer" },
   sectionHead: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 },
-  sectionTitle: { color: "#cdd6f4", fontSize: 13, fontWeight: 700 },
+  sectionTitle: { color: "var(--dp-ink)", fontSize: 13, fontWeight: 700 },
   tinyBtn: { padding: "4px 8px", fontSize: 11 },
-  gridHead: { display: "grid", gridTemplateColumns: "1fr 1fr 1.4fr 32px", gap: 8, color: "#585b70", fontSize: 11, marginBottom: 6, padding: "0 2px" },
+  gridHead: { display: "grid", gridTemplateColumns: "1fr 1fr 1.4fr 32px", gap: 8, color: "var(--dp-ink-muted)", fontSize: 11, marginBottom: 6, padding: "0 2px" },
   gridRow: { display: "grid", gridTemplateColumns: "1fr 1fr 1.4fr 32px", gap: 8, marginBottom: 8, alignItems: "center" },
-  synHead: { display: "grid", gridTemplateColumns: "1fr 1fr 32px", gap: 8, color: "#585b70", fontSize: 11, marginBottom: 6 },
+  synHead: { display: "grid", gridTemplateColumns: "1fr 1fr 32px", gap: 8, color: "var(--dp-ink-muted)", fontSize: 11, marginBottom: 6 },
   synRow: { display: "grid", gridTemplateColumns: "1fr 1fr 32px", gap: 8, marginBottom: 8, alignItems: "center" },
   actions: { display: "flex", justifyContent: "flex-end", marginTop: 16 },
 };

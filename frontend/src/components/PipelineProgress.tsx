@@ -58,7 +58,7 @@ export default function PipelineProgress({ gate, lastGate, analysisMode, done }:
       <div style={s.wrapper} className="fade-in">
         <div style={s.detectRow}>
           <span style={s.dot} />
-          <span style={{ color: "#a6adc8", fontSize: 14 }}>Detecting analysis type…</span>
+          <span style={{ color: "var(--dp-ink-secondary)", fontSize: 14 }}>Detecting analysis type…</span>
         </div>
         <p style={s.status}>
           <span style={s.dot} /> Starting up — this may take a moment
@@ -92,7 +92,7 @@ export default function PipelineProgress({ gate, lastGate, analysisMode, done }:
               {i > 0 && (
                 <div style={{
                   ...s.connector,
-                  background: isComplete ? "#89b4fa" : "#313244",
+                  background: isComplete ? "var(--dp-accent)" : "var(--dp-line)",
                 }} />
               )}
 
@@ -109,9 +109,9 @@ export default function PipelineProgress({ gate, lastGate, analysisMode, done }:
               {/* Label */}
               <div style={{
                 ...s.label,
-                color: isComplete ? "#a6e3a1"
-                     : isActive   ? "#cdd6f4"
-                     : "#585b70",
+                color: isComplete ? "var(--dp-success)"
+                     : isActive   ? "var(--dp-ink)"
+                     : "var(--dp-ink-muted)",
                 fontWeight: isActive ? 600 : 400,
               }}>
                 {step.label}
@@ -133,7 +133,7 @@ export default function PipelineProgress({ gate, lastGate, analysisMode, done }:
           <span style={s.dot} /> Analysis in progress — this may take a minute
         </p>
       )}
-      {done && <p style={{ ...s.status, color: "#a6e3a1" }}>✓ Analysis complete</p>}
+      {done && <p style={{ ...s.status, color: "var(--dp-success)" }}>✓ Analysis complete</p>}
     </div>
   );
 }
@@ -144,13 +144,13 @@ const s: Record<string, React.CSSProperties> = {
   stepRow:      { display: "flex", alignItems: "center", gap: 14, position: "relative", paddingBottom: 4 },
   connector:    { position: "absolute", left: 17, top: -20, width: 2, height: 24, borderRadius: 1 },
   node:         { width: 36, height: 36, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0, transition: "all 0.3s" },
-  nodeComplete: { background: "#1a3a2a", border: "2px solid #a6e3a1", color: "#a6e3a1", fontSize: 14 },
-  nodeActive:   { background: "#1a2a3a", border: "2px solid #89b4fa", color: "#89b4fa", animation: "glow 1.8s ease-in-out infinite" },
-  nodePending:  { background: "#181825", border: "2px solid #313244", color: "#45475a" },
+  nodeComplete: { background: "#1a3a2a", border: "2px solid var(--dp-success)", color: "var(--dp-success)", fontSize: 14 },
+  nodeActive:   { background: "var(--dp-accent-soft)", border: "2px solid var(--dp-accent)", color: "var(--dp-accent)", boxShadow: "0 0 0 3px rgba(14,124,107,0.15)" },
+  nodePending:  { background: "var(--dp-surface-2)", border: "2px solid var(--dp-line)", color: "var(--dp-ink-faint)" },
   label:        { fontSize: 14, transition: "color 0.3s", display: "flex", alignItems: "center", gap: 8 },
-  waitBadge:    { fontSize: 10, background: "#89b4fa22", color: "#89b4fa", padding: "2px 7px", borderRadius: 10, animation: "pulse 2s infinite" },
-  runBadge:     { fontSize: 10, background: "#f9e2af22", color: "#f9e2af", padding: "2px 7px", borderRadius: 10, animation: "pulse 1.2s infinite" },
-  status:       { marginTop: 24, color: "#a6adc8", fontSize: 13, display: "flex", alignItems: "center", gap: 8 },
-  dot:          { display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: "#f9e2af", animation: "pulse 1.2s ease-in-out infinite" },
+  waitBadge:    { fontSize: 10, background: "var(--dp-accent)22", color: "var(--dp-accent)", padding: "2px 7px", borderRadius: 6, animation: "pulse 2s infinite" },
+  runBadge:     { fontSize: 10, background: "var(--dp-warning)22", color: "var(--dp-warning)", padding: "2px 7px", borderRadius: 6, animation: "pulse 1.2s infinite" },
+  status:       { marginTop: 24, color: "var(--dp-ink-secondary)", fontSize: 13, display: "flex", alignItems: "center", gap: 8 },
+  dot:          { display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: "var(--dp-warning)", animation: "pulse 1.2s ease-in-out infinite" },
   detectRow:    { display: "flex", alignItems: "center", gap: 10, padding: "12px 0" },
 };

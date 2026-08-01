@@ -69,7 +69,7 @@ export default function VerifyEmail() {
 const s: Record<string, React.CSSProperties> = {
   center:  { display: "flex", flexDirection: "column", alignItems: "center", gap: 16, padding: "24px 0" },
   success: { textAlign: "center", padding: "16px 0" },
-  icon:    { fontSize: 32, color: "#a6e3a1", marginBottom: 12 },
-  title:   { fontSize: 18, fontWeight: 600, color: "#cdd6f4", marginBottom: 8 },
-  text:    { color: "#a6adc8", fontSize: 14, lineHeight: 1.6 },
+  icon:    { fontSize: 32, color: "var(--dp-success)", marginBottom: 12 },
+  title:   { fontSize: 18, fontWeight: 600, color: "var(--dp-ink)", marginBottom: 8 },
+  text:    { color: "var(--dp-ink-secondary)", fontSize: 14, lineHeight: 1.6 },
 };

@@ -28,18 +28,19 @@ import PackStudio from "../components/PackStudio";
 import MembersPanel from "../components/MembersPanel";
 import AnnotationStudio from "../components/AnnotationStudio";
 import type { DeckData } from "../hooks/useSSE";
+import AppShell from "../components/AppShell";
 
 // ── Fallback samples (shown even when backend is offline) ─────────────────────
 const FALLBACK_SAMPLES: Sample[] = [
-  { name: "ecommerce_ab_test.csv",       label: "E-commerce A/B Test",    domain: "E-commerce", icon: "🛒", mode: "ab_test",  suggested_task: "Did the new checkout flow increase revenue and orders? Identify which customer segments and devices benefited most." },
-  { name: "clinical_trial.csv",          label: "Clinical Trial",          domain: "Healthcare", icon: "🏥", mode: "ab_test",  suggested_task: "Did Drug A improve recovery scores compared to the control group? Check for side effects and subgroup differences by age and severity." },
-  { name: "media_ctr_experiment.csv",    label: "Media CTR Experiment",    domain: "Media",      icon: "📱", mode: "ab_test",  suggested_task: "Did the new content recommendation algorithm improve click-through rate and watch time? Break down results by platform, content type, and age group." },
-  { name: "saas_churn_analysis.csv",     label: "SaaS Churn Analysis",     domain: "SaaS",       icon: "📊", mode: "general", suggested_task: "What factors most strongly predict customer churn? Which industries and plan types have the highest churn rates?" },
-  { name: "logistics_ops.csv",           label: "Logistics Operations",    domain: "Logistics",  icon: "🚚", mode: "general", suggested_task: "Why are deliveries being delayed? Which carriers and routes have the worst on-time performance?" },
-  { name: "customer_transactions_10k.csv", label: "Retail Transactions",   domain: "Retail",     icon: "🏪", mode: "general", suggested_task: "Which product categories and customer segments drive the most revenue? What patterns exist in fraud, returns, and churn?" },
+  { name: "ecommerce_ab_test.csv",       label: "E-commerce A/B Test",    domain: "E-commerce", icon: "EC", mode: "ab_test",  suggested_task: "Did the new checkout flow increase revenue and orders? Identify which customer segments and devices benefited most." },
+  { name: "clinical_trial.csv",          label: "Clinical Trial",          domain: "Healthcare", icon: "HC", mode: "ab_test",  suggested_task: "Did Drug A improve recovery scores compared to the control group? Check for side effects and subgroup differences by age and severity." },
+  { name: "media_ctr_experiment.csv",    label: "Media CTR Experiment",    domain: "Media",      icon: "MD", mode: "ab_test",  suggested_task: "Did the new content recommendation algorithm improve click-through rate and watch time? Break down results by platform, content type, and age group." },
+  { name: "saas_churn_analysis.csv",     label: "SaaS Churn Analysis",     domain: "SaaS",       icon: "SA", mode: "general", suggested_task: "What factors most strongly predict customer churn? Which industries and plan types have the highest churn rates?" },
+  { name: "logistics_ops.csv",           label: "Logistics Operations",    domain: "Logistics",  icon: "LG", mode: "general", suggested_task: "Why are deliveries being delayed? Which carriers and routes have the worst on-time performance?" },
+  { name: "customer_transactions_10k.csv", label: "Retail Transactions",   domain: "Retail",     icon: "RT", mode: "general", suggested_task: "Which product categories and customer segments drive the most revenue? What patterns exist in fraud, returns, and churn?" },
 ];
 
-// ── ModeSelect — the two-button landing ───────────────────────────────────────
+// ── ModeSelect — product home ─────────────────────────────────────────────────
 
 function ModeSelect({ onSelect, username, onHistory, onSignOut, workspaces, workspaceId, onWorkspaceChange }: {
   onSelect: (mode: Mode) => void;
@@ -58,18 +59,15 @@ function ModeSelect({ onSelect, username, onHistory, onSignOut, workspaces, work
   const canManage = activeWs?.role === "owner";
 
   return (
-    <div style={ms.page}>
-      <div style={ms.orb1} /><div style={ms.orb2} />
-
-      <div style={ms.topBar} className="dp-topbar">
-        <span style={ms.logo} className="dp-logo">✦ DataPilot</span>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
+    <AppShell
+      nav={(
+        <>
           {workspaces.length > 0 && (
             <select
               aria-label="Workspace"
               value={workspaceId}
               onChange={(e) => onWorkspaceChange(e.target.value)}
-              style={ms.wsSelect}
+              className="dp-shell-select"
             >
               {workspaces.map((w) => (
                 <option key={w.workspace_id} value={w.workspace_id}>
@@ -78,17 +76,17 @@ function ModeSelect({ onSelect, username, onHistory, onSignOut, workspaces, work
               ))}
             </select>
           )}
-          {username && <span style={ms.username}>{username}</span>}
-          <button className="dp-btn dp-btn-ghost" style={{ padding: "6px 14px" }} onClick={() => setShowPacks(true)}>Metrics</button>
-          <button className="dp-btn dp-btn-ghost" style={{ padding: "6px 14px" }} onClick={() => setShowAnnotations(true)}>Schema</button>
+          {username && <span className="dp-shell-meta">{username}</span>}
+          <button className="dp-btn dp-btn-ghost" onClick={() => setShowPacks(true)}>Metrics</button>
+          <button className="dp-btn dp-btn-ghost" onClick={() => setShowAnnotations(true)}>Schema</button>
           {workspaceId && (
-            <button className="dp-btn dp-btn-ghost" style={{ padding: "6px 14px" }} onClick={() => setShowMembers(true)}>Team</button>
+            <button className="dp-btn dp-btn-ghost" onClick={() => setShowMembers(true)}>Team</button>
           )}
-          <button className="dp-btn dp-btn-ghost" style={{ padding: "6px 14px" }} onClick={onHistory}>History</button>
+          <button className="dp-btn dp-btn-ghost" onClick={onHistory}>History</button>
           <button className="dp-btn dp-btn-link" onClick={onSignOut}>Sign out</button>
-        </div>
-      </div>
-
+        </>
+      )}
+    >
       <PackStudio open={showPacks} onClose={() => setShowPacks(false)} canEdit={!!canManage || !workspaceId} />
       <AnnotationStudio
         open={showAnnotations}
@@ -103,110 +101,71 @@ function ModeSelect({ onSelect, username, onHistory, onSignOut, workspaces, work
         onClose={() => setShowMembers(false)}
       />
 
-      <div style={ms.hero} className="fade-in">
-        <h1 style={ms.heroTitle}>What would you like to do?</h1>
-        <p style={ms.heroSub}>Choose your analysis type to get started</p>
-      </div>
+      <section className="dp-home-hero">
+        <div className="dp-home-copy fade-in">
+          <h1 className="dp-home-brand"><span>DataPilot</span></h1>
+          <p className="dp-home-headline">Ask sharper questions of your data.</p>
+          <p className="dp-home-sub">
+            Connect a warehouse, reuse certified metrics, and run analyses with human review at every critical step.
+          </p>
 
-      <div style={ms.cards} className="slide-up mode-cards">
-        <button
-          className="dp-card dp-card-interactive dp-card-general"
-          style={{ ...ms.card, ...ms.cardGeneral, border: undefined }}
-          onClick={() => onSelect("general")}
-        >
-          <div style={ms.cardIcon}>💡</div>
-          <div style={ms.cardTitle}>Explore & Understand</div>
-          <div style={ms.cardDesc}>Find patterns, trends, and insights in any dataset</div>
-          <ul style={ms.featureList}>
-            <li style={ms.feature}><span style={{ color: "#cba6f7" }}>✓</span> Descriptive statistics</li>
-            <li style={ms.feature}><span style={{ color: "#cba6f7" }}>✓</span> Correlation analysis</li>
-            <li style={ms.feature}><span style={{ color: "#cba6f7" }}>✓</span> Trend &amp; anomaly detection</li>
-            <li style={ms.feature}><span style={{ color: "#cba6f7" }}>✓</span> Driver &amp; segment analysis</li>
-          </ul>
-          <div style={ms.useCases}>Health data · SaaS metrics · Ops logs · Finance</div>
-          <div style={{ ...ms.cta, background: "#cba6f7", color: "#1e1e2e" }}>Start Exploring →</div>
-        </button>
-
-        {!showAbSub ? (
-          <button
-            className="dp-card dp-card-interactive dp-card-ab"
-            style={{ ...ms.card, ...ms.cardAB, border: undefined }}
-            onClick={() => setShowAbSub(true)}
-          >
-            <div style={ms.cardIcon}>🧪</div>
-            <div style={ms.cardTitle}>A/B Testing</div>
-            <div style={ms.cardDesc}>Design experiments or analyse results from running tests</div>
-            <ul style={ms.featureList}>
-              <li style={ms.feature}><span style={{ color: "#89b4fa" }}>✓</span> Sample size &amp; power calculation</li>
-              <li style={ms.feature}><span style={{ color: "#89b4fa" }}>✓</span> t-test, CUPED &amp; HTE</li>
-              <li style={ms.feature}><span style={{ color: "#89b4fa" }}>✓</span> Guardrails &amp; novelty check</li>
-              <li style={ms.feature}><span style={{ color: "#89b4fa" }}>✓</span> Segment sensitivity analysis</li>
-            </ul>
-            <div style={ms.useCases}>Product · Clinical trials · Marketing · Pricing</div>
-            <div style={{ ...ms.cta, background: "#89b4fa", color: "#1e1e2e" }}>Select →</div>
-          </button>
-        ) : (
-          <div className="dp-card dp-card-ab" style={{ ...ms.card, ...ms.cardAB, cursor: "default", border: undefined }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-            <button className="dp-btn dp-btn-link" style={ms.backSubBtn} onClick={() => setShowAbSub(false)}>← Back</button>
-              <span style={{ color: "#89b4fa", fontWeight: 700, fontSize: 15 }}>🧪 A/B Testing</span>
-            </div>
-            <p style={{ color: "#585b70", fontSize: 13, margin: "4px 0 16px" }}>Choose what you want to do:</p>
-
-            <button className="dp-sample-card" style={ms.subCard} onClick={() => onSelect("power_analysis")}>
-              <div style={{ fontSize: 20 }}>📐</div>
+          <div className="dp-home-actions slide-up">
+            <button className="dp-mode-action" onClick={() => onSelect("general")}>
               <div>
-                <div style={{ color: "#cdd6f4", fontWeight: 700, fontSize: 14 }}>Design Experiment</div>
-                <div style={{ color: "#585b70", fontSize: 12, marginTop: 2 }}>Sample size, runtime &amp; sensitivity table</div>
+                <strong>Explore & Understand</strong>
+                <span>Patterns, drivers, and anomalies across any dataset</span>
               </div>
-              <span style={{ color: "#89b4fa", marginLeft: "auto", fontSize: 16 }}>→</span>
+              <em>→</em>
             </button>
 
-            <button className="dp-sample-card" style={{ ...ms.subCard, marginTop: 8 }} onClick={() => onSelect("ab_test")}>
-              <div style={{ fontSize: 20 }}>📊</div>
-              <div>
-                <div style={{ color: "#cdd6f4", fontWeight: 700, fontSize: 14 }}>Interpret Results</div>
-                <div style={{ color: "#585b70", fontSize: 12, marginTop: 2 }}>Analyse a completed experiment end-to-end</div>
+            {!showAbSub ? (
+              <button className="dp-mode-action" onClick={() => setShowAbSub(true)}>
+                <div>
+                  <strong>A/B Testing</strong>
+                  <span>Design experiments or interpret completed tests</span>
+                </div>
+                <em>→</em>
+              </button>
+            ) : (
+              <div className="dp-home-subpanel rise-in">
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                  <strong style={{ fontSize: 13, color: "var(--dp-ink)" }}>Experiments</strong>
+                  <button className="dp-btn dp-btn-link" onClick={() => setShowAbSub(false)}>Back</button>
+                </div>
+                <button onClick={() => onSelect("power_analysis")}>
+                  <div>
+                    <strong>Design Experiment</strong>
+                    <small>Sample size, runtime, and sensitivity</small>
+                  </div>
+                  <em style={{ marginLeft: "auto", color: "var(--dp-accent)", fontStyle: "normal", fontWeight: 700 }}>→</em>
+                </button>
+                <button onClick={() => onSelect("ab_test")}>
+                  <div>
+                    <strong>Interpret Results</strong>
+                    <small>Full statistical readout for a finished test</small>
+                  </div>
+                  <em style={{ marginLeft: "auto", color: "var(--dp-accent)", fontStyle: "normal", fontWeight: 700 }}>→</em>
+                </button>
               </div>
-              <span style={{ color: "#89b4fa", marginLeft: "auto", fontSize: 16 }}>→</span>
-            </button>
+            )}
           </div>
-        )}
-      </div>
 
-      <p style={ms.footer}>Not sure? Start with Explore — DataPilot will figure out the right analysis.</p>
-    </div>
+          <p className="dp-home-footnote">Not sure where to start? Choose Explore — DataPilot will route the analysis.</p>
+        </div>
+
+        <div className="dp-home-visual" aria-hidden="true">
+          <div className="dp-home-chart">
+            <i /><i /><i /><i /><i /><i />
+          </div>
+          <div className="dp-home-visual-panel">
+            <h3>Warehouse-ready analyst</h3>
+            <p>Postgres, MySQL, BigQuery, or a CSV — with metric packs and schema annotations that travel with the team.</p>
+          </div>
+        </div>
+      </section>
+    </AppShell>
   );
 }
-
-const ms: Record<string, React.CSSProperties> = {
-  page:       { minHeight: "100vh", background: "#11111b", padding: "0 20px 60px", position: "relative", overflow: "hidden" },
-  orb1:       { position: "fixed", width: 600, height: 600, borderRadius: "50%", background: "radial-gradient(circle, #cba6f708 0%, transparent 70%)", top: -200, left: -200, pointerEvents: "none" },
-  orb2:       { position: "fixed", width: 500, height: 500, borderRadius: "50%", background: "radial-gradient(circle, #89b4fa08 0%, transparent 70%)", bottom: -150, right: -100, pointerEvents: "none" },
-  topBar:     { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 4px", maxWidth: 760, margin: "0 auto" },
-  logo:       { color: "#89b4fa", fontWeight: 700, fontSize: 18, letterSpacing: "-0.3px" },
-  username:   { color: "#45475a", fontSize: 13 },
-  wsSelect:   { background: "#1e1e2e", border: "1px solid #313244", color: "#a6adc8", padding: "5px 10px", borderRadius: 6, fontSize: 12, maxWidth: 160 },
-  navBtn:     { background: "transparent", border: "1px solid #313244", color: "#a6adc8", padding: "5px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12 },
-  signOutBtn: { background: "transparent", border: "none", color: "#45475a", fontSize: 12, cursor: "pointer" },
-  hero:       { textAlign: "center", padding: "48px 0 36px", maxWidth: 560, margin: "0 auto" },
-  heroTitle:  { color: "#cdd6f4", fontSize: 30, fontWeight: 700, marginBottom: 10, letterSpacing: "-0.5px" },
-  heroSub:    { color: "#585b70", fontSize: 15 },
-  cards:      { display: "flex", gap: 20, maxWidth: 760, margin: "0 auto", flexWrap: "wrap" as const, justifyContent: "center" },
-  card:       { flex: "1 1 320px", maxWidth: 360, background: "#1e1e2e", border: "1px solid #313244", borderRadius: 16, padding: "28px 28px 24px", cursor: "pointer", textAlign: "left" as const, transition: "transform 0.15s, border-color 0.15s, box-shadow 0.15s", display: "flex", flexDirection: "column" as const, gap: 12 },
-  cardGeneral:{ borderColor: "#cba6f733" },
-  cardAB:     { borderColor: "#89b4fa33" },
-  cardIcon:   { fontSize: 32 },
-  cardTitle:  { color: "#cdd6f4", fontSize: 20, fontWeight: 700 },
-  cardDesc:   { color: "#585b70", fontSize: 14, lineHeight: 1.5 },
-  featureList:{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column" as const, gap: 6 },
-  feature:    { color: "#a6adc8", fontSize: 13, display: "flex", alignItems: "center", gap: 8 },
-  useCases:   { color: "#45475a", fontSize: 11, borderTop: "1px solid #313244", paddingTop: 12, marginTop: 4 },
-  cta:        { borderRadius: 8, padding: "10px 0", fontWeight: 700, fontSize: 14, textAlign: "center" as const, marginTop: 4 },
-  footer:     { textAlign: "center", color: "#45475a", fontSize: 12, marginTop: 28, maxWidth: 500, margin: "28px auto 0" },
-  subCard:    { display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", background: "#181825", border: "1px solid #313244", borderRadius: 10, cursor: "pointer", textAlign: "left" as const, width: "100%", transition: "border-color 0.15s" },
-  backSubBtn: { background: "transparent", border: "none", color: "#45475a", fontSize: 12, cursor: "pointer", padding: 0 },
-};
 
 // ── TaskInput ──────────────────────────────────────────────────────────────────
 
@@ -354,17 +313,17 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
   };
 
   return (
-    <div style={s.page} className="fade-in">
-      <div style={s.header}>
-        <button className="dp-btn dp-btn-link" style={s.backBtn} onClick={onBack}>← Back</button>
-        <span style={{ ...s.modeBadge, borderColor: meta.accent + "44", color: meta.accent, background: meta.accent + "11" }}>
+    <div className="dp-workspace fade-in">
+      <div className="dp-workspace-header">
+        <button className="dp-btn dp-btn-link" onClick={onBack}>← Back</button>
+        <span className="dp-badge" style={{ color: meta.accent, borderColor: "transparent", background: "var(--dp-accent-soft)" }}>
           {meta.badge}
         </span>
       </div>
 
-      <div style={s.inputCard} className="dp-card slide-up">
-        <h2 style={s.heading}>{meta.heading}</h2>
-        <p style={s.sub}>{meta.sub}</p>
+      <div className="dp-panel slide-up">
+        <h2>{meta.heading}</h2>
+        <p>{meta.sub}</p>
 
         {samples.length > 0 && (
           <div style={s.samplesSection}>
@@ -374,12 +333,12 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
                 <button
                   key={s2.name}
                   className="dp-sample-card"
-                  style={{ ...s.sampleCard, ...(loadingSample === s2.name ? s.sampleLoading : {}), borderColor: meta.accent + "33" }}
+                  style={{ ...s.sampleCard, ...(loadingSample === s2.name ? s.sampleLoading : {}) }}
                   onClick={() => loadSample(s2)}
                   disabled={!!loadingSample}
                   type="button"
                 >
-                  <span style={s.sampleIcon}>{s2.icon}</span>
+                  <span style={s.sampleIcon}>{s2.icon.slice(0, 2)}</span>
                   <div>
                     <div style={s.sampleLabel}>{s2.label}</div>
                     <div style={s.sampleDomain}>{s2.domain}</div>
@@ -420,16 +379,16 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
               <button style={s.uploadBtn} onClick={() => fileRef.current?.click()} disabled={uploading || !!loadingSample}>
                 {uploading ? "⏳ Uploading…" : "📂 Choose file"}
               </button>
-              {uploadError && <p style={{ color: "#f38ba8", fontSize: 13, margin: 0 }}>{uploadError}</p>}
+              {uploadError && <p style={{ color: "var(--dp-danger)", fontSize: 13, margin: 0 }}>{uploadError}</p>}
               {uploadResult && (
                 <div style={s.uploadSuccess} className="fade-in">
-                  <span style={{ color: "#a6e3a1" }}>✓</span>
-                  {uploadFileName && <span style={{ color: "#89b4fa", fontSize: 12, fontFamily: "monospace" }}>{uploadFileName}</span>}
-                  <span style={{ color: "#585b70" }}>·</span>
-                  <span style={{ color: "#cdd6f4" }}>{uploadResult.row_count.toLocaleString()} rows</span>
-                  <span style={{ color: "#585b70" }}>·</span>
-                  <span style={{ color: "#a6adc8" }}>{uploadResult.columns.length} columns</span>
-                  <span style={{ color: "#585b70", fontSize: 12 }}>
+                  <span style={{ color: "var(--dp-success)" }}>✓</span>
+                  {uploadFileName && <span style={{ color: "var(--dp-accent)", fontSize: 12, fontFamily: "var(--dp-mono)" }}>{uploadFileName}</span>}
+                  <span style={{ color: "var(--dp-ink-muted)" }}>·</span>
+                  <span style={{ color: "var(--dp-ink)" }}>{uploadResult.row_count.toLocaleString()} rows</span>
+                  <span style={{ color: "var(--dp-ink-muted)" }}>·</span>
+                  <span style={{ color: "var(--dp-ink-secondary)" }}>{uploadResult.columns.length} columns</span>
+                  <span style={{ color: "var(--dp-ink-muted)", fontSize: 12 }}>
                     ({uploadResult.columns.slice(0, 5).join(", ")}{uploadResult.columns.length > 5 ? "…" : ""})
                   </span>
                 </div>
@@ -496,7 +455,7 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
                 >
                   {savingConn ? "Testing & saving…" : "Save connection"}
                 </button>
-                {connMsg && <span style={{ fontSize: 12, color: connMsg.includes("saved") ? "#a6e3a1" : "#f38ba8" }}>{connMsg}</span>}
+                {connMsg && <span style={{ fontSize: 12, color: connMsg.includes("saved") ? "var(--dp-success)" : "var(--dp-danger)" }}>{connMsg}</span>}
               </div>
             </div>
           )}
@@ -535,7 +494,7 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
                   autoComplete="off"
                   spellCheck={false}
                 />
-                <div style={{ fontSize: 11, color: "#6c7086", marginTop: 4 }}>
+                <div style={{ fontSize: 11, color: "var(--dp-ink-muted)", marginTop: 4 }}>
                   Paste a GCP service-account key (BigQuery Job User + Data Viewer). Prefer saving to the vault.
                 </div>
               </div>
@@ -549,7 +508,7 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
                 >
                   {savingConn ? "Testing & saving…" : "Save connection"}
                 </button>
-                {connMsg && <span style={{ fontSize: 12, color: connMsg.includes("saved") ? "#a6e3a1" : "#f38ba8" }}>{connMsg}</span>}
+                {connMsg && <span style={{ fontSize: 12, color: connMsg.includes("saved") ? "var(--dp-success)" : "var(--dp-danger)" }}>{connMsg}</span>}
               </div>
             </div>
           )}
@@ -593,12 +552,12 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
                     </option>
                   ))}
                 </select>
-                <p style={{ color: "#585b70", fontSize: 11, margin: "6px 0 0" }}>
+                <p style={{ color: "var(--dp-ink-muted)", fontSize: 11, margin: "6px 0 0" }}>
                   Certified packs skip the metric confirmation gate and constrain SQL to your definitions.
                 </p>
               </>
             ) : (
-              <p style={{ color: "#585b70", fontSize: 12, margin: "4px 0 0" }}>
+              <p style={{ color: "var(--dp-ink-muted)", fontSize: 12, margin: "4px 0 0" }}>
                 No packs yet — define your revenue/DAU mapping once so the team doesn’t re-confirm every run.
               </p>
             )}
@@ -616,14 +575,11 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
           initialConnectionId={connectionId}
         />
 
-        {startError && <div style={s.errorBox} className="fade-in">⚠ {startError}</div>}
+        {startError && <div style={s.errorBox} className="fade-in">{startError}</div>}
 
         <button
-          style={{ ...s.runBtn, background: mode === "general"
-            ? "linear-gradient(135deg, #cba6f7, #b4befe)"
-            : "linear-gradient(135deg, #89b4fa, #74c7ec)",
-            opacity: canSubmit ? 1 : 0.45,
-          }}
+          className="dp-btn dp-btn-primary"
+          style={{ ...s.runBtn, opacity: canSubmit ? 1 : 0.45 }}
           onClick={handleSubmit}
           disabled={!canSubmit}
         >
@@ -642,33 +598,28 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
 
 function GateBar({ task, mode, onStartOver }: { task: string; mode: string; onStartOver: () => void }) {
   const truncated = task.length > 90 ? task.slice(0, 90) + "…" : task;
-  const accent = mode === "general" ? "#cba6f7" : "#89b4fa";
-  const label  = mode === "general" ? "💡 Explore" : mode === "power_analysis" ? "📐 Design" : "🧪 A/B Test";
+  const label  = mode === "general" ? "Explore" : mode === "power_analysis" ? "Design" : "A/B Test";
   return (
     <div className="dp-gate-bar">
       <div style={gb.inner}>
-        <span style={{ ...gb.badge, color: accent, background: accent + "11", borderColor: accent + "33" }}>{label}</span>
-        <span style={gb.task} title={task}>"{truncated}"</span>
-        <button className="dp-btn dp-btn-ghost" style={{ ...gb.startOver, padding: "5px 12px" }} onClick={onStartOver}>✕ Start over</button>
+        <span className="dp-badge">{label}</span>
+        <span className="dp-gate-task" title={task}>"{truncated}"</span>
+        <button className="dp-btn dp-btn-ghost" onClick={onStartOver}>Start over</button>
       </div>
     </div>
   );
 }
 
 const gb: Record<string, React.CSSProperties> = {
-  bar:       { background: "#181825", borderBottom: "1px solid #313244", padding: "10px 20px" },
-  inner:     { maxWidth: 760, margin: "0 auto", display: "flex", alignItems: "center", gap: 12 },
-  badge:     { fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 20, border: "1px solid", flexShrink: 0 },
-  task:      { color: "#585b70", fontSize: 13, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const },
-  startOver: { background: "transparent", border: "1px solid #45475a", color: "#585b70", borderRadius: 6, padding: "4px 10px", fontSize: 12, cursor: "pointer", flexShrink: 0 },
+  inner: { width: "min(100%, 820px)", margin: "0 auto", display: "flex", alignItems: "center", gap: 12 },
 };
 
 // ── TrustBanner ────────────────────────────────────────────────────────────────
 
 const _TRUST_CONFIG = {
-  high:   { color: "#a6e3a1", bg: "#1a2820", border: "#a6e3a133", icon: "✓", label: "High confidence" },
-  medium: { color: "#f9e2af", bg: "#201e10", border: "#f9e2af33", icon: "⚠", label: "Medium confidence" },
-  low:    { color: "#f38ba8", bg: "#20101a", border: "#f38ba833", icon: "!", label: "Low confidence" },
+  high:   { color: "var(--dp-success)", bg: "var(--dp-success-soft)", border: "rgba(31,138,91,0.28)", icon: "✓", label: "High confidence" },
+  medium: { color: "var(--dp-warning)", bg: "var(--dp-warning-soft)", border: "rgba(161,98,7,0.28)", icon: "!", label: "Medium confidence" },
+  low:    { color: "var(--dp-danger)", bg: "var(--dp-danger-soft)", border: "rgba(194,59,74,0.28)", icon: "!", label: "Low confidence" },
 };
 
 function TrustBanner({ trust }: { trust: TrustIndicators }) {
@@ -678,10 +629,10 @@ function TrustBanner({ trust }: { trust: TrustIndicators }) {
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <span style={{ color: cfg.color, fontWeight: 700, fontSize: 15 }}>{cfg.icon}</span>
         <span style={{ color: cfg.color, fontWeight: 700, fontSize: 12, textTransform: "uppercase", letterSpacing: "0.06em" }}>{cfg.label}</span>
-        <span style={{ color: "#45475a", fontSize: 12 }}>·</span>
-        <span style={{ color: "#585b70", fontSize: 12 }}>{trust.n_data_points.toLocaleString()} data points</span>
+        <span style={{ color: "var(--dp-ink-faint)", fontSize: 12 }}>·</span>
+        <span style={{ color: "var(--dp-ink-muted)", fontSize: 12 }}>{trust.n_data_points.toLocaleString()} data points</span>
       </div>
-      <p style={{ color: "#a6adc8", fontSize: 12, margin: 0, lineHeight: 1.5 }}>{trust.confidence_reason}</p>
+      <p style={{ color: "var(--dp-ink-secondary)", fontSize: 12, margin: 0, lineHeight: 1.5 }}>{trust.confidence_reason}</p>
     </div>
   );
 }
@@ -743,11 +694,11 @@ function PowerAnalysisSummary({ pa }: { pa: PowerAnalysisResult }) {
                 const isTarget = row.mde_pct === pa.mde_target_pct;
                 return (
                   <tr key={row.mde_pct} style={isTarget ? pa_s.trHighlight : {}}>
-                    <td style={{ ...pa_s.td, color: isTarget ? "#89b4fa" : "#cdd6f4", fontWeight: isTarget ? 700 : 400 }}>
+                    <td style={{ ...pa_s.td, color: isTarget ? "var(--dp-accent)" : "var(--dp-ink)", fontWeight: isTarget ? 700 : 400 }}>
                       {row.mde_pct}%{isTarget ? " ◀" : ""}
                     </td>
-                    <td style={{ ...pa_s.td, color: isTarget ? "#89b4fa" : "#a6adc8" }}>{row.n_per_arm.toLocaleString()}</td>
-                    <td style={{ ...pa_s.td, color: isTarget ? "#89b4fa" : "#a6adc8" }}>{row.runtime_days}</td>
+                    <td style={{ ...pa_s.td, color: isTarget ? "var(--dp-accent)" : "var(--dp-ink-secondary)" }}>{row.n_per_arm.toLocaleString()}</td>
+                    <td style={{ ...pa_s.td, color: isTarget ? "var(--dp-accent)" : "var(--dp-ink-secondary)" }}>{row.runtime_days}</td>
                   </tr>
                 );
               })}
@@ -760,17 +711,17 @@ function PowerAnalysisSummary({ pa }: { pa: PowerAnalysisResult }) {
 }
 
 const pa_s: Record<string, React.CSSProperties> = {
-  card:        { background: "#181825", border: "1px solid #313244", borderRadius: 10, padding: "20px 24px", marginBottom: 16 },
+  card:        { background: "var(--dp-surface-2)", border: "1px solid var(--dp-line)", borderRadius: 10, padding: "20px 24px", marginBottom: 16 },
   headline:    { display: "flex", gap: 0, alignItems: "stretch" },
   stat:        { flex: 1, display: "flex", flexDirection: "column" as const, alignItems: "center", padding: "8px 0" },
-  statNum:     { color: "#89b4fa", fontSize: 26, fontWeight: 700, letterSpacing: "-0.5px" },
-  statLabel:   { color: "#585b70", fontSize: 11, marginTop: 4, textTransform: "uppercase" as const, letterSpacing: "0.06em" },
-  divider:     { width: 1, background: "#313244", margin: "4px 0" },
-  tableLabel:  { color: "#45475a", fontSize: 11, fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 10 },
+  statNum:     { color: "var(--dp-accent)", fontSize: 26, fontWeight: 700, letterSpacing: "-0.5px" },
+  statLabel:   { color: "var(--dp-ink-muted)", fontSize: 11, marginTop: 4, textTransform: "uppercase" as const, letterSpacing: "0.06em" },
+  divider:     { width: 1, background: "var(--dp-line)", margin: "4px 0" },
+  tableLabel:  { color: "var(--dp-ink-faint)", fontSize: 11, fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 10 },
   table:       { width: "100%", borderCollapse: "collapse" as const },
-  th:          { color: "#585b70", fontSize: 11, fontWeight: 600, textTransform: "uppercase" as const, padding: "6px 10px", textAlign: "left" as const, borderBottom: "1px solid #313244" },
-  td:          { padding: "8px 10px", fontSize: 13, borderBottom: "1px solid #1e1e2e" },
-  trHighlight: { background: "#89b4fa0a" },
+  th:          { color: "var(--dp-ink-muted)", fontSize: 11, fontWeight: 600, textTransform: "uppercase" as const, padding: "6px 10px", textAlign: "left" as const, borderBottom: "1px solid var(--dp-line)" },
+  td:          { padding: "8px 10px", fontSize: 13, borderBottom: "1px solid var(--dp-surface)" },
+  trHighlight: { background: "var(--dp-accent)0a" },
 };
 
 // ── FinishedView ───────────────────────────────────────────────────────────────
@@ -865,8 +816,8 @@ function FinishedView({ state, runId, steps, onNewAnalysis, onFollowUp }: {
       <div style={s.finInner}>
         <div style={s.finHeader}>
           <div style={s.finTitle}>
-            <span style={{ color: "#a6e3a1", fontSize: 20 }}>✓</span>
-            <h2 style={{ color: "#cdd6f4", margin: 0, fontSize: 20 }}>Analysis Complete</h2>
+            <span style={{ color: "var(--dp-success)", fontSize: 20 }}>✓</span>
+            <h2 style={{ color: "var(--dp-ink)", margin: 0, fontSize: 22, fontFamily: "var(--dp-display)", fontWeight: 750, letterSpacing: "-0.02em" }}>Analysis complete</h2>
           </div>
           <div style={s.finActions} className="fin-actions">
             {(hasDetails || hasCharts) && (
@@ -1068,8 +1019,8 @@ function CollapsedExchange({ exchange, onExpand }: { exchange: Exchange; onExpan
   return (
     <div style={s.collapsedExchange}>
       <div style={s.collapsedLeft}>
-        <span style={{ color: "#45475a", fontSize: 12 }}>Q:</span>
-        <span style={{ color: "#a6adc8", fontSize: 13 }}>{truncTask}</span>
+        <span style={{ color: "var(--dp-ink-faint)", fontSize: 12 }}>Q:</span>
+        <span style={{ color: "var(--dp-ink-secondary)", fontSize: 13 }}>{truncTask}</span>
       </div>
       {rec && <span style={s.collapsedRec}>{rec.length > 80 ? rec.slice(0, 80) + "…" : rec}</span>}
       <button style={s.expandBtn} onClick={onExpand}>Expand</button>
@@ -1188,12 +1139,12 @@ export default function Analysis() {
       <div style={s.center}>
         <div className="fade-in" style={{ textAlign: "center", maxWidth: 380 }}>
           <div style={{ fontSize: 32, marginBottom: 12 }}>{isConnectionLost ? "📡" : "⚠️"}</div>
-          <p style={{ color: "#f38ba8", marginBottom: 8, fontSize: 15, fontWeight: 600 }}>
+          <p style={{ color: "var(--dp-danger)", marginBottom: 8, fontSize: 15, fontWeight: 600 }}>
             {isConnectionLost ? "Connection lost" : "Something went wrong"}
           </p>
-          <p style={{ color: "#585b70", marginBottom: 20, fontSize: 13 }}>{runError}</p>
+          <p style={{ color: "var(--dp-ink-muted)", marginBottom: 20, fontSize: 13 }}>{runError}</p>
           <button
-            style={{ ...s.runBtn, background: "transparent", border: "1px solid #45475a", color: "#a6adc8", width: "auto", padding: "10px 24px" }}
+            style={{ ...s.runBtn, background: "transparent", border: "1px solid var(--dp-ink-faint)", color: "var(--dp-ink-secondary)", width: "auto", padding: "10px 24px" }}
             onClick={startOver}
           >
             Start Over
@@ -1292,92 +1243,92 @@ export default function Analysis() {
 // ── Styles ────────────────────────────────────────────────────────────────────
 
 const s: Record<string, React.CSSProperties> = {
-  page:       { minHeight: "100vh", background: "#11111b", padding: "0 20px 40px" },
+  page:       { minHeight: "100vh", background: "var(--dp-bg)", padding: "0 20px 40px" },
   center:     { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: "40px 20px" },
 
   header:     { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 0", maxWidth: 640, margin: "0 auto" },
-  backBtn:    { background: "transparent", border: "none", color: "#585b70", fontSize: 13, cursor: "pointer", padding: 0 },
+  backBtn:    { background: "transparent", border: "none", color: "var(--dp-ink-muted)", fontSize: 13, cursor: "pointer", padding: 0 },
   modeBadge:  { fontSize: 12, fontWeight: 600, padding: "4px 12px", borderRadius: 20, border: "1px solid" },
 
-  inputCard:  { background: "#1e1e2e", border: "1px solid #313244", borderRadius: 14, padding: "32px 32px 28px", maxWidth: 640, margin: "0 auto", boxShadow: "0 8px 40px #00000044" },
-  heading:    { color: "#cdd6f4", fontSize: 22, fontWeight: 700, marginBottom: 4 },
-  sub:        { color: "#585b70", fontSize: 13, marginBottom: 20 },
-  taskInput:  { width: "100%", background: "#181825", color: "#cdd6f4", border: "1px solid #313244", borderRadius: 8, padding: "12px 14px", fontSize: 14, resize: "vertical" as const, lineHeight: 1.6, marginBottom: 20, boxSizing: "border-box" as const },
+  inputCard:  { background: "var(--dp-surface)", border: "1px solid var(--dp-line)", borderRadius: 14, padding: "32px 32px 28px", maxWidth: 640, margin: "0 auto", boxShadow: "0 8px 40px rgba(11,31,42,0.06)" },
+  heading:    { color: "var(--dp-ink)", fontSize: 22, fontWeight: 700, marginBottom: 4 },
+  sub:        { color: "var(--dp-ink-muted)", fontSize: 13, marginBottom: 20 },
+  taskInput:  { width: "100%", background: "var(--dp-surface-2)", color: "var(--dp-ink)", border: "1px solid var(--dp-line)", borderRadius: 8, padding: "12px 14px", fontSize: 14, resize: "vertical" as const, lineHeight: 1.6, marginBottom: 20, boxSizing: "border-box" as const },
 
   samplesSection: { marginBottom: 20 },
   samplesGrid:    { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 8 },
-  sampleCard:     { display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", background: "#181825", border: "1px solid #313244", borderRadius: 8, cursor: "pointer", textAlign: "left" as const, transition: "border-color 0.15s", position: "relative" as const },
+  sampleCard:     { display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", background: "var(--dp-surface-2)", border: "1px solid var(--dp-line)", borderRadius: 8, cursor: "pointer", textAlign: "left" as const, transition: "border-color 0.15s", position: "relative" as const },
   sampleLoading:  { opacity: 0.6 },
   sampleIcon:     { fontSize: 18, flexShrink: 0 },
-  sampleLabel:    { color: "#cdd6f4", fontSize: 12, fontWeight: 600 },
-  sampleDomain:   { color: "#585b70", fontSize: 11, marginTop: 1 },
-  sampleSpinner:  { position: "absolute" as const, right: 10, width: 12, height: 12, border: "2px solid #45475a", borderTop: "2px solid #89b4fa", borderRadius: "50%", animation: "spin 0.7s linear infinite" },
+  sampleLabel:    { color: "var(--dp-ink)", fontSize: 12, fontWeight: 600 },
+  sampleDomain:   { color: "var(--dp-ink-muted)", fontSize: 11, marginTop: 1 },
+  sampleSpinner:  { position: "absolute" as const, right: 10, width: 12, height: 12, border: "2px solid var(--dp-ink-faint)", borderTop: "2px solid var(--dp-accent)", borderRadius: "50%", animation: "spin 0.7s linear infinite" },
 
   section:      { marginBottom: 20 },
-  sectionLabel: { color: "#a6adc8", fontSize: 11, fontWeight: 600, textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 8 },
+  sectionLabel: { color: "var(--dp-ink-secondary)", fontSize: 11, fontWeight: 600, textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 8 },
   sourceRow:    { display: "flex", gap: 20, marginBottom: 12 },
-  sourceOption: { display: "flex", alignItems: "center", gap: 6, color: "#a6adc8", fontSize: 13, cursor: "pointer" },
+  sourceOption: { display: "flex", alignItems: "center", gap: 6, color: "var(--dp-ink-secondary)", fontSize: 13, cursor: "pointer" },
   dbRow:        { display: "flex" },
-  select:       { padding: "9px 12px", background: "#181825", color: "#cdd6f4", border: "1px solid #313244", borderRadius: 8, fontSize: 13, cursor: "pointer" },
+  select:       { padding: "9px 12px", background: "var(--dp-surface-2)", color: "var(--dp-ink)", border: "1px solid var(--dp-line)", borderRadius: 8, fontSize: 13, cursor: "pointer" },
 
-  uploadBox:    { display: "flex", flexDirection: "column" as const, gap: 8, padding: 14, background: "#181825", borderRadius: 8, border: "1px dashed #45475a" },
-  uploadBtn:    { alignSelf: "flex-start", padding: "8px 16px", background: "#313244", color: "#cdd6f4", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13 },
+  uploadBox:    { display: "flex", flexDirection: "column" as const, gap: 8, padding: 14, background: "var(--dp-surface-2)", borderRadius: 8, border: "1px dashed var(--dp-ink-faint)" },
+  uploadBtn:    { alignSelf: "flex-start", padding: "8px 16px", background: "var(--dp-line)", color: "var(--dp-ink)", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13 },
   uploadSuccess: { display: "flex", gap: 8, alignItems: "center", fontSize: 13, flexWrap: "wrap" as const },
 
-  pgGrid:  { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 10, padding: 14, background: "#181825", borderRadius: 8, border: "1px solid #313244" },
+  pgGrid:  { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 10, padding: 14, background: "var(--dp-surface-2)", borderRadius: 8, border: "1px solid var(--dp-line)" },
   pgField: { display: "flex", flexDirection: "column" as const, gap: 4 },
-  pgLabel: { fontSize: 11, color: "#585b70", fontWeight: 600, textTransform: "uppercase" as const },
-  pgInput: { padding: "8px 10px", background: "#1e1e2e", color: "#cdd6f4", border: "1px solid #313244", borderRadius: 6, fontSize: 13 },
+  pgLabel: { fontSize: 11, color: "var(--dp-ink-muted)", fontWeight: 600, textTransform: "uppercase" as const },
+  pgInput: { padding: "8px 10px", background: "var(--dp-surface)", color: "var(--dp-ink)", border: "1px solid var(--dp-line)", borderRadius: 6, fontSize: 13 },
 
-  errorBox:   { background: "#f38ba811", border: "1px solid #f38ba844", color: "#f38ba8", borderRadius: 8, padding: "10px 14px", fontSize: 13, marginBottom: 14 },
-  runBtn:     { width: "100%", padding: "13px 0", color: "#1e1e2e", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 15, cursor: "pointer", marginTop: 4, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 },
-  btnSpinner: { width: 14, height: 14, border: "2px solid #1e1e2e44", borderTop: "2px solid #1e1e2e", borderRadius: "50%", animation: "spin 0.7s linear infinite", display: "inline-block", flexShrink: 0 },
+  errorBox:   { background: "var(--dp-danger)11", border: "1px solid var(--dp-danger)44", color: "var(--dp-danger)", borderRadius: 8, padding: "10px 14px", fontSize: 13, marginBottom: 14 },
+  runBtn:     { width: "100%", padding: "13px 0", color: "var(--dp-surface)", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 15, cursor: "pointer", marginTop: 4, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 },
+  btnSpinner: { width: 14, height: 14, border: "2px solid var(--dp-surface)44", borderTop: "2px solid var(--dp-surface)", borderRadius: "50%", animation: "spin 0.7s linear infinite", display: "inline-block", flexShrink: 0 },
 
-  gatePage:   { minHeight: "100vh", background: "#11111b", display: "flex", flexDirection: "column" as const },
+  gatePage:   { minHeight: "100vh", background: "var(--dp-bg)", display: "flex", flexDirection: "column" as const },
   gateScroll: { flex: 1, display: "flex", flexDirection: "column" as const },
   gateContent:{ padding: "36px 20px 60px", flex: 1 },
 
-  progressCard:      { background: "#1e1e2e", border: "1px solid #313244", borderRadius: 14, padding: "16px 24px", boxShadow: "0 8px 40px #00000044" },
-  processingBanner:  { display: "flex", alignItems: "center", gap: 10, color: "#a6adc8", fontSize: 13, padding: "10px 16px", background: "#181825", borderRadius: 8, marginBottom: 12, border: "1px solid #313244" },
-  processingDot:     { width: 8, height: 8, borderRadius: "50%", background: "#89b4fa", animation: "pulse 1.2s ease-in-out infinite", flexShrink: 0 },
+  progressCard:      { background: "var(--dp-surface)", border: "1px solid var(--dp-line)", borderRadius: 14, padding: "16px 24px", boxShadow: "0 8px 40px rgba(11,31,42,0.06)" },
+  processingBanner:  { display: "flex", alignItems: "center", gap: 10, color: "var(--dp-ink-secondary)", fontSize: 13, padding: "10px 16px", background: "var(--dp-surface-2)", borderRadius: 8, marginBottom: 12, border: "1px solid var(--dp-line)" },
+  processingDot:     { width: 8, height: 8, borderRadius: "50%", background: "var(--dp-accent)", animation: "pulse 1.2s ease-in-out infinite", flexShrink: 0 },
 
-  floatError: { position: "fixed", top: 20, left: "50%", transform: "translateX(-50%)", background: "#f38ba8", color: "#1e1e2e", padding: "10px 20px", borderRadius: 8, display: "flex", gap: 12, alignItems: "center", zIndex: 1000, fontSize: 14, boxShadow: "0 4px 20px #00000055", whiteSpace: "nowrap" as const },
-  dismissBtn: { background: "transparent", border: "none", color: "#1e1e2e", cursor: "pointer", fontWeight: 700, fontSize: 16, padding: 0 },
+  floatError: { position: "fixed", top: 20, left: "50%", transform: "translateX(-50%)", background: "var(--dp-danger)", color: "var(--dp-surface)", padding: "10px 20px", borderRadius: 8, display: "flex", gap: 12, alignItems: "center", zIndex: 1000, fontSize: 14, boxShadow: "0 4px 20px rgba(11,31,42,0.12)", whiteSpace: "nowrap" as const },
+  dismissBtn: { background: "transparent", border: "none", color: "var(--dp-surface)", cursor: "pointer", fontWeight: 700, fontSize: 16, padding: 0 },
 
-  finPage:    { minHeight: "100vh", background: "#11111b", padding: "32px 20px 60px" },
+  finPage:    { minHeight: "100vh", background: "var(--dp-bg)", padding: "32px 20px 60px" },
   finInner:   { maxWidth: 820, margin: "0 auto" },
   finHeader:  { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap" as const, gap: 12 },
   finTitle:   { display: "flex", alignItems: "center", gap: 10 },
   finActions: { display: "flex", gap: 8 },
-  btnSec:          { padding: "7px 16px", background: "#313244", color: "#cdd6f4", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13 },
-  btnPri:          { padding: "7px 16px", background: "#89b4fa", color: "#1e1e2e", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13, fontWeight: 600 },
-  btnDetails:      { padding: "7px 16px", background: "transparent", color: "#89b4fa", border: "1px solid #89b4fa44", borderRadius: 6, cursor: "pointer", fontSize: 13 },
-  btnDetailsActive:{ padding: "7px 16px", background: "#89b4fa1a", color: "#89b4fa", border: "1px solid #89b4fa66", borderRadius: 6, cursor: "pointer", fontSize: 13 },
+  btnSec:          { padding: "7px 16px", background: "var(--dp-line)", color: "var(--dp-ink)", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13 },
+  btnPri:          { padding: "7px 16px", background: "var(--dp-accent)", color: "var(--dp-surface)", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13, fontWeight: 600 },
+  btnDetails:      { padding: "7px 16px", background: "transparent", color: "var(--dp-accent)", border: "1px solid var(--dp-accent)44", borderRadius: 6, cursor: "pointer", fontSize: 13 },
+  btnDetailsActive:{ padding: "7px 16px", background: "var(--dp-accent)1a", color: "var(--dp-accent)", border: "1px solid var(--dp-accent)66", borderRadius: 6, cursor: "pointer", fontSize: 13 },
 
   trustBanner: { border: "1px solid", borderRadius: 10, padding: "12px 16px", marginBottom: 16, display: "flex", flexDirection: "column" as const, gap: 6 },
 
   chartsSection:      { marginBottom: 24, marginTop: 14 },
-  chartsSectionLabel: { color: "#45475a", fontSize: 11, fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.08em", marginBottom: 12 },
+  chartsSectionLabel: { color: "var(--dp-ink-faint)", fontSize: 11, fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.08em", marginBottom: 12 },
   chartsGrid:         { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 },
 
-  narrativeCard:  { background: "#1e1e2e", border: "1px solid #313244", borderRadius: 12, padding: "28px 32px", lineHeight: 1.7 },
-  btnBackToDeck:  { background: "transparent", border: "none", color: "#89b4fa", fontSize: 13, cursor: "pointer", padding: "0 0 12px", display: "block" },
+  narrativeCard:  { background: "var(--dp-surface)", border: "1px solid var(--dp-line)", borderRadius: 12, padding: "28px 32px", lineHeight: 1.7 },
+  btnBackToDeck:  { background: "transparent", border: "none", color: "var(--dp-accent)", fontSize: 13, cursor: "pointer", padding: "0 0 12px", display: "block" },
 
-  followUpBox:   { marginTop: 20, padding: "16px 20px", background: "#181825", border: "1px solid #313244", borderRadius: 10 },
-  followUpLabel: { color: "#585b70", fontSize: 11, fontWeight: 600, textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 10 },
+  followUpBox:   { marginTop: 20, padding: "16px 20px", background: "var(--dp-surface-2)", border: "1px solid var(--dp-line)", borderRadius: 10 },
+  followUpLabel: { color: "var(--dp-ink-muted)", fontSize: 11, fontWeight: 600, textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 10 },
   followUpRow:   { display: "flex", gap: 10, alignItems: "flex-end" },
-  followUpInput: { flex: 1, background: "#11111b", color: "#cdd6f4", border: "1px solid #313244", borderRadius: 8, padding: "10px 12px", fontSize: 13, resize: "none" as const, lineHeight: 1.5, fontFamily: "inherit" },
-  followUpBtn:   { padding: "10px 18px", background: "#89b4fa", color: "#1e1e2e", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 16, cursor: "pointer", flexShrink: 0, height: 42 },
+  followUpInput: { flex: 1, background: "var(--dp-bg)", color: "var(--dp-ink)", border: "1px solid var(--dp-line)", borderRadius: 8, padding: "10px 12px", fontSize: 13, resize: "none" as const, lineHeight: 1.5, fontFamily: "inherit" },
+  followUpBtn:   { padding: "10px 18px", background: "var(--dp-accent)", color: "var(--dp-surface)", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 16, cursor: "pointer", flexShrink: 0, height: 42 },
 
-  pastExchange:      { borderBottom: "1px solid #181825", padding: "12px 20px" },
+  pastExchange:      { borderBottom: "1px solid var(--dp-surface-2)", padding: "12px 20px" },
   currentExchange:   { flex: 1 },
   exchangeTaskRow:   { display: "flex", alignItems: "center", gap: 8 },
-  exchangeQLabel:    { color: "#45475a", fontSize: 12, flexShrink: 0 },
-  exchangeTask:      { color: "#a6adc8", fontSize: 13, flex: 1 },
-  collapseBtn:       { background: "transparent", border: "none", color: "#45475a", fontSize: 12, cursor: "pointer", flexShrink: 0 },
+  exchangeQLabel:    { color: "var(--dp-ink-faint)", fontSize: 12, flexShrink: 0 },
+  exchangeTask:      { color: "var(--dp-ink-secondary)", fontSize: 13, flex: 1 },
+  collapseBtn:       { background: "transparent", border: "none", color: "var(--dp-ink-faint)", fontSize: 12, cursor: "pointer", flexShrink: 0 },
 
   collapsedExchange: { display: "flex", alignItems: "center", gap: 12, padding: "10px 0" },
   collapsedLeft:     { display: "flex", gap: 6, alignItems: "center", flex: 1, minWidth: 0 },
-  collapsedRec:      { color: "#585b70", fontSize: 12, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const },
-  expandBtn:         { background: "transparent", border: "1px solid #313244", color: "#585b70", fontSize: 12, borderRadius: 6, padding: "3px 10px", cursor: "pointer", flexShrink: 0 },
+  collapsedRec:      { color: "var(--dp-ink-muted)", fontSize: 12, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const },
+  expandBtn:         { background: "transparent", border: "1px solid var(--dp-line)", color: "var(--dp-ink-muted)", fontSize: 12, borderRadius: 6, padding: "3px 10px", cursor: "pointer", flexShrink: 0 },
 };

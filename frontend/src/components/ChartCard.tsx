@@ -45,10 +45,10 @@ interface Props {
 
 // Very light tooltip styling that matches the dark theme
 const tooltipStyle = {
-  background: "#1e1e2e",
-  border: "1px solid #313244",
+  background: "var(--dp-surface)",
+  border: "1px solid var(--dp-line)",
   borderRadius: 6,
-  color: "#cdd6f4",
+  color: "var(--dp-ink)",
   fontSize: 12,
 };
 
@@ -78,24 +78,24 @@ export default function ChartCard({ spec }: Props) {
       return (
         <ResponsiveContainer width="100%" height={Math.max(180, data.length * 38)}>
           <BarChart data={data} layout="vertical" margin={{ left: 10, right: 30, top: 4, bottom: 4 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#313244" horizontal={false} />
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--dp-line)" horizontal={false} />
             <XAxis
               type="number"
               dataKey={x_key}
-              tick={{ fill: "#585b70", fontSize: 11 }}
-              axisLine={{ stroke: "#313244" }}
+              tick={{ fill: "var(--dp-ink-muted)", fontSize: 11 }}
+              axisLine={{ stroke: "var(--dp-line)" }}
               tickLine={false}
-              label={x_label ? { value: x_label, position: "insideBottom", offset: -2, fill: "#45475a", fontSize: 11 } : undefined}
+              label={x_label ? { value: x_label, position: "insideBottom", offset: -2, fill: "var(--dp-ink-faint)", fontSize: 11 } : undefined}
             />
             <YAxis
               type="category"
               dataKey={y_key}
               width={140}
-              tick={{ fill: "#a6adc8", fontSize: 11 }}
+              tick={{ fill: "var(--dp-ink-secondary)", fontSize: 11 }}
               axisLine={false}
               tickLine={false}
             />
-            <Tooltip contentStyle={tooltipStyle} cursor={{ fill: "#313244" }} />
+            <Tooltip contentStyle={tooltipStyle} cursor={{ fill: "var(--dp-line)" }} />
             <Bar dataKey={x_key} fill={color} radius={[0, 4, 4, 0]}>
               {hasErrorBar && (
                 <ErrorBar dataKey={error_bar_low!} width={4} strokeWidth={1.5} stroke={color} direction="x" />
@@ -111,22 +111,22 @@ export default function ChartCard({ spec }: Props) {
       return (
         <ResponsiveContainer width="100%" height={200}>
           <LineChart data={data} margin={{ left: 10, right: 16, top: 4, bottom: 4 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#313244" />
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--dp-line)" />
             <XAxis
               dataKey={x_key}
-              tick={{ fill: "#585b70", fontSize: 11 }}
-              axisLine={{ stroke: "#313244" }}
+              tick={{ fill: "var(--dp-ink-muted)", fontSize: 11 }}
+              axisLine={{ stroke: "var(--dp-line)" }}
               tickLine={false}
             />
             <YAxis
-              tick={{ fill: "#585b70", fontSize: 11 }}
+              tick={{ fill: "var(--dp-ink-muted)", fontSize: 11 }}
               axisLine={false}
               tickLine={false}
-              label={y_label ? { value: y_label, angle: -90, position: "insideLeft", fill: "#45475a", fontSize: 11 } : undefined}
+              label={y_label ? { value: y_label, angle: -90, position: "insideLeft", fill: "var(--dp-ink-faint)", fontSize: 11 } : undefined}
             />
             <Tooltip contentStyle={tooltipStyle} />
             <Line type="monotone" dataKey={y_key} stroke={color} strokeWidth={2} dot={{ r: 3, fill: color }} />
-            {y_key2 && <Line type="monotone" dataKey={y_key2} stroke={color2 ?? "#cba6f7"} strokeWidth={2} dot={{ r: 3, fill: color2 ?? "#cba6f7" }} />}
+            {y_key2 && <Line type="monotone" dataKey={y_key2} stroke={color2 ?? "var(--dp-info)"} strokeWidth={2} dot={{ r: 3, fill: color2 ?? "var(--dp-info)" }} />}
           </LineChart>
         </ResponsiveContainer>
       );
@@ -137,14 +137,14 @@ export default function ChartCard({ spec }: Props) {
       return (
         <ResponsiveContainer width="100%" height={200}>
           <ScatterChart margin={{ left: 10, right: 16, top: 4, bottom: 4 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#313244" />
-            <XAxis dataKey={x_key} tick={{ fill: "#585b70", fontSize: 11 }} axisLine={{ stroke: "#313244" }} tickLine={false}
-              label={x_label ? { value: x_label, position: "insideBottom", offset: -2, fill: "#45475a", fontSize: 11 } : undefined}
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--dp-line)" />
+            <XAxis dataKey={x_key} tick={{ fill: "var(--dp-ink-muted)", fontSize: 11 }} axisLine={{ stroke: "var(--dp-line)" }} tickLine={false}
+              label={x_label ? { value: x_label, position: "insideBottom", offset: -2, fill: "var(--dp-ink-faint)", fontSize: 11 } : undefined}
             />
-            <YAxis dataKey={y_key} tick={{ fill: "#585b70", fontSize: 11 }} axisLine={false} tickLine={false}
-              label={y_label ? { value: y_label, angle: -90, position: "insideLeft", fill: "#45475a", fontSize: 11 } : undefined}
+            <YAxis dataKey={y_key} tick={{ fill: "var(--dp-ink-muted)", fontSize: 11 }} axisLine={false} tickLine={false}
+              label={y_label ? { value: y_label, angle: -90, position: "insideLeft", fill: "var(--dp-ink-faint)", fontSize: 11 } : undefined}
             />
-            <Tooltip contentStyle={tooltipStyle} cursor={{ strokeDasharray: "3 3", stroke: "#45475a" }} />
+            <Tooltip contentStyle={tooltipStyle} cursor={{ strokeDasharray: "3 3", stroke: "var(--dp-ink-faint)" }} />
             <Scatter data={data} fill={color} />
           </ScatterChart>
         </ResponsiveContainer>
@@ -156,21 +156,21 @@ export default function ChartCard({ spec }: Props) {
     return (
       <ResponsiveContainer width="100%" height={200}>
         <BarChart data={data} margin={{ left: 10, right: 16, top: 4, bottom: 4 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#313244" vertical={false} />
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--dp-line)" vertical={false} />
           <XAxis
             dataKey={x_key}
-            tick={{ fill: "#585b70", fontSize: 11 }}
-            axisLine={{ stroke: "#313244" }}
+            tick={{ fill: "var(--dp-ink-muted)", fontSize: 11 }}
+            axisLine={{ stroke: "var(--dp-line)" }}
             tickLine={false}
           />
           <YAxis
-            tick={{ fill: "#585b70", fontSize: 11 }}
+            tick={{ fill: "var(--dp-ink-muted)", fontSize: 11 }}
             axisLine={false}
             tickLine={false}
-            label={y_label ? { value: y_label, angle: -90, position: "insideLeft", fill: "#45475a", fontSize: 10 } : undefined}
+            label={y_label ? { value: y_label, angle: -90, position: "insideLeft", fill: "var(--dp-ink-faint)", fontSize: 10 } : undefined}
           />
-          <Tooltip contentStyle={tooltipStyle} cursor={{ fill: "#313244" }} />
-          {isGrouped && <Legend wrapperStyle={{ fontSize: 11, color: "#a6adc8" }} />}
+          <Tooltip contentStyle={tooltipStyle} cursor={{ fill: "var(--dp-line)" }} />
+          {isGrouped && <Legend wrapperStyle={{ fontSize: 11, color: "var(--dp-ink-secondary)" }} />}
           <Bar dataKey={y_key} fill={color} radius={[4, 4, 0, 0]} maxBarSize={48}>
             {hasErrorBar && (
               <ErrorBar
@@ -181,11 +181,11 @@ export default function ChartCard({ spec }: Props) {
               />
             )}
             {!isGrouped && data.length <= 6 && (
-              <LabelList dataKey={y_key} position="top" style={{ fill: "#585b70", fontSize: 10 }} />
+              <LabelList dataKey={y_key} position="top" style={{ fill: "var(--dp-ink-muted)", fontSize: 10 }} />
             )}
           </Bar>
           {isGrouped && y_key2 && (
-            <Bar dataKey={y_key2} fill={color2 ?? "#cba6f7"} radius={[4, 4, 0, 0]} maxBarSize={48} />
+            <Bar dataKey={y_key2} fill={color2 ?? "var(--dp-info)"} radius={[4, 4, 0, 0]} maxBarSize={48} />
           )}
         </BarChart>
       </ResponsiveContainer>
@@ -202,8 +202,8 @@ export default function ChartCard({ spec }: Props) {
 }
 
 const css: Record<string, React.CSSProperties> = {
-  card:      { background: "#1e1e2e", border: "1px solid #313244", borderRadius: 12, padding: "18px 18px 14px", display: "flex", flexDirection: "column", gap: 10 },
-  title:     { color: "#cdd6f4", fontSize: 13, fontWeight: 700, margin: 0 },
+  card:      { background: "var(--dp-surface)", border: "1px solid var(--dp-line)", borderRadius: 12, padding: "18px 18px 14px", display: "flex", flexDirection: "column", gap: 10 },
+  title:     { color: "var(--dp-ink)", fontSize: 13, fontWeight: 700, margin: 0 },
   chartWrap: { width: "100%", overflow: "hidden" },
-  insight:   { color: "#a6adc8", fontSize: 12, lineHeight: 1.6, margin: 0, borderTop: "1px solid #313244", paddingTop: 10 },
+  insight:   { color: "var(--dp-ink-secondary)", fontSize: 12, lineHeight: 1.6, margin: 0, borderTop: "1px solid var(--dp-line)", paddingTop: 10 },
 };
