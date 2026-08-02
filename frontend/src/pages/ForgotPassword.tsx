@@ -4,6 +4,7 @@ import client from "../api/client";
 import AuthCard, { authShared } from "../components/AuthCard";
 import FormField from "../components/FormField";
 import Spinner from "../components/Spinner";
+import { IconAlert } from "../components/icons";
 import { extractApiError } from "../utils/error";
 
 export default function ForgotPassword() {
@@ -57,17 +58,17 @@ export default function ForgotPassword() {
 
             {error && (
               <div style={authShared.errorBox} className="fade-in">
-                <span>⚠</span> {error}
+                <IconAlert /> {error}
               </div>
             )}
 
             <button style={authShared.btn} type="submit" disabled={loading}>
-              {loading ? <><Spinner variant="button" /> Sending…</> : "Send reset link →"}
+              {loading ? <><Spinner variant="button" /> Sending…</> : "Send reset link"}
             </button>
           </form>
 
           <button style={authShared.linkBtn} onClick={() => navigate("/login")}>
-            ← Back to Sign In
+            Back to Sign In
           </button>
         </>
       )}

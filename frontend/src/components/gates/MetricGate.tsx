@@ -73,7 +73,7 @@ export default function MetricGate({ payload, onSubmit, submitting }: Props) {
       <p style={{ ...gateMessage, marginBottom: 8 }}>{payload.message}</p>
       <p style={s.meta}>
         Source: <strong>{payload.source === "pack" ? "Metric pack" : "Inferred from schema"}</strong>
-        {payload.metric_pack_id ? ` · pack ${payload.metric_pack_id.slice(0, 8)}…` : ""}
+        {payload.metric_pack_id ? ` (pack ${payload.metric_pack_id.slice(0, 8)})` : ""}
       </p>
 
       {(payload.schema_drift_warnings?.length ?? 0) > 0 && (
@@ -125,7 +125,7 @@ export default function MetricGate({ payload, onSubmit, submitting }: Props) {
           Re-check
         </button>
         <button style={gateBtnApprove} disabled={submitting} onClick={approve}>
-          {submitting ? "Submitting…" : "Confirm mapping →"}
+          {submitting ? "Submitting…" : "Confirm mapping"}
         </button>
       </div>
     </div>

@@ -38,7 +38,7 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
 export default function App() {
   return (
     <BrowserRouter>
-      <ErrorBoundary hint="Reload the page to continue — your data and run history are safe.">
+      <ErrorBoundary hint="Reload the page to continue. Your data and run history are safe.">
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/verify-email" element={<VerifyEmail />} />

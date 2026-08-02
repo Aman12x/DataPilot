@@ -120,7 +120,7 @@ export default function MembersPanel({ open, workspaceId, workspaceName, canMana
               <div key={m.user_id} style={s.row}>
                 <div>
                   <div style={s.name}>{m.username || m.email || m.user_id.slice(0, 8)}</div>
-                  <div style={s.meta}>{m.email} · {m.role}</div>
+                  <div style={s.meta}>{m.email} ({m.role})</div>
                 </div>
                 {canManage && (
                   <button className="dp-btn dp-btn-link" style={{ color: "var(--dp-danger)" }} onClick={() => remove(m.user_id)}>

@@ -273,7 +273,7 @@ export default function PackStudio({ open, onClose, onChanged, canEdit }: Props)
                 <span style={s.packName}>{p.name}</span>
                 <span style={s.packMeta}>
                   {p.certified ? "Certified" : "Draft"}
-                  {p.version ? ` · v${p.version}` : ""}
+                  {p.version ? ` (v${p.version})` : ""}
                 </span>
                 {editable && (
                   <span
@@ -289,7 +289,7 @@ export default function PackStudio({ open, onClose, onChanged, canEdit }: Props)
 
           <section style={s.formPane}>
             {!editable && (
-              <p style={s.muted}>You’re an analyst in this workspace — packs are read-only. Ask an owner to certify definitions.</p>
+              <p style={s.muted}>You are an analyst in this workspace, so packs are read-only. Ask an owner to certify definitions.</p>
             )}
             {editable && (
               <div style={s.templates}>

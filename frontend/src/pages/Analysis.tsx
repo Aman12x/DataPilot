@@ -19,11 +19,12 @@ import AnalysisGate from "../components/gates/AnalysisGate";
 import GeneralAnalysisGate from "../components/gates/GeneralAnalysisGate";
 import NarrativeGate from "../components/gates/NarrativeGate";
 import ErrorBoundary from "../components/ErrorBoundary";
+import { IconAlert, IconArrowLeft, IconCheck, IconChevronDown, IconChevronRight, IconChevronUp, IconClose, IconDownload } from "../components/icons";
 import {
   type Mode, type PgCreds, type BqCreds, type Sample, type SavedConnection,
   type MetricPackSummary, type RunOptions, MODE_META,
 } from "../types/analysis";
-import { stripMarkdown, sanitiseNarrative } from "../utils/markdown";
+import { stripMarkdown, sanitiseNarrative, normalizeTypography } from "../utils/markdown";
 import { extractApiError } from "../utils/error";
 import StakeholderDeck from "../components/StakeholderDeck";
 import PackStudio from "../components/PackStudio";
@@ -105,19 +106,19 @@ function ModeSelect({ onSelect, username, onHistory, onSignOut, workspaces, work
 
       <section className="dp-home-hero">
         <div className="dp-home-copy fade-in">
-          <h1 className="dp-home-brand"><span>DataPilot</span></h1>
-          <p className="dp-home-headline">Ask sharper questions of your data.</p>
+          <h1 className="dp-home-brand">What would you like to know?</h1>
           <p className="dp-home-sub">
-            Connect a warehouse, reuse certified metrics, and run analyses with human review at every critical step.
+            Connect a warehouse or upload a file, then run an analysis with
+            review at every critical step.
           </p>
 
-          <div className="dp-home-actions slide-up">
+          <div className="dp-home-actions">
             <button className="dp-mode-action" onClick={() => onSelect("general")}>
               <div>
                 <strong>Explore & Understand</strong>
                 <span>Patterns, drivers, and anomalies across any dataset</span>
               </div>
-              <em>→</em>
+              <em><IconChevronRight /></em>
             </button>
 
             {!showAbSub ? (
@@ -126,12 +127,12 @@ function ModeSelect({ onSelect, username, onHistory, onSignOut, workspaces, work
                   <strong>A/B Testing</strong>
                   <span>Design experiments or interpret completed tests</span>
                 </div>
-                <em>→</em>
+                <em><IconChevronRight /></em>
               </button>
             ) : (
-              <div className="dp-home-subpanel rise-in">
+              <div className="dp-home-subpanel fade-in">
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                  <strong style={{ fontSize: 13, color: "var(--dp-ink)" }}>Experiments</strong>
+                  <strong style={{ fontSize: 13, color: "var(--dp-ink)" }}>A/B Testing</strong>
                   <button className="dp-btn dp-btn-link" onClick={() => setShowAbSub(false)}>Back</button>
                 </div>
                 <button onClick={() => onSelect("power_analysis")}>
@@ -139,30 +140,20 @@ function ModeSelect({ onSelect, username, onHistory, onSignOut, workspaces, work
                     <strong>Design Experiment</strong>
                     <small>Sample size, runtime, and sensitivity</small>
                   </div>
-                  <em style={{ marginLeft: "auto", color: "var(--dp-accent)", fontStyle: "normal", fontWeight: 700 }}>→</em>
+                  <em style={{ marginLeft: "auto", color: "var(--dp-ink-faint)", fontStyle: "normal" }}><IconChevronRight /></em>
                 </button>
                 <button onClick={() => onSelect("ab_test")}>
                   <div>
                     <strong>Interpret Results</strong>
                     <small>Full statistical readout for a finished test</small>
                   </div>
-                  <em style={{ marginLeft: "auto", color: "var(--dp-accent)", fontStyle: "normal", fontWeight: 700 }}>→</em>
+                  <em style={{ marginLeft: "auto", color: "var(--dp-ink-faint)", fontStyle: "normal" }}><IconChevronRight /></em>
                 </button>
               </div>
             )}
           </div>
 
-          <p className="dp-home-footnote">Not sure where to start? Choose Explore — DataPilot will route the analysis.</p>
-        </div>
-
-        <div className="dp-home-visual" aria-hidden="true">
-          <div className="dp-home-chart">
-            <i /><i /><i /><i /><i /><i />
-          </div>
-          <div className="dp-home-visual-panel">
-            <h3>Warehouse-ready analyst</h3>
-            <p>Postgres, MySQL, BigQuery, or a CSV — with metric packs and schema annotations that travel with the team.</p>
-          </div>
+          <p className="dp-home-footnote">Not sure where to start? Choose Explore and DataPilot will route the analysis.</p>
         </div>
       </section>
     </AppShell>
@@ -317,7 +308,7 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
   return (
     <div className="dp-workspace fade-in">
       <div className="dp-workspace-header">
-        <button className="dp-btn dp-btn-link" onClick={onBack}>← Back</button>
+        <button className="dp-btn dp-btn-link" onClick={onBack} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><IconArrowLeft /> Back</button>
         <span className="dp-badge" style={{ color: meta.accent, borderColor: "transparent", background: "var(--dp-accent-soft)" }}>
           {meta.badge}
         </span>
@@ -340,7 +331,7 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
                   disabled={!!loadingSample}
                   type="button"
                 >
-                  <span style={s.sampleIcon}>{s2.icon.slice(0, 2)}</span>
+                  <span style={s.sampleIcon}>{(/^[A-Za-z0-9]/.test(s2.icon) ? s2.icon : s2.domain).slice(0, 2).toUpperCase()}</span>
                   <div>
                     <div style={s.sampleLabel}>{s2.label}</div>
                     <div style={s.sampleDomain}>{s2.domain}</div>
@@ -379,16 +370,16 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
             <div style={s.uploadBox}>
               <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls" style={{ display: "none" }} onChange={handleFileChange} />
               <button style={s.uploadBtn} onClick={() => fileRef.current?.click()} disabled={uploading || !!loadingSample}>
-                {uploading ? "⏳ Uploading…" : "📂 Choose file"}
+                {uploading ? "Uploading…" : "Choose file"}
               </button>
               {uploadError && <p style={{ color: "var(--dp-danger)", fontSize: 13, margin: 0 }}>{uploadError}</p>}
               {uploadResult && (
                 <div style={s.uploadSuccess} className="fade-in">
-                  <span style={{ color: "var(--dp-success)" }}>✓</span>
+                  <span style={{ color: "var(--dp-success)", display: "inline-flex" }}><IconCheck /></span>
                   {uploadFileName && <span style={{ color: "var(--dp-accent)", fontSize: 12, fontFamily: "var(--dp-mono)" }}>{uploadFileName}</span>}
-                  <span style={{ color: "var(--dp-ink-muted)" }}>·</span>
+                  <span style={{ color: "var(--dp-ink-faint)" }}>|</span>
                   <span style={{ color: "var(--dp-ink)" }}>{uploadResult.row_count.toLocaleString()} rows</span>
-                  <span style={{ color: "var(--dp-ink-muted)" }}>·</span>
+                  <span style={{ color: "var(--dp-ink-faint)" }}>|</span>
                   <span style={{ color: "var(--dp-ink-secondary)" }}>{uploadResult.columns.length} columns</span>
                   <span style={{ color: "var(--dp-ink-muted)", fontSize: 12 }}>
                     ({uploadResult.columns.slice(0, 5).join(", ")}{uploadResult.columns.length > 5 ? "…" : ""})
@@ -422,11 +413,11 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
                 <option value="bigquery">Google BigQuery</option>
                 {connections.map((c) => (
                   <option key={c.connection_id} value={`conn:${c.connection_id}`}>
-                    {c.name} · {c.backend}
+                    {c.name} ({c.backend})
                     {c.backend === "bigquery"
                       ? ` (${c.project_id || "?"}/${c.dbname})`
                       : ` (${c.host}/${c.dbname})`}
-                    {c.last_test_ok === false ? " — last test failed" : ""}
+                    {c.last_test_ok === false ? " (last test failed)" : ""}
                   </option>
                 ))}
               </select>
@@ -523,7 +514,7 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
                 style={{ fontSize: 12, padding: 0 }}
                 onClick={() => setShowAnnotations(true)}
               >
-                Annotate schema →
+                Annotate schema
               </button>
             </div>
           )}
@@ -537,7 +528,7 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
                 style={{ fontSize: 12, padding: 0 }}
                 onClick={() => setShowPacks(true)}
               >
-                {packs.length ? "Manage packs" : "Define metrics →"}
+                {packs.length ? "Manage packs" : "Define metrics"}
               </button>
             </div>
             {packs.length > 0 ? (
@@ -550,7 +541,7 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
                   <option value="">Infer from schema</option>
                   {packs.map((p) => (
                     <option key={p.pack_id} value={p.pack_id}>
-                      {p.name}{p.certified ? " ✓ certified" : ""}
+                      {p.name}{p.certified ? " (certified)" : ""}
                     </option>
                   ))}
                 </select>
@@ -560,7 +551,7 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
               </>
             ) : (
               <p style={{ color: "var(--dp-ink-muted)", fontSize: 12, margin: "4px 0 0" }}>
-                No packs yet — define your revenue/DAU mapping once so the team doesn’t re-confirm every run.
+                No packs yet. Define your revenue and DAU mapping once so the team does not re-confirm every run.
               </p>
             )}
           </div>
@@ -587,9 +578,9 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
         >
           {submitting
             ? <><span style={s.btnSpinner} /> Starting…</>
-            : mode === "general" ? "Explore Data →"
-            : mode === "power_analysis" ? "Calculate Sample Size →"
-            : "Run Analysis →"}
+            : mode === "general" ? "Explore Data"
+            : mode === "power_analysis" ? "Calculate Sample Size"
+            : "Run Analysis"}
         </button>
       </div>
     </div>
@@ -619,9 +610,9 @@ const gb: Record<string, React.CSSProperties> = {
 // ── TrustBanner ────────────────────────────────────────────────────────────────
 
 const _TRUST_CONFIG = {
-  high:   { color: "var(--dp-success)", bg: "var(--dp-success-soft)", border: "rgba(31,138,91,0.28)", icon: "✓", label: "High confidence" },
-  medium: { color: "var(--dp-warning)", bg: "var(--dp-warning-soft)", border: "rgba(161,98,7,0.28)", icon: "!", label: "Medium confidence" },
-  low:    { color: "var(--dp-danger)", bg: "var(--dp-danger-soft)", border: "rgba(194,59,74,0.28)", icon: "!", label: "Low confidence" },
+  high:   { color: "var(--dp-success)", bg: "var(--dp-success-soft)", border: "rgba(31,138,91,0.25)", high: true,  label: "High confidence" },
+  medium: { color: "var(--dp-warning)", bg: "var(--dp-warning-soft)", border: "rgba(154,103,0,0.25)", high: false, label: "Medium confidence" },
+  low:    { color: "var(--dp-danger)", bg: "var(--dp-danger-soft)", border: "rgba(194,59,74,0.25)", high: false, label: "Low confidence" },
 };
 
 function TrustBanner({ trust }: { trust: TrustIndicators }) {
@@ -629,12 +620,12 @@ function TrustBanner({ trust }: { trust: TrustIndicators }) {
   return (
     <div style={{ ...s.trustBanner, background: cfg.bg, borderColor: cfg.border }} className="slide-up">
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <span style={{ color: cfg.color, fontWeight: 700, fontSize: 15 }}>{cfg.icon}</span>
-        <span style={{ color: cfg.color, fontWeight: 700, fontSize: 12, textTransform: "uppercase", letterSpacing: "0.06em" }}>{cfg.label}</span>
-        <span style={{ color: "var(--dp-ink-faint)", fontSize: 12 }}>·</span>
+        <span style={{ color: cfg.color, fontSize: 14, display: "inline-flex" }}>{cfg.high ? <IconCheck /> : <IconAlert />}</span>
+        <span style={{ color: cfg.color, fontWeight: 600, fontSize: 12, textTransform: "uppercase", letterSpacing: "0.05em" }}>{cfg.label}</span>
+        <span style={{ color: "var(--dp-ink-faint)", fontSize: 12 }}>|</span>
         <span style={{ color: "var(--dp-ink-muted)", fontSize: 12 }}>{trust.n_data_points.toLocaleString()} data points</span>
       </div>
-      <p style={{ color: "var(--dp-ink-secondary)", fontSize: 12, margin: 0, lineHeight: 1.5 }}>{trust.confidence_reason}</p>
+      <p style={{ color: "var(--dp-ink-secondary)", fontSize: 12, margin: 0, lineHeight: 1.5 }}>{normalizeTypography(trust.confidence_reason)}</p>
     </div>
   );
 }
@@ -697,7 +688,7 @@ function PowerAnalysisSummary({ pa }: { pa: PowerAnalysisResult }) {
                 return (
                   <tr key={row.mde_pct} style={isTarget ? pa_s.trHighlight : {}}>
                     <td style={{ ...pa_s.td, color: isTarget ? "var(--dp-accent)" : "var(--dp-ink)", fontWeight: isTarget ? 700 : 400 }}>
-                      {row.mde_pct}%{isTarget ? " ◀" : ""}
+                      {row.mde_pct}%{isTarget ? " (target)" : ""}
                     </td>
                     <td style={{ ...pa_s.td, color: isTarget ? "var(--dp-accent)" : "var(--dp-ink-secondary)" }}>{row.n_per_arm.toLocaleString()}</td>
                     <td style={{ ...pa_s.td, color: isTarget ? "var(--dp-accent)" : "var(--dp-ink-secondary)" }}>{row.runtime_days}</td>
@@ -814,8 +805,8 @@ function FinishedView({ state, runId, steps, onNewAnalysis, onFollowUp }: {
       <div style={s.finInner}>
         <div style={s.finHeader}>
           <div style={s.finTitle}>
-            <span style={{ color: "var(--dp-success)", fontSize: 20 }}>✓</span>
-            <h2 style={{ color: "var(--dp-ink)", margin: 0, fontSize: 22, fontFamily: "var(--dp-display)", fontWeight: 750, letterSpacing: "-0.02em" }}>Analysis complete</h2>
+            <span style={{ color: "var(--dp-success)", fontSize: 18, display: "inline-flex" }}><IconCheck /></span>
+            <h2 style={{ color: "var(--dp-ink)", margin: 0, fontSize: 20, fontWeight: 600, letterSpacing: "-0.01em" }}>Analysis complete</h2>
           </div>
           <div style={s.finActions} className="fin-actions">
             {(hasDetails || hasCharts) && (
@@ -823,14 +814,14 @@ function FinishedView({ state, runId, steps, onNewAnalysis, onFollowUp }: {
                 style={showDetails ? s.btnDetailsActive : s.btnDetails}
                 onClick={() => setShowDetails(v => !v)}
               >
-                {showDetails ? "▲ Hide details" : "▼ Additional details"}
+                {showDetails ? <><IconChevronUp /> Hide details</> : <><IconChevronDown /> Additional details</>}
               </button>
             )}
             <button style={s.btnSec} onClick={copyText}>{copied ? "Copied!" : "Copy text"}</button>
-            <button style={s.btnSec} onClick={downloadPdf}>↓ PDF</button>
-            {hasCharts && <button style={s.btnSec} onClick={downloadCsv}>↓ CSV</button>}
+            <button style={s.btnSec} onClick={downloadPdf}><IconDownload /> Download PDF</button>
+            {hasCharts && <button style={s.btnSec} onClick={downloadCsv}><IconDownload /> Export CSV</button>}
             <button style={s.btnSec} onClick={() => navigate("/history")}>History</button>
-            <button style={s.btnPri} onClick={onNewAnalysis}>+ New Analysis</button>
+            <button style={s.btnPri} onClick={onNewAnalysis}>New Analysis</button>
           </div>
         </div>
 
@@ -849,7 +840,7 @@ function FinishedView({ state, runId, steps, onNewAnalysis, onFollowUp }: {
                 style={s.btnBackToDeck}
                 onClick={() => setShowFullReport(false)}
               >
-                ← Back to summary
+                Back to summary
               </button>
             )}
             <div style={s.narrativeCard} className="slide-up">
@@ -891,7 +882,7 @@ function FinishedView({ state, runId, steps, onNewAnalysis, onFollowUp }: {
               onClick={handleFollowUp}
               disabled={!followUp.trim() || submitting}
             >
-              {submitting ? "…" : "→"}
+              {submitting ? "…" : "Send"}
             </button>
           </div>
         </div>
@@ -958,8 +949,8 @@ function ActiveRun({
 
   const errBanner = submitError ? (
     <div style={s.floatError} className="fade-in">
-      ⚠ {submitError}
-      <button style={s.dismissBtn} onClick={() => setSubmitError("")}>✕</button>
+      <IconAlert /> {submitError}
+      <button style={s.dismissBtn} onClick={() => setSubmitError("")} aria-label="Dismiss"><IconClose /></button>
     </div>
   ) : null;
 
@@ -974,7 +965,7 @@ function ActiveRun({
       <div style={s.gateContent}>
         <ErrorBoundary
           resetKey={gate?.gate}
-          hint="The analysis is still paused at this gate — reload the page to show it again."
+          hint="The analysis is still paused at this gate. Reload the page to show it again."
         >
           {el}
         </ErrorBoundary>
@@ -1143,7 +1134,7 @@ export default function Analysis() {
     return (
       <div style={s.center}>
         <div className="fade-in" style={{ textAlign: "center", maxWidth: 380 }}>
-          <div style={{ fontSize: 32, marginBottom: 12 }}>{isConnectionLost ? "📡" : "⚠️"}</div>
+          <div style={{ fontSize: 28, marginBottom: 12, color: "var(--dp-danger)" }}><IconAlert /></div>
           <p style={{ color: "var(--dp-danger)", marginBottom: 8, fontSize: 15, fontWeight: 600 }}>
             {isConnectionLost ? "Connection lost" : "Something went wrong"}
           </p>
@@ -1264,7 +1255,7 @@ const s: Record<string, React.CSSProperties> = {
   samplesGrid:    { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 8 },
   sampleCard:     { display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", background: "var(--dp-surface-2)", border: "1px solid var(--dp-line)", borderRadius: 8, cursor: "pointer", textAlign: "left" as const, transition: "border-color 0.15s", position: "relative" as const },
   sampleLoading:  { opacity: 0.6 },
-  sampleIcon:     { fontSize: 18, flexShrink: 0 },
+  sampleIcon:     { width: 30, height: 30, borderRadius: 4, background: "var(--dp-accent-soft)", color: "var(--dp-accent)", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 600, letterSpacing: "0.02em", flexShrink: 0 },
   sampleLabel:    { color: "var(--dp-ink)", fontSize: 12, fontWeight: 600 },
   sampleDomain:   { color: "var(--dp-ink-muted)", fontSize: 11, marginTop: 1 },
   sampleSpinner:  { position: "absolute" as const, right: 10, width: 12, height: 12, border: "2px solid var(--dp-ink-faint)", borderTop: "2px solid var(--dp-accent)", borderRadius: "50%", animation: "spin 0.7s linear infinite" },
@@ -1305,10 +1296,10 @@ const s: Record<string, React.CSSProperties> = {
   finHeader:  { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap" as const, gap: 12 },
   finTitle:   { display: "flex", alignItems: "center", gap: 10 },
   finActions: { display: "flex", gap: 8 },
-  btnSec:          { padding: "7px 16px", background: "var(--dp-line)", color: "var(--dp-ink)", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13 },
-  btnPri:          { padding: "7px 16px", background: "var(--dp-accent)", color: "var(--dp-surface)", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13, fontWeight: 600 },
-  btnDetails:      { padding: "7px 16px", background: "transparent", color: "var(--dp-accent)", border: "1px solid var(--dp-accent)44", borderRadius: 6, cursor: "pointer", fontSize: 13 },
-  btnDetailsActive:{ padding: "7px 16px", background: "var(--dp-accent)1a", color: "var(--dp-accent)", border: "1px solid var(--dp-accent)66", borderRadius: 6, cursor: "pointer", fontSize: 13 },
+  btnSec:          { padding: "7px 14px", background: "var(--dp-surface)", color: "var(--dp-ink)", border: "1px solid var(--dp-line-strong)", borderRadius: 6, cursor: "pointer", fontSize: 13, display: "inline-flex", alignItems: "center", gap: 6 },
+  btnPri:          { padding: "7px 14px", background: "var(--dp-accent)", color: "#FFFFFF", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13, fontWeight: 600 },
+  btnDetails:      { padding: "7px 14px", background: "transparent", color: "var(--dp-accent)", border: "1px solid var(--dp-accent)44", borderRadius: 6, cursor: "pointer", fontSize: 13, display: "inline-flex", alignItems: "center", gap: 6 },
+  btnDetailsActive:{ padding: "7px 14px", background: "var(--dp-accent-soft)", color: "var(--dp-accent)", border: "1px solid var(--dp-accent)66", borderRadius: 6, cursor: "pointer", fontSize: 13, display: "inline-flex", alignItems: "center", gap: 6 },
 
   trustBanner: { border: "1px solid", borderRadius: 10, padding: "12px 16px", marginBottom: 16, display: "flex", flexDirection: "column" as const, gap: 6 },
 
@@ -1316,14 +1307,14 @@ const s: Record<string, React.CSSProperties> = {
   chartsSectionLabel: { color: "var(--dp-ink-faint)", fontSize: 11, fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.08em", marginBottom: 12 },
   chartsGrid:         { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 },
 
-  narrativeCard:  { background: "var(--dp-surface)", border: "1px solid var(--dp-line)", borderRadius: 12, padding: "28px 32px", lineHeight: 1.7 },
+  narrativeCard:  { background: "var(--dp-surface)", border: "1px solid var(--dp-line)", borderRadius: 8, padding: "28px 32px", lineHeight: 1.7 },
   btnBackToDeck:  { background: "transparent", border: "none", color: "var(--dp-accent)", fontSize: 13, cursor: "pointer", padding: "0 0 12px", display: "block" },
 
   followUpBox:   { marginTop: 20, padding: "16px 20px", background: "var(--dp-surface-2)", border: "1px solid var(--dp-line)", borderRadius: 10 },
   followUpLabel: { color: "var(--dp-ink-muted)", fontSize: 11, fontWeight: 600, textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 10 },
   followUpRow:   { display: "flex", gap: 10, alignItems: "flex-end" },
   followUpInput: { flex: 1, background: "var(--dp-bg)", color: "var(--dp-ink)", border: "1px solid var(--dp-line)", borderRadius: 8, padding: "10px 12px", fontSize: 13, resize: "none" as const, lineHeight: 1.5, fontFamily: "inherit" },
-  followUpBtn:   { padding: "10px 18px", background: "var(--dp-accent)", color: "var(--dp-surface)", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 16, cursor: "pointer", flexShrink: 0, height: 42 },
+  followUpBtn:   { padding: "10px 18px", background: "var(--dp-accent)", color: "#FFFFFF", border: "none", borderRadius: 6, fontWeight: 600, fontSize: 13, cursor: "pointer", flexShrink: 0, height: 42 },
 
   pastExchange:      { borderBottom: "1px solid var(--dp-surface-2)", padding: "12px 20px" },
   currentExchange:   { flex: 1 },

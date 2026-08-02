@@ -1,31 +1,32 @@
 /**
- * PipelineProgress — animated step indicator shown while a run is active.
+ * PipelineProgress — step indicator shown while a run is active.
  *
  * Steps visible to the user mirror the graph nodes that produce meaningful
- * output.  The current step pulses; completed steps show a tick; pending
- * steps are dimmed.
+ * output. The current step is highlighted; completed steps show a check;
+ * pending steps are dimmed.
  */
+
+import { IconCheck } from "./icons";
 
 interface Step {
   id: string;
   label: string;
-  icon: string;
 }
 
 const AB_STEPS: Step[] = [
-  { id: "schema",    label: "Load schema",    icon: "🗄️" },
-  { id: "sql",       label: "Generate SQL",   icon: "✏️" },
-  { id: "query",     label: "Execute query",  icon: "⚡" },
-  { id: "stats",     label: "Run statistics", icon: "📊" },
-  { id: "narrative", label: "Write narrative",icon: "📝" },
+  { id: "schema",    label: "Load schema" },
+  { id: "sql",       label: "Generate SQL" },
+  { id: "query",     label: "Execute query" },
+  { id: "stats",     label: "Run statistics" },
+  { id: "narrative", label: "Write narrative" },
 ];
 
 const GENERAL_STEPS: Step[] = [
-  { id: "schema",      label: "Load schema",    icon: "🗄️" },
-  { id: "sql",         label: "Generate SQL",   icon: "✏️" },
-  { id: "query",       label: "Execute query",  icon: "⚡" },
-  { id: "describe",    label: "Describe data",  icon: "🔍" },
-  { id: "narrative",   label: "Write insights", icon: "💡" },
+  { id: "schema",    label: "Load schema" },
+  { id: "sql",       label: "Generate SQL" },
+  { id: "query",     label: "Execute query" },
+  { id: "describe",  label: "Describe data" },
+  { id: "narrative", label: "Write insights" },
 ];
 
 /** Map gate name → the step that is currently interrupting. */
@@ -61,7 +62,7 @@ export default function PipelineProgress({ gate, lastGate, analysisMode, done }:
           <span style={{ color: "var(--dp-ink-secondary)", fontSize: 14 }}>Detecting analysis type…</span>
         </div>
         <p style={s.status}>
-          <span style={s.dot} /> Starting up — this may take a moment
+          <span style={s.dot} /> Starting up. This may take a moment.
         </p>
       </div>
     );
@@ -84,11 +85,9 @@ export default function PipelineProgress({ gate, lastGate, analysisMode, done }:
         {steps.map((step, i) => {
           const isComplete = done || i < current;
           const isActive   = !done && i === current;
-          const isPending  = !isComplete && !isActive;
 
           return (
             <div key={step.id} style={s.stepRow}>
-              {/* Connector line */}
               {i > 0 && (
                 <div style={{
                   ...s.connector,
@@ -96,30 +95,26 @@ export default function PipelineProgress({ gate, lastGate, analysisMode, done }:
                 }} />
               )}
 
-              {/* Node */}
               <div style={{
                 ...s.node,
-                ...(isComplete ? s.nodeComplete : {}),
-                ...(isActive   ? s.nodeActive   : {}),
-                ...(isPending  ? s.nodePending  : {}),
+                ...(isComplete ? s.nodeComplete : isActive ? s.nodeActive : s.nodePending),
               }}>
-                {isComplete ? "✓" : step.icon}
+                {isComplete ? <IconCheck size={13} /> : i + 1}
               </div>
 
-              {/* Label */}
               <div style={{
                 ...s.label,
-                color: isComplete ? "var(--dp-success)"
+                color: isComplete ? "var(--dp-ink-secondary)"
                      : isActive   ? "var(--dp-ink)"
-                     : "var(--dp-ink-muted)",
+                     : "var(--dp-ink-faint)",
                 fontWeight: isActive ? 600 : 400,
               }}>
                 {step.label}
                 {isActive && !running && (
-                  <span style={s.waitBadge}>waiting for you</span>
+                  <span style={s.waitBadge}>Waiting for review</span>
                 )}
                 {isActive && running && (
-                  <span style={s.runBadge}>processing…</span>
+                  <span style={s.runBadge}>In progress</span>
                 )}
               </div>
             </div>
@@ -127,30 +122,33 @@ export default function PipelineProgress({ gate, lastGate, analysisMode, done }:
         })}
       </div>
 
-      {/* Bottom status text */}
       {running && (
         <p style={s.status}>
-          <span style={s.dot} /> Analysis in progress — this may take a minute
+          <span style={s.dot} /> Analysis in progress. This may take a minute.
         </p>
       )}
-      {done && <p style={{ ...s.status, color: "var(--dp-success)" }}>✓ Analysis complete</p>}
+      {done && (
+        <p style={{ ...s.status, color: "var(--dp-success)" }}>
+          <IconCheck /> Analysis complete
+        </p>
+      )}
     </div>
   );
 }
 
 const s: Record<string, React.CSSProperties> = {
-  wrapper:      { padding: "32px 24px", maxWidth: 400, margin: "0 auto" },
+  wrapper:      { padding: "28px 24px", maxWidth: 400, margin: "0 auto" },
   track:        { display: "flex", flexDirection: "column", gap: 0 },
-  stepRow:      { display: "flex", alignItems: "center", gap: 14, position: "relative", paddingBottom: 4 },
-  connector:    { position: "absolute", left: 17, top: -20, width: 2, height: 24, borderRadius: 1 },
-  node:         { width: 36, height: 36, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0, transition: "all 0.3s" },
-  nodeComplete: { background: "#1a3a2a", border: "2px solid var(--dp-success)", color: "var(--dp-success)", fontSize: 14 },
-  nodeActive:   { background: "var(--dp-accent-soft)", border: "2px solid var(--dp-accent)", color: "var(--dp-accent)", boxShadow: "0 0 0 3px rgba(14,124,107,0.15)" },
-  nodePending:  { background: "var(--dp-surface-2)", border: "2px solid var(--dp-line)", color: "var(--dp-ink-faint)" },
-  label:        { fontSize: 14, transition: "color 0.3s", display: "flex", alignItems: "center", gap: 8 },
-  waitBadge:    { fontSize: 10, background: "var(--dp-accent)22", color: "var(--dp-accent)", padding: "2px 7px", borderRadius: 6, animation: "pulse 2s infinite" },
-  runBadge:     { fontSize: 10, background: "var(--dp-warning)22", color: "var(--dp-warning)", padding: "2px 7px", borderRadius: 6, animation: "pulse 1.2s infinite" },
-  status:       { marginTop: 24, color: "var(--dp-ink-secondary)", fontSize: 13, display: "flex", alignItems: "center", gap: 8 },
-  dot:          { display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: "var(--dp-warning)", animation: "pulse 1.2s ease-in-out infinite" },
+  stepRow:      { display: "flex", alignItems: "center", gap: 14, position: "relative", paddingBottom: 6 },
+  connector:    { position: "absolute", left: 13, top: -18, width: 2, height: 20 },
+  node:         { width: 28, height: 28, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 600, flexShrink: 0, transition: "all 0.2s", fontVariantNumeric: "tabular-nums" },
+  nodeComplete: { background: "var(--dp-accent)", border: "1px solid var(--dp-accent)", color: "#FFFFFF" },
+  nodeActive:   { background: "var(--dp-surface)", border: "2px solid var(--dp-accent)", color: "var(--dp-accent)" },
+  nodePending:  { background: "var(--dp-surface)", border: "1px solid var(--dp-line-strong)", color: "var(--dp-ink-faint)" },
+  label:        { fontSize: 14, transition: "color 0.2s", display: "flex", alignItems: "center", gap: 8 },
+  waitBadge:    { fontSize: 11, background: "var(--dp-accent-soft)", color: "var(--dp-accent)", padding: "2px 8px", borderRadius: 4, fontWeight: 500 },
+  runBadge:     { fontSize: 11, background: "var(--dp-surface-2)", color: "var(--dp-ink-muted)", padding: "2px 8px", borderRadius: 4, fontWeight: 500, animation: "pulse 1.6s infinite" },
+  status:       { marginTop: 22, color: "var(--dp-ink-secondary)", fontSize: 13, display: "flex", alignItems: "center", gap: 8 },
+  dot:          { display: "inline-block", width: 7, height: 7, borderRadius: "50%", background: "var(--dp-accent)", animation: "pulse 1.4s ease-in-out infinite" },
   detectRow:    { display: "flex", alignItems: "center", gap: 10, padding: "12px 0" },
 };

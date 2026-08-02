@@ -3,7 +3,7 @@ import type React from "react";
 export const gateCard: React.CSSProperties = {
   background: "var(--dp-surface)",
   border: "1px solid var(--dp-line)",
-  borderRadius: 16,
+  borderRadius: 10,
   padding: "28px 32px",
   margin: "0 auto",
   boxShadow: "var(--dp-shadow)",
@@ -13,10 +13,9 @@ export const gateCard: React.CSSProperties = {
 export const gateTitle: React.CSSProperties = {
   color: "var(--dp-ink)",
   marginTop: 0,
-  fontSize: 20,
-  fontWeight: 750,
-  letterSpacing: "-0.02em",
-  fontFamily: "var(--dp-display)",
+  fontSize: 18,
+  fontWeight: 600,
+  letterSpacing: "-0.01em",
 };
 
 export const gateMessage: React.CSSProperties = {
@@ -30,7 +29,7 @@ export const gateTextarea: React.CSSProperties = {
   background: "var(--dp-surface)",
   color: "var(--dp-ink)",
   border: "1px solid var(--dp-line)",
-  borderRadius: 10,
+  borderRadius: 6,
   padding: "11px 14px",
   fontSize: 14,
   fontFamily: "inherit",
@@ -44,22 +43,22 @@ export const gateActions: React.CSSProperties = {
 };
 
 export const gateBtnApprove: React.CSSProperties = {
-  padding: "11px 24px",
+  padding: "10px 22px",
   background: "var(--dp-accent)",
   color: "var(--dp-accent-ink)",
   border: "none",
-  borderRadius: 10,
+  borderRadius: 6,
   cursor: "pointer",
-  fontWeight: 700,
+  fontWeight: 600,
   fontSize: 14,
 };
 
 export const gateBtnSecondary: React.CSSProperties = {
-  padding: "11px 24px",
+  padding: "10px 22px",
   background: "transparent",
   color: "var(--dp-ink-secondary)",
-  border: "1px solid var(--dp-line)",
-  borderRadius: 10,
+  border: "1px solid var(--dp-line-strong)",
+  borderRadius: 6,
   cursor: "pointer",
   fontSize: 14,
   fontWeight: 500,

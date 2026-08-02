@@ -3,9 +3,9 @@ import { BrandMark } from "./AppShell";
 export const authShared: Record<string, React.CSSProperties> = {
   errorBox: {
     background: "var(--dp-danger-soft)",
-    border: "1px solid rgba(194, 59, 74, 0.28)",
+    border: "1px solid rgba(194, 59, 74, 0.25)",
     color: "var(--dp-danger)",
-    borderRadius: 10,
+    borderRadius: 6,
     padding: "10px 14px",
     fontSize: 13,
     display: "flex",
@@ -13,13 +13,13 @@ export const authShared: Record<string, React.CSSProperties> = {
     gap: 8,
   },
   btn: {
-    padding: "12px 0",
+    padding: "11px 0",
     background: "var(--dp-accent)",
     color: "var(--dp-accent-ink)",
     border: "none",
-    borderRadius: 10,
-    fontWeight: 700,
-    fontSize: 15,
+    borderRadius: 6,
+    fontWeight: 600,
+    fontSize: 14,
     cursor: "pointer",
     display: "flex",
     alignItems: "center",
@@ -44,17 +44,22 @@ export default function AuthCard({ children, tagline }: { children: React.ReactN
   return (
     <div className="dp-auth-page">
       <aside className="dp-auth-aside">
+        <BrandMark size="lg" />
         <div className="dp-auth-aside-inner">
-          <BrandMark size="lg" />
-          <h1>Decisions from your warehouse — with humans in the loop.</h1>
+          <h1>Analysis your team can stand behind.</h1>
           <p>
-            Connect data, define metrics once, and let DataPilot run the analysis
-            while you approve the SQL and the story.
+            DataPilot runs the statistics and writes the report. You review the
+            SQL, the method, and the story before anything ships.
           </p>
+          <ul className="dp-auth-points">
+            <li>Connect Postgres, MySQL, BigQuery, or a CSV</li>
+            <li>Certified metric definitions shared across the team</li>
+            <li>Every analysis is reviewed and reproducible</li>
+          </ul>
         </div>
       </aside>
       <div className="dp-auth-main">
-        <div className="dp-auth-card slide-up">
+        <div className="dp-auth-card fade-in">
           <div style={{ marginBottom: 8 }}>
             <BrandMark />
           </div>

@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import client from "../api/client";
 import AuthCard, { authShared } from "../components/AuthCard";
 import Spinner from "../components/Spinner";
+import { IconAlert, IconCheck } from "../components/icons";
 import { extractApiError } from "../utils/error";
 
 export default function VerifyEmail() {
@@ -47,7 +48,7 @@ export default function VerifyEmail() {
       )}
       {status === "ok" && (
         <div style={s.success} className="fade-in">
-          <div style={s.icon}>✓</div>
+          <div style={s.icon}><IconCheck /></div>
           <p style={s.title}>Email verified</p>
           <p style={s.text}>Redirecting you to DataPilot…</p>
         </div>
@@ -55,7 +56,7 @@ export default function VerifyEmail() {
       {status === "error" && (
         <div className="fade-in">
           <div style={authShared.errorBox} role="alert" aria-live="polite">
-            <span>⚠</span> {error}
+            <IconAlert /> {error}
           </div>
           <button style={authShared.btn} type="button" onClick={() => navigate("/login")}>
             Back to Sign In
@@ -69,7 +70,7 @@ export default function VerifyEmail() {
 const s: Record<string, React.CSSProperties> = {
   center:  { display: "flex", flexDirection: "column", alignItems: "center", gap: 16, padding: "24px 0" },
   success: { textAlign: "center", padding: "16px 0" },
-  icon:    { fontSize: 32, color: "var(--dp-success)", marginBottom: 12 },
+  icon:    { fontSize: 28, color: "var(--dp-success)", marginBottom: 12 },
   title:   { fontSize: 18, fontWeight: 600, color: "var(--dp-ink)", marginBottom: 8 },
   text:    { color: "var(--dp-ink-secondary)", fontSize: 14, lineHeight: 1.6 },
 };

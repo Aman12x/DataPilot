@@ -109,7 +109,7 @@ export default function Login() {
     return (
       <AuthCard tagline="Almost there">
         <div style={s.pendingBox} className="fade-in">
-          <div style={s.pendingIcon}>Inbox</div>
+          <div style={s.pendingIcon}>Verification sent</div>
           <p style={s.pendingTitle}>Check your email</p>
           <p style={s.pendingSub}>
             We sent a verification link to <strong style={{ color: "var(--dp-ink)" }}>{pendingEmail}</strong>.
@@ -138,7 +138,7 @@ export default function Login() {
   const loadingLabel = tab === "login" ? "Signing in…" : "Creating account…";
 
   return (
-    <AuthCard tagline="AI-powered experiment & data analyst">
+    <AuthCard tagline={tab === "login" ? "Sign in to your workspace" : "Create your workspace account"}>
       <div style={s.tabs}>
         {(["login", "register"] as const).map((t) => (
           <button
@@ -223,7 +223,7 @@ export default function Login() {
         )}
 
         <button style={authShared.btn} type="submit" disabled={loading}>
-          {loading ? <><Spinner variant="button" /> {loadingLabel}</> : tab === "login" ? "Sign In →" : "Create Account →"}
+          {loading ? <><Spinner variant="button" /> {loadingLabel}</> : tab === "login" ? "Sign in to DataPilot" : "Create your account"}
         </button>
       </form>
 
@@ -246,18 +246,18 @@ export default function Login() {
 }
 
 const s: Record<string, React.CSSProperties> = {
-  tabs:       { display: "flex", background: "var(--dp-surface-2)", borderRadius: 10, padding: 3, marginBottom: 24, gap: 3 },
-  tab:        { flex: 1, padding: "8px 0", background: "transparent", color: "var(--dp-ink-muted)", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 500, transition: "all 0.2s" },
-  tabActive:  { flex: 1, padding: "8px 0", background: "var(--dp-surface)", color: "var(--dp-ink)", border: "1px solid var(--dp-line)", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 650, transition: "all 0.2s", boxShadow: "var(--dp-shadow-sm)" },
+  tabs:       { display: "flex", borderBottom: "1px solid var(--dp-line)", marginBottom: 24 },
+  tab:        { flex: 1, padding: "9px 0 11px", background: "transparent", color: "var(--dp-ink-muted)", border: "none", borderBottom: "2px solid transparent", cursor: "pointer", fontSize: 13, fontWeight: 500, marginBottom: -1 },
+  tabActive:  { flex: 1, padding: "9px 0 11px", background: "transparent", color: "var(--dp-ink)", border: "none", borderBottom: "2px solid var(--dp-accent)", cursor: "pointer", fontSize: 13, fontWeight: 600, marginBottom: -1 },
   form:       { display: "flex", flexDirection: "column", gap: 16 },
   hint:       { color: "var(--dp-ink-muted)", fontSize: 12, marginTop: 6, lineHeight: 1.4 },
   matchErr:   { color: "var(--dp-danger)", fontSize: 12, marginTop: -8 },
   forgotLink: { background: "none", border: "none", color: "var(--dp-ink-muted)", fontSize: 12, cursor: "pointer", marginTop: 4, padding: 0, textAlign: "right" as const, width: "100%", display: "block" },
   divider:    { display: "flex", alignItems: "center", gap: 12, margin: "18px 0 0" },
   dividerLine:{ flex: 1, height: 1, background: "var(--dp-line)" },
-  guestBtn:   { width: "100%", marginTop: 10, padding: "10px 0", background: "transparent", color: "var(--dp-ink-secondary)", border: "1px solid var(--dp-line)", borderRadius: 10, cursor: "pointer", fontSize: 13, fontWeight: 500 },
+  guestBtn:   { width: "100%", marginTop: 10, padding: "10px 0", background: "transparent", color: "var(--dp-ink-secondary)", border: "1px solid var(--dp-line-strong)", borderRadius: 6, cursor: "pointer", fontSize: 13, fontWeight: 500 },
   pendingBox: { textAlign: "center" },
-  pendingIcon:{ fontSize: 28, marginBottom: 12, color: "var(--dp-accent)", fontWeight: 700 },
-  pendingTitle:{ fontSize: 18, fontWeight: 700, color: "var(--dp-ink)", marginBottom: 8, fontFamily: "var(--dp-display)" },
+  pendingIcon:{ fontSize: 12, marginBottom: 12, color: "var(--dp-accent)", fontWeight: 600, textTransform: "uppercase" as const, letterSpacing: "0.08em" },
+  pendingTitle:{ fontSize: 18, fontWeight: 600, color: "var(--dp-ink)", marginBottom: 8 },
   pendingSub: { color: "var(--dp-ink-secondary)", fontSize: 14, lineHeight: 1.6, marginBottom: 20 },
 };

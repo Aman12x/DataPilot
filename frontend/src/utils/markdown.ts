@@ -1,3 +1,14 @@
+/**
+ * Normalize LLM typography for the UI: the product style carries no em
+ * dashes, so replace mid-sentence em dashes with commas and bare ones with
+ * hyphens before rendering.
+ */
+export function normalizeTypography(text: string): string {
+  return text
+    .replace(/\s+[\u2014\u2013]\s+/g, ", ")
+    .replace(/[\u2014\u2013]/g, "-");
+}
+
 /** Strip markdown formatting to plain text (for clipboard copy). */
 export function stripMarkdown(md: string): string {
   return md

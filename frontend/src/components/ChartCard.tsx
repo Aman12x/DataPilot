@@ -43,13 +43,14 @@ interface Props {
   spec: ChartSpec;
 }
 
-// Very light tooltip styling that matches the dark theme
+// Tooltip styling on design tokens
 const tooltipStyle = {
   background: "var(--dp-surface)",
   border: "1px solid var(--dp-line)",
   borderRadius: 6,
   color: "var(--dp-ink)",
   fontSize: 12,
+  boxShadow: "var(--dp-shadow)",
 };
 
 // Parse **bold** markdown in insight text into <strong> tags
@@ -126,7 +127,7 @@ export default function ChartCard({ spec }: Props) {
             />
             <Tooltip contentStyle={tooltipStyle} />
             <Line type="monotone" dataKey={y_key} stroke={color} strokeWidth={2} dot={{ r: 3, fill: color }} />
-            {y_key2 && <Line type="monotone" dataKey={y_key2} stroke={color2 ?? "var(--dp-info)"} strokeWidth={2} dot={{ r: 3, fill: color2 ?? "var(--dp-info)" }} />}
+            {y_key2 && <Line type="monotone" dataKey={y_key2} stroke={color2 ?? "#B45309"} strokeWidth={2} dot={{ r: 3, fill: color2 ?? "#B45309" }} />}
           </LineChart>
         </ResponsiveContainer>
       );
@@ -171,7 +172,7 @@ export default function ChartCard({ spec }: Props) {
           />
           <Tooltip contentStyle={tooltipStyle} cursor={{ fill: "var(--dp-line)" }} />
           {isGrouped && <Legend wrapperStyle={{ fontSize: 11, color: "var(--dp-ink-secondary)" }} />}
-          <Bar dataKey={y_key} fill={color} radius={[4, 4, 0, 0]} maxBarSize={48}>
+          <Bar dataKey={y_key} fill={color} radius={[4, 4, 0, 0]} maxBarSize={32}>
             {hasErrorBar && (
               <ErrorBar
                 dataKey={(d: Record<string, number>) => [d[error_bar_low!], d[error_bar_high!]] as [number, number]}
@@ -185,7 +186,7 @@ export default function ChartCard({ spec }: Props) {
             )}
           </Bar>
           {isGrouped && y_key2 && (
-            <Bar dataKey={y_key2} fill={color2 ?? "var(--dp-info)"} radius={[4, 4, 0, 0]} maxBarSize={48} />
+            <Bar dataKey={y_key2} fill={color2 ?? "#B45309"} radius={[4, 4, 0, 0]} maxBarSize={32} />
           )}
         </BarChart>
       </ResponsiveContainer>
@@ -202,8 +203,8 @@ export default function ChartCard({ spec }: Props) {
 }
 
 const css: Record<string, React.CSSProperties> = {
-  card:      { background: "var(--dp-surface)", border: "1px solid var(--dp-line)", borderRadius: 12, padding: "18px 18px 14px", display: "flex", flexDirection: "column", gap: 10 },
-  title:     { color: "var(--dp-ink)", fontSize: 13, fontWeight: 700, margin: 0 },
+  card:      { background: "var(--dp-surface)", border: "1px solid var(--dp-line)", borderRadius: 8, padding: "18px 18px 14px", display: "flex", flexDirection: "column", gap: 10 },
+  title:     { color: "var(--dp-ink)", fontSize: 13, fontWeight: 600, margin: 0 },
   chartWrap: { width: "100%", overflow: "hidden" },
   insight:   { color: "var(--dp-ink-secondary)", fontSize: 12, lineHeight: 1.6, margin: 0, borderTop: "1px solid var(--dp-line)", paddingTop: 10 },
 };

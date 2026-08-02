@@ -28,13 +28,17 @@ from tools.schemas import (
     TtestResult,
 )
 
-# ── Colour palette (Catppuccin Mocha) ─────────────────────────────────────────
-_BLUE   = "#89b4fa"
-_PURPLE = "#cba6f7"
-_GREEN  = "#a6e3a1"
-_RED    = "#f38ba8"
-_PEACH  = "#fab387"
-_YELLOW = "#f9e2af"
+# ── Colour palette ────────────────────────────────────────────────────────────
+# Chosen for the light UI surface and validated for CVD separation and
+# contrast (dataviz six-checks). _BLUE/_ORANGE is the grouped-series pair;
+# _GREEN/_RED encode effect polarity and are never adjacent in one chart.
+_BLUE   = "#2D62C4"
+_PURPLE = "#7452C9"
+_GREEN  = "#1F8A5B"
+_RED    = "#C23B4A"
+_ORANGE = "#B45309"
+_PEACH  = _ORANGE  # legacy alias
+_YELLOW = "#9A6700"
 
 
 # ── General-analysis charts ────────────────────────────────────────────────────
@@ -333,7 +337,7 @@ def generate_ab_charts(
             y_key="Control",
             y_key2="Treatment",
             color=_BLUE,
-            color2=_PURPLE,
+            color2=_ORANGE,
             y_label="Completion rate (%)",
         ))
 

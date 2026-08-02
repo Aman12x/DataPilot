@@ -124,8 +124,8 @@ export default function History() {
       <div className="fade-in" style={{ maxWidth: 820, margin: "0 auto" }}>
         <div style={{ marginBottom: 28 }}>
           <h1 style={{
-            fontFamily: "var(--dp-display)", fontSize: 28, fontWeight: 750,
-            letterSpacing: "-0.03em", color: "var(--dp-ink)", margin: 0,
+            fontSize: 24, fontWeight: 600,
+            letterSpacing: "-0.01em", color: "var(--dp-ink)", margin: 0,
           }}>
             Analysis history
           </h1>
@@ -171,7 +171,7 @@ export default function History() {
                     <div style={s.scoreChip}>
                       <div style={{ ...s.scoreDot, background: scoreColor(r.eval_score) }} />
                       <span style={{ color: scoreColor(r.eval_score), fontSize: 12, fontWeight: 600 }}>
-                        {(r.eval_score * 100).toFixed(0)}% — {scoreLabel(r.eval_score)}
+                        {(r.eval_score * 100).toFixed(0)}% {scoreLabel(r.eval_score)}
                       </span>
                     </div>
                   )}
@@ -232,7 +232,7 @@ export default function History() {
 const s: Record<string, React.CSSProperties> = {
   errorBox:    { background: "var(--dp-danger-soft)", border: "1px solid rgba(194,59,74,0.28)", color: "var(--dp-danger)", borderRadius: 10, padding: "12px 16px", marginBottom: 20 },
   emptyState:  { textAlign: "center", padding: "64px 20px", display: "flex", flexDirection: "column", alignItems: "center", gap: 10 },
-  emptyText:   { color: "var(--dp-ink)", fontSize: 18, fontWeight: 650, fontFamily: "var(--dp-display)" },
+  emptyText:   { color: "var(--dp-ink)", fontSize: 17, fontWeight: 600 },
   emptySub:    { color: "var(--dp-ink-muted)", fontSize: 14 },
   cardList:    { display: "flex", flexDirection: "column", gap: 12 },
   card:        { padding: "18px 20px", cursor: "pointer" },
@@ -247,9 +247,9 @@ const s: Record<string, React.CSSProperties> = {
   narrativeSection: { marginTop: 0 },
   narrativeDivider: { height: 1, background: "var(--dp-line)", margin: "16px 0" },
   loadingRow:       { color: "var(--dp-ink-muted)", fontSize: 13, display: "flex", alignItems: "center", gap: 8, padding: "8px 0" },
-  recBanner:        { background: "var(--dp-info-soft)", border: "1px solid rgba(27,108,168,0.22)", borderRadius: 10, padding: "12px 16px", marginBottom: 16 },
+  recBanner:        { background: "var(--dp-info-soft)", border: "1px solid rgba(45,98,196,0.22)", borderRadius: 6, padding: "12px 16px", marginBottom: 16 },
   recLabel:         { color: "var(--dp-info)", fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 4 },
   recText:          { color: "var(--dp-ink)", fontWeight: 600, fontSize: 14, lineHeight: 1.5, margin: 0 },
-  narrativeBody:    { background: "var(--dp-surface-2)", borderRadius: 10, padding: "16px 20px", lineHeight: 1.7, marginBottom: 16 },
+  narrativeBody:    { background: "var(--dp-surface-2)", borderRadius: 6, padding: "16px 20px", lineHeight: 1.7, marginBottom: 16 },
   actions:          { display: "flex", gap: 8 },
 };

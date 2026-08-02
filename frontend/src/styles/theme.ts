@@ -1,30 +1,30 @@
 /** Design tokens — keep in sync with styles/global.css */
 export const colors = {
-  bg: "#F2F5F8",
+  bg: "#F7F8FA",
   surface: "#FFFFFF",
-  surface2: "#E8EEF2",
-  ink: "#0B1F2A",
-  inkSecondary: "#3D5160",
-  inkMuted: "#6B7F8C",
-  inkFaint: "#93A4AE",
-  line: "#D5DEE5",
+  surface2: "#F1F3F5",
+  ink: "#171C22",
+  inkSecondary: "#45505C",
+  inkMuted: "#67717D",
+  inkFaint: "#98A1AB",
+  line: "#E2E5E9",
   accent: "#0E7C6B",
   accentHover: "#0A6557",
-  accentSoft: "#E4F3EF",
-  info: "#1B6CA8",
-  infoSoft: "#E8F2F9",
+  accentSoft: "#E9F3F1",
+  info: "#2D62C4",
+  infoSoft: "#EBF0FA",
   success: "#1F8A5B",
-  warning: "#A16207",
+  warning: "#9A6700",
   danger: "#C23B4A",
 };
 
 export const radii = {
-  sm: 6,
-  md: 10,
-  lg: 14,
+  sm: 4,
+  md: 6,
+  lg: 8,
 };
 
 export const shadows = {
-  sm: "0 1px 2px rgba(11, 31, 42, 0.05)",
-  md: "0 1px 2px rgba(11, 31, 42, 0.06), 0 10px 28px rgba(11, 31, 42, 0.06)",
+  sm: "0 1px 2px rgba(23, 28, 34, 0.05)",
+  md: "0 1px 2px rgba(23, 28, 34, 0.05), 0 4px 12px rgba(23, 28, 34, 0.05)",
 };

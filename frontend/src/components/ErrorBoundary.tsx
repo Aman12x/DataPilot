@@ -33,7 +33,7 @@ export default class ErrorBoundary extends React.Component<Props, State> {
     if (!this.state.error) return this.props.children;
     return (
       <div style={s.card} className="fade-in">
-        <h3 style={s.title}>⚠ Something went wrong displaying this</h3>
+        <h3 style={s.title}>Something went wrong displaying this</h3>
         <p style={s.message}>
           {this.props.hint ?? "The rest of the app is unaffected."}
         </p>
@@ -55,7 +55,7 @@ const s: Record<string, React.CSSProperties> = {
   card: {
     background: "var(--dp-surface)",
     border: "1px solid var(--dp-line)",
-    borderRadius: 16,
+    borderRadius: 10,
     padding: "28px 32px",
     margin: "40px auto",
     boxShadow: "var(--dp-shadow)",
@@ -65,9 +65,7 @@ const s: Record<string, React.CSSProperties> = {
     color: "var(--dp-danger)",
     marginTop: 0,
     fontSize: 18,
-    fontWeight: 750,
-    letterSpacing: "-0.02em",
-    fontFamily: "var(--dp-display)",
+    fontWeight: 600,
   },
   message: { color: "var(--dp-ink-secondary)", fontSize: 14, lineHeight: 1.6 },
   detail: {
@@ -85,17 +83,17 @@ const s: Record<string, React.CSSProperties> = {
     background: "var(--dp-accent)",
     color: "var(--dp-accent-ink)",
     border: "none",
-    borderRadius: 10,
+    borderRadius: 6,
     cursor: "pointer",
-    fontWeight: 700,
+    fontWeight: 600,
     fontSize: 14,
   },
   btnReload: {
     padding: "11px 24px",
     background: "transparent",
     color: "var(--dp-ink-secondary)",
-    border: "1px solid var(--dp-line)",
-    borderRadius: 10,
+    border: "1px solid var(--dp-line-strong)",
+    borderRadius: 6,
     cursor: "pointer",
     fontSize: 14,
     fontWeight: 500,

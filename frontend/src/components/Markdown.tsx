@@ -12,6 +12,7 @@
  */
 
 import { Fragment } from "react";
+import { normalizeTypography } from "../utils/markdown";
 
 // ── Inline parser ─────────────────────────────────────────────────────────────
 
@@ -37,7 +38,7 @@ interface Block {
 }
 
 function parseBlocks(markdown: string): Block[] {
-  const lines = markdown.split("\n");
+  const lines = normalizeTypography(markdown).split("\n");
   const blocks: Block[] = [];
 
   for (const raw of lines) {
@@ -51,8 +52,10 @@ function parseBlocks(markdown: string): Block[] {
       blocks.push({ type: "h1", text: line.slice(2) });
     else if (/^[-*]\s/.test(line))
       blocks.push({ type: "li", text: line.slice(2) });
-    else if (/^[✅⚠️🔴🟡🟢]\s?/.test(line))
-      blocks.push({ type: "li", text: line });
+    else if (/^[✅⚠️🔴🟡🟢❌✔️]️?\s?/u.test(line))
+      // LLM output sometimes leads with a status emoji. Render as a plain
+      // list item with the emoji stripped: the UI carries no emoji glyphs.
+      blocks.push({ type: "li", text: line.replace(/^[✅⚠️🔴🟡🟢❌✔️]️?\s?/u, "") });
     else
       blocks.push({ type: "p", text: line });
   }

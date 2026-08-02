@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { IconClose } from "./icons";
 import client from "../api/client";
 import { extractApiError } from "../utils/error";
 import type { SavedConnection } from "../types/analysis";
@@ -152,7 +153,7 @@ export default function AnnotationStudio({
         setOkMsg(
           data.tables?.length
             ? `Loaded ${data.tables.length} table name(s) from live schema.`
-            : "Connection ok — no table names returned.",
+            : "Connection ok, but no table names returned.",
         );
       }
     } catch (err) {
@@ -178,7 +179,7 @@ export default function AnnotationStudio({
       setRows(annotationsToRows(data.annotations || {}));
       setSynRows(synonymsToRows(data.synonyms || {}));
       setUpdatedAt(data.updated_at || "");
-      setOkMsg("Annotations saved — they’ll be injected into schema context on the next analysis.");
+      setOkMsg("Annotations saved. They will be included in schema context on the next analysis.");
     } catch (err) {
       setError(extractApiError(err, "Could not save annotations"));
     } finally {
@@ -269,7 +270,7 @@ export default function AnnotationStudio({
             )}
 
             {!editable && (
-              <p style={s.muted}>You’re an analyst — annotations are read-only. Ask an owner to edit.</p>
+              <p style={s.muted}>You are an analyst, so annotations are read-only. Ask an owner to edit.</p>
             )}
 
             {loading ? (
@@ -320,7 +321,7 @@ export default function AnnotationStudio({
                         style={{ color: "var(--dp-danger)" }}
                         onClick={() => setRows((prev) => prev.filter((_, i) => i !== idx))}
                       >
-                        ✕
+                        <IconClose />
                       </button>
                     )}
                   </div>
@@ -364,7 +365,7 @@ export default function AnnotationStudio({
                         style={{ color: "var(--dp-danger)" }}
                         onClick={() => setSynRows((prev) => prev.filter((_, i) => i !== idx))}
                       >
-                        ✕
+                        <IconClose />
                       </button>
                     )}
                   </div>

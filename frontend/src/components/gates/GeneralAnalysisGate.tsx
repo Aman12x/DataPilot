@@ -31,7 +31,7 @@ function ColCard({ col }: { col: ColumnSummary }) {
           <span>min {fmt(col.min)}</span>
           <span>med {fmt(col.median)}</span>
           <span>max {fmt(col.max)}</span>
-          <span>σ {fmt(col.std)}</span>
+          <span>sd {fmt(col.std)}</span>
         </div>
       ) : (
         <div style={s.colStats}>
@@ -46,7 +46,7 @@ function ColCard({ col }: { col: ColumnSummary }) {
 }
 
 function fmt(v: number | undefined): string {
-  if (v === undefined || v === null) return "—";
+  if (v === undefined || v === null) return "-";
   if (Math.abs(v) >= 1000) return v.toLocaleString(undefined, { maximumFractionDigits: 0 });
   return v.toPrecision(4);
 }
@@ -54,7 +54,7 @@ function fmt(v: number | undefined): string {
 function corrColor(r: number): string {
   const abs = Math.abs(r);
   if (abs >= 0.7) return r > 0 ? "var(--dp-success)" : "var(--dp-danger)";
-  if (abs >= 0.4) return "#fab387";
+  if (abs >= 0.4) return "var(--dp-warning)";
   return "var(--dp-ink-secondary)";
 }
 
@@ -88,7 +88,7 @@ export default function GeneralAnalysisGate({ payload, onSubmit, submitting }: P
           <div style={s.corrList}>
             {corr.pairs.slice(0, 8).map((p, i) => (
               <div key={i} style={s.corrRow}>
-                <span style={s.corrCols}>{p.col_a} × {p.col_b}</span>
+                <span style={s.corrCols}>{p.col_a} and {p.col_b}</span>
                 <span style={{ ...s.corrVal, color: corrColor(p.correlation) }}>r = {p.correlation.toFixed(3)}</span>
               </div>
             ))}
@@ -132,5 +132,5 @@ const s: Record<string, React.CSSProperties> = {
   corrRow:   { display: "flex", justifyContent: "space-between", padding: "4px 0", borderBottom: "1px solid var(--dp-line)" },
   corrCols:  { color: "var(--dp-ink-secondary)", fontSize: 13 },
   corrVal:   { fontWeight: 700, fontSize: 13 },
-  btnReject: { padding: "10px 22px", background: "transparent", color: "var(--dp-danger)", border: "1px solid var(--dp-danger)44", borderRadius: 8, cursor: "pointer", fontSize: 14 },
+  btnReject: { padding: "10px 22px", background: "transparent", color: "var(--dp-danger)", border: "1px solid var(--dp-danger)44", borderRadius: 6, cursor: "pointer", fontSize: 14 },
 };

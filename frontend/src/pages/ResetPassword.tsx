@@ -4,6 +4,7 @@ import client from "../api/client";
 import AuthCard, { authShared } from "../components/AuthCard";
 import FormField from "../components/FormField";
 import Spinner from "../components/Spinner";
+import { IconAlert, IconCheck } from "../components/icons";
 import { extractApiError } from "../utils/error";
 
 export default function ResetPassword() {
@@ -20,7 +21,7 @@ export default function ResetPassword() {
   if (!token) {
     return (
       <AuthCard>
-        <div style={authShared.errorBox}><span>⚠</span> Invalid reset link. Please request a new one.</div>
+        <div style={authShared.errorBox}><IconAlert /> Invalid reset link. Please request a new one.</div>
         <button style={{ ...authShared.linkBtn, color: "var(--dp-accent)" }} onClick={() => navigate("/forgot-password")}>
           Request new link
         </button>
@@ -48,10 +49,10 @@ export default function ResetPassword() {
     <AuthCard>
       {done ? (
         <div style={s.successBox} className="fade-in">
-          <div style={s.successIcon}>✓</div>
+          <div style={s.successIcon}><IconCheck /></div>
           <p style={s.successTitle}>Password updated</p>
           <p style={s.successSub}>Your new password is set. Sign in to continue.</p>
-          <button style={authShared.btn} onClick={() => navigate("/login")}>Sign In →</button>
+          <button style={authShared.btn} onClick={() => navigate("/login")}>Sign in</button>
         </div>
       ) : (
         <>
@@ -64,12 +65,12 @@ export default function ResetPassword() {
 
             {error && (
               <div style={authShared.errorBox} className="fade-in">
-                <span>⚠</span> {error}
+                <IconAlert /> {error}
               </div>
             )}
 
             <button style={authShared.btn} type="submit" disabled={loading}>
-              {loading ? <><Spinner variant="button" /> Updating…</> : "Update password →"}
+              {loading ? <><Spinner variant="button" /> Updating…</> : "Update password"}
             </button>
           </form>
         </>
@@ -83,7 +84,7 @@ const s: Record<string, React.CSSProperties> = {
   heading:     { color: "var(--dp-ink)", fontSize: 18, fontWeight: 600, textAlign: "center", marginBottom: 6 },
   sub:         { color: "var(--dp-ink-muted)", fontSize: 13, textAlign: "center", marginBottom: 24 },
   successBox:  { textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", gap: 12 },
-  successIcon: { fontSize: 40, color: "var(--dp-success)" },
+  successIcon: { fontSize: 32, color: "var(--dp-success)" },
   successTitle:{ color: "var(--dp-ink)", fontSize: 18, fontWeight: 600 },
   successSub:  { color: "var(--dp-ink-secondary)", fontSize: 13, lineHeight: 1.6 },
 };

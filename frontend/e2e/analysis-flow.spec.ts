@@ -30,7 +30,7 @@ test.describe("Analysis flow", () => {
     const registerResponsePromise = page.waitForResponse(
       (resp) => resp.url().includes("/auth/register") && resp.request().method() === "POST",
     );
-    await page.getByRole("button", { name: "Create Account →" }).click();
+    await page.getByRole("button", { name: "Create your account" }).click();
     const registerResponse = await registerResponsePromise;
     expect(
       registerResponse.ok(),

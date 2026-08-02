@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { gateCard, gateTitle, gateMessage, gateTextarea, gateActions, gateBtnApprove } from "./shared";
+import { IconAlert, IconCheck, IconDot } from "../icons";
 
 interface Props {
   payload: {
@@ -24,7 +25,7 @@ type Tone = "good" | "warn" | "neutral";
 function Stat({ label, value, tone }: { label: string; value: string | null; tone?: Tone }) {
   if (value == null) return null;
   const color = tone === "good" ? "var(--dp-success)" : tone === "warn" ? "var(--dp-danger)" : "var(--dp-ink)";
-  const icon  = tone === "good" ? "✓" : tone === "warn" ? "⚠" : "·";
+  const icon  = tone === "good" ? <IconCheck /> : tone === "warn" ? <IconAlert /> : <IconDot />;
   return (
     <div style={{ display: "flex", alignItems: "flex-start", gap: 8, marginBottom: 8 }}>
       <span style={{ color, fontSize: 13, marginTop: 1, flexShrink: 0 }}>{icon}</span>
@@ -51,9 +52,9 @@ export default function AnalysisGate({ payload, onSubmit, submitting }: Props) {
       <div style={s.stats}>
         <Stat label="Effect:"          value={sig == null ? null : sig ? "Statistically significant" : "Not statistically significant"} tone={sig == null ? "neutral" : sig ? "good" : "warn"} />
         <Stat label="Top segment:"     value={payload.top_segment} tone="neutral" />
-        <Stat label="Novelty check:"   value={novel == null ? null : novel ? "Novelty effect likely — treat results cautiously" : "Novelty ruled out"} tone={novel == null ? "neutral" : novel ? "warn" : "good"} />
+        <Stat label="Novelty check:"   value={novel == null ? null : novel ? "Novelty effect likely, treat results cautiously" : "Novelty ruled out"} tone={novel == null ? "neutral" : novel ? "warn" : "good"} />
         <Stat label="Guardrails:"      value={guard == null ? null : guard ? "One or more secondary metrics breached" : "No guardrails breached"} tone={guard == null ? "neutral" : guard ? "warn" : "good"} />
-        <Stat label="Sample power:"    value={mde == null ? null : mde ? "Adequately powered for observed effect" : "Underpowered — interpret with caution"} tone={mde == null ? "neutral" : mde ? "good" : "warn"} />
+        <Stat label="Sample power:"    value={mde == null ? null : mde ? "Adequately powered for observed effect" : "Underpowered, interpret with caution"} tone={mde == null ? "neutral" : mde ? "good" : "warn"} />
         <Stat label="Business impact:" value={payload.business_impact} tone="neutral" />
         <Stat label="Variance reduction (CUPED):" value={payload.cuped_variance_reduction != null ? `${payload.cuped_variance_reduction.toFixed(1)}%` : null} tone="neutral" />
         <Stat label="Biggest funnel drop:" value={payload.biggest_funnel_dropoff} tone={payload.biggest_funnel_dropoff ? "warn" : "neutral"} />
@@ -108,7 +109,7 @@ export default function AnalysisGate({ payload, onSubmit, submitting }: Props) {
           style={s.btnReject}
           onClick={() => onSubmit({ approved: false, notes })}
           disabled={submitting}
-          title="Flag concerns — the report will note these issues"
+          title="Flag concerns. The report will note these issues."
         >
           Request Changes
         </button>

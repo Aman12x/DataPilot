@@ -30,7 +30,7 @@ export default function IntentGate({ payload, onSubmit, submitting }: Props) {
         onClick={() => onSubmit({ answer })}
         disabled={!answer.trim() || submitting}
       >
-        {submitting ? "Submitting…" : "Continue →"}
+        {submitting ? "Submitting…" : "Continue"}
       </button>
     </div>
   );
