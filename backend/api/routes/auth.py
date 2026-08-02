@@ -135,13 +135,13 @@ async def register(req: RegisterRequest, request: Request):
 
     from ..email import send_verification_email_async
 
-    token = create_verification_token(result.user_id)
+    token = await asyncio.to_thread(create_verification_token, result.user_id)
     try:
         await send_verification_email_async(result.email, token)
     except RuntimeError:
         # Don't trap new accounts when Resend/SMTP is misconfigured.
-        mark_email_verified(result.user_id)
-        user = get_user_by_id(result.user_id) or result
+        await asyncio.to_thread(mark_email_verified, result.user_id)
+        user = await asyncio.to_thread(get_user_by_id, result.user_id) or result
         return _issue_session(user, status_code=status.HTTP_201_CREATED)
 
     return JSONResponse(
@@ -158,13 +158,13 @@ async def register(req: RegisterRequest, request: Request):
 @router.post("/verify-email")
 async def verify_email(req: VerifyEmailRequest, request: Request):
     await check_auth_rate(request, bucket="verify")
-    user_id = consume_verification_token(req.token)
+    user_id = await asyncio.to_thread(consume_verification_token, req.token)
     if not user_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Verification link is invalid or has expired.",
         )
-    user = get_user_by_id(user_id)
+    user = await asyncio.to_thread(get_user_by_id, user_id)
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -178,14 +178,14 @@ async def resend_verification(req: ResendVerificationRequest, request: Request):
     await check_auth_rate(request, bucket="verify")
     from ..email import send_verification_email_async
 
-    user = get_user_by_email(req.email)
+    user = await asyncio.to_thread(get_user_by_email, req.email)
     if user and not user.email_verified:
-        token = create_verification_token(user.user_id)
+        token = await asyncio.to_thread(create_verification_token, user.user_id)
         try:
             await send_verification_email_async(user.email, token)
         except RuntimeError:
             # Same fallback as register/login — unlock the account if mail is down.
-            mark_email_verified(user.user_id)
+            await asyncio.to_thread(mark_email_verified, user.user_id)
             return _issue_session(user)
     return {
         "detail": "If that email is registered and unverified, a new link has been sent.",
@@ -202,12 +202,12 @@ async def login(req: LoginRequest, request: Request):
         # Recover accounts stuck when verification mail cannot be delivered.
         from ..email import send_verification_email_async
 
-        token = create_verification_token(user.user_id)
+        token = await asyncio.to_thread(create_verification_token, user.user_id)
         try:
             await send_verification_email_async(user.email, token)
         except RuntimeError:
-            mark_email_verified(user.user_id)
-            user = get_user_by_id(user.user_id) or user
+            await asyncio.to_thread(mark_email_verified, user.user_id)
+            user = await asyncio.to_thread(get_user_by_id, user.user_id) or user
             return _issue_session(user)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -236,10 +236,10 @@ async def refresh(req: RefreshRequest, request: Request):
     await check_auth_rate(request, bucket="refresh")
     token = resolve_refresh_token(request, req.refresh_token or None)
     user_id, jti, sv = verify_refresh_token(token)
-    user = get_user_by_id(user_id)
+    user = await asyncio.to_thread(get_user_by_id, user_id)
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
-    revoke_token(jti)
+    await asyncio.to_thread(revoke_token, jti)
     access = create_access_token(user.user_id, user.username)
     refresh_tok = create_refresh_token(user.user_id, session_version=sv)
     return _auth_response(user.to_dict(), access, refresh_tok)
@@ -279,7 +279,7 @@ async def forgot_password(req: ForgotPasswordRequest, request: Request):
     """
     await check_auth_rate(request, bucket="forgot")
     from ..email import send_password_reset_async
-    token = create_reset_token(req.email)
+    token = await asyncio.to_thread(create_reset_token, req.email)
     if token:
         try:
             await send_password_reset_async(req.email, token)
@@ -295,7 +295,7 @@ async def forgot_password(req: ForgotPasswordRequest, request: Request):
 async def reset_password(req: ResetPasswordRequest, request: Request):
     """Consume a reset token and set the new password."""
     await check_auth_rate(request, bucket="reset")
-    user_id = consume_reset_token(req.token)
+    user_id = await asyncio.to_thread(consume_reset_token, req.token)
     if not user_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -306,7 +306,7 @@ async def reset_password(req: ResetPasswordRequest, request: Request):
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Password must be at least 8 characters and include a letter and a number.",
         )
-    mark_email_verified(user_id)
+    await asyncio.to_thread(mark_email_verified, user_id)
     return {"detail": "Password updated. You can now sign in."}
 
 

@@ -53,9 +53,19 @@ interpolate it into a string literal behind `_SAFE_IDENT_RE`, which is both the
 weaker mechanism and the one that rejects `2024_revenue`.
 
 **Nothing blocking on the event loop.** The backend runs `--workers 1`, so one
-slow call freezes every other request. Pandas, DuckDB, PBKDF2, `requests`, and
-any DB connect go through `asyncio.to_thread`. Graph execution has its own pool
-(`run_manager._get_graph_executor`) so analyses can't be starved by other work.
+slow call freezes every other request. Pandas, DuckDB, PBKDF2, `requests`, any DB
+connect, **every `auth`/`memory`/`workspace_store` call, `graph.get_state`, and
+the reportlab PDF render** go through `asyncio.to_thread`. Graph execution has
+its own pool (`run_manager._get_graph_executor`) so analyses can't be starved by
+other work.
+
+A sync `def` route handler is *also* correct — FastAPI runs those in its own
+threadpool — which is why `list_runs` and the `deps.py` dependencies never
+needed changing. `tests/test_event_loop_blocking.py` walks the AST of
+`backend/api/` and fails on any blocking call inside an `async def`; a hand-grep
+for `graph.get_state` found six sites, that scan found fifty-six.
+`tests/test_event_loop_liveness.py` is the behavioural half: it slows one store
+call and asserts an unrelated request completes *before* it finishes.
 
 **User content is delimiter-wrapped before it reaches a prompt**, via
 `agents/analyze/prompt_safety.wrap_untrusted_content`. Directives go *before*
@@ -181,11 +191,6 @@ call. Everything else uses `FAST_MODEL`.
 
 ## Known-open issues
 
-- **`graph.get_state()` runs on the event loop.** It is a synchronous SQLite
-  read, and six call sites in `routes/runs.py` are reached from `async` paths —
-  including the authorisation helper `_workspace_of_run` and the SSE
-  `event_generator`. This contradicts the no-blocking invariant above; the
-  upload, auth, and email paths were fixed but these were missed.
 - **Split-brain storage with `DATABASE_URL` set.**
   `langgraph-checkpoint-postgres` is commented out in `backend/requirements.txt`,
   so accounts and history move to Postgres while checkpoints silently stay on

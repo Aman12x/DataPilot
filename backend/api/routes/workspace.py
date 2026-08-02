@@ -245,8 +245,10 @@ async def list_connections(
     current_user: dict = Depends(get_current_user),
     workspace_id: str | None = Depends(resolve_workspace_id),
 ):
-    items = workspace_store.list_connections(
-        current_user["user_id"], workspace_id=workspace_id
+    items = await asyncio.to_thread(
+        workspace_store.list_connections,
+        current_user["user_id"],
+        workspace_id=workspace_id,
     )
     return {"connections": [c.to_dict() for c in items]}
 
@@ -300,7 +302,8 @@ async def create_connection(
                 detail=f"Connection test failed: {result.get('error') or 'unknown error'}",
             )
 
-    conn = workspace_store.create_connection(
+    conn = await asyncio.to_thread(
+        workspace_store.create_connection,
         user_id,
         name=body.name,
         host=host,
@@ -314,8 +317,17 @@ async def create_connection(
         workspace_id=workspace_id,
     )
     if body.test:
-        workspace_store.record_connection_test(user_id, conn.connection_id, ok=True)
-        conn = workspace_store.get_connection(user_id, conn.connection_id) or conn
+        await asyncio.to_thread(
+            workspace_store.record_connection_test,
+            user_id,
+            conn.connection_id,
+            ok=True,
+        )
+        conn = await asyncio.to_thread(
+            workspace_store.get_connection,
+            user_id,
+            conn.connection_id,
+        ) or conn
 
     logger.info(
         "connection.created user=%s id=%s backend=%s host=%s project=%s",
@@ -326,7 +338,11 @@ async def create_connection(
 
 @router.get("/connections/{connection_id}")
 async def get_connection(connection_id: str, current_user: dict = Depends(get_current_user)):
-    conn = workspace_store.get_connection(current_user["user_id"], connection_id)
+    conn = await asyncio.to_thread(
+        workspace_store.get_connection,
+        current_user["user_id"],
+        connection_id,
+    )
     if not conn:
         raise HTTPException(status_code=404, detail="Connection not found")
     return conn.to_dict()
@@ -343,7 +359,8 @@ async def update_connection(
     if body.host is not None:
         _validate_host(body.host)
     try:
-        conn = workspace_store.update_connection(
+        conn = await asyncio.to_thread(
+            workspace_store.update_connection,
             current_user["user_id"],
             connection_id,
             name=body.name,
@@ -368,7 +385,11 @@ async def delete_connection(
     workspace_id: str | None = Depends(resolve_workspace_id),
 ):
     _require_owner(current_user["user_id"], workspace_id)
-    ok = workspace_store.delete_connection(current_user["user_id"], connection_id)
+    ok = await asyncio.to_thread(
+        workspace_store.delete_connection,
+        current_user["user_id"],
+        connection_id,
+    )
     if not ok:
         raise HTTPException(status_code=404, detail="Connection not found")
     return None
@@ -387,7 +408,11 @@ async def test_saved_connection(
     """
     await check_auth_rate(request, bucket="conn_test")
     user_id = current_user["user_id"]
-    secrets = workspace_store.get_connection_secrets(user_id, connection_id)
+    secrets = await asyncio.to_thread(
+        workspace_store.get_connection_secrets,
+        user_id,
+        connection_id,
+    )
     if not secrets:
         raise HTTPException(status_code=404, detail="Connection not found")
 
@@ -397,8 +422,10 @@ async def test_saved_connection(
         user=secrets.username, password=secrets.password, sslmode=secrets.sslmode,
         project_id=secrets.project_id,
     )
-    workspace_store.record_connection_test(
-        user_id, connection_id,
+    await asyncio.to_thread(
+        workspace_store.record_connection_test,
+        user_id,
+        connection_id,
         ok=bool(result.get("success")),
         error=result.get("error"),
     )
@@ -412,7 +439,11 @@ async def test_saved_connection(
                 schema_hash,
                 strip_sql_dialect_header,
             )
-            ann = workspace_store.get_annotations(user_id, connection_id)
+            ann = await asyncio.to_thread(
+                workspace_store.get_annotations,
+                user_id,
+                connection_id,
+            )
             annotations = (ann.annotations if ann else {}) or {}
             conn = _build_db_connection(
                 backend=secrets.backend,
@@ -422,20 +453,30 @@ async def test_saved_connection(
             )
             schema_context = conn.inspect_schema(annotations=annotations)
             sch_hash = schema_hash(schema_context)
-            prev = workspace_store.get_schema_snapshot(user_id, connection_id)
+            prev = await asyncio.to_thread(
+                workspace_store.get_schema_snapshot,
+                user_id,
+                connection_id,
+            )
             if prev and prev.get("schema_hash") and prev["schema_hash"] != sch_hash:
                 schema_changed = True
                 drift_warnings.append(
                     "Live schema hash differs from last successful connect — "
                     "columns or tables may have changed."
                 )
-            workspace_store.record_schema_snapshot(
-                user_id, connection_id,
+            await asyncio.to_thread(
+                workspace_store.record_schema_snapshot,
+                user_id,
+                connection_id,
                 schema_context=strip_sql_dialect_header(schema_context),
                 schema_hash=sch_hash,
             )
             if metric_pack_id:
-                pack = workspace_store.get_metric_pack(user_id, metric_pack_id)
+                pack = await asyncio.to_thread(
+                    workspace_store.get_metric_pack,
+                    user_id,
+                    metric_pack_id,
+                )
                 if pack:
                     drift_warnings.extend(
                         detect_pack_drift(MetricConfig(**pack.config), schema_context)
@@ -507,8 +548,10 @@ async def list_packs(
     current_user: dict = Depends(get_current_user),
     workspace_id: str | None = Depends(resolve_workspace_id),
 ):
-    packs = workspace_store.list_metric_packs(
-        current_user["user_id"], workspace_id=workspace_id
+    packs = await asyncio.to_thread(
+        workspace_store.list_metric_packs,
+        current_user["user_id"],
+        workspace_id=workspace_id,
     )
     return {"metric_packs": [p.to_dict() for p in packs]}
 
@@ -523,7 +566,8 @@ async def create_pack(
     try:
         # Validate early for clear 400s
         MetricConfig(**body.config)
-        pack = workspace_store.create_metric_pack(
+        pack = await asyncio.to_thread(
+            workspace_store.create_metric_pack,
             current_user["user_id"],
             name=body.name,
             description=body.description,
@@ -545,7 +589,11 @@ async def create_pack(
 
 @router.get("/metric-packs/{pack_id}")
 async def get_pack(pack_id: str, current_user: dict = Depends(get_current_user)):
-    pack = workspace_store.get_metric_pack(current_user["user_id"], pack_id)
+    pack = await asyncio.to_thread(
+        workspace_store.get_metric_pack,
+        current_user["user_id"],
+        pack_id,
+    )
     if not pack:
         raise HTTPException(status_code=404, detail="Metric pack not found")
     return pack.to_dict()
@@ -562,7 +610,8 @@ async def update_pack(
     try:
         if body.config is not None:
             MetricConfig(**body.config)
-        pack = workspace_store.update_metric_pack(
+        pack = await asyncio.to_thread(
+            workspace_store.update_metric_pack,
             current_user["user_id"],
             pack_id,
             name=body.name,
@@ -588,7 +637,11 @@ async def delete_pack(
     workspace_id: str | None = Depends(resolve_workspace_id),
 ):
     _require_owner(current_user["user_id"], workspace_id)
-    ok = workspace_store.delete_metric_pack(current_user["user_id"], pack_id)
+    ok = await asyncio.to_thread(
+        workspace_store.delete_metric_pack,
+        current_user["user_id"],
+        pack_id,
+    )
     if not ok:
         raise HTTPException(status_code=404, detail="Metric pack not found")
     return None
@@ -603,7 +656,11 @@ class AnnotationsUpsert(BaseModel):
 
 @router.get("/connections/{connection_id}/annotations")
 async def get_annotations(connection_id: str, current_user: dict = Depends(get_current_user)):
-    ann = workspace_store.get_annotations(current_user["user_id"], connection_id)
+    ann = await asyncio.to_thread(
+        workspace_store.get_annotations,
+        current_user["user_id"],
+        connection_id,
+    )
     if ann is None:
         raise HTTPException(status_code=404, detail="Connection not found")
     return ann.to_dict()
@@ -616,7 +673,8 @@ async def put_annotations(
     current_user: dict = Depends(get_current_user),
 ):
     try:
-        ann = workspace_store.upsert_annotations(
+        ann = await asyncio.to_thread(
+            workspace_store.upsert_annotations,
             current_user["user_id"],
             connection_id,
             annotations=body.annotations,
@@ -640,7 +698,7 @@ async def connection_drift(
     Uses the stored snapshot when available (no live DB round-trip required).
     """
     user_id = current_user["user_id"]
-    snap = workspace_store.get_schema_snapshot(user_id, connection_id)
+    snap = await asyncio.to_thread(workspace_store.get_schema_snapshot, user_id, connection_id)
     if snap is None:
         raise HTTPException(status_code=404, detail="Connection not found")
     warnings: list[str] = []
@@ -652,7 +710,7 @@ async def connection_drift(
             "drift_warnings": ["No schema snapshot yet — run a connection test first."],
         }
     if metric_pack_id:
-        pack = workspace_store.get_metric_pack(user_id, metric_pack_id)
+        pack = await asyncio.to_thread(workspace_store.get_metric_pack, user_id, metric_pack_id)
         if not pack:
             raise HTTPException(status_code=404, detail="Metric pack not found")
         from agents.analyze.semantic_layer import detect_pack_drift

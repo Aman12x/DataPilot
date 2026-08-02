@@ -10,6 +10,7 @@ backend/api/routes/orgs.py — Workspaces + members API (Phase 3).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Literal, Optional
 
@@ -40,8 +41,8 @@ async def list_workspaces(current_user: dict = Depends(get_current_user)):
     user_id = current_user["user_id"]
     if user_id.startswith("guest-"):
         return {"workspaces": []}
-    bootstrap_user_workspace(user_id)
-    items = org_store.list_workspaces(user_id)
+    await asyncio.to_thread(bootstrap_user_workspace, user_id)
+    items = await asyncio.to_thread(org_store.list_workspaces, user_id)
     return {"workspaces": [w.to_dict() for w in items]}
 
 
@@ -54,7 +55,7 @@ async def create_workspace(
     if user_id.startswith("guest-"):
         raise HTTPException(status_code=403, detail="Guests cannot create workspaces")
     try:
-        ws = org_store.create_workspace(user_id, name=body.name)
+        ws = await asyncio.to_thread(org_store.create_workspace, user_id, name=body.name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     logger.info("workspace.created user=%s id=%s", user_id, ws.workspace_id)
@@ -67,10 +68,18 @@ async def list_members(
     current_user: dict = Depends(get_current_user),
 ):
     try:
-        org_store.require_role(current_user["user_id"], workspace_id, min_role="analyst")
+        await asyncio.to_thread(
+            org_store.require_role,
+            current_user["user_id"],
+            workspace_id,
+            min_role="analyst",
+        )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
-    return {"members": [m.to_dict() for m in org_store.list_members(workspace_id)]}
+    return {"members": [m.to_dict() for m in await asyncio.to_thread(
+        org_store.list_members,
+        workspace_id,
+    )]}
 
 
 @router.post("/workspaces/{workspace_id}/members", status_code=status.HTTP_201_CREATED)
@@ -80,13 +89,18 @@ async def add_member(
     current_user: dict = Depends(get_current_user),
 ):
     try:
-        org_store.require_role(current_user["user_id"], workspace_id, min_role="owner")
+        await asyncio.to_thread(
+            org_store.require_role,
+            current_user["user_id"],
+            workspace_id,
+            min_role="owner",
+        )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     target_id = (body.user_id or "").strip()
     if not target_id and body.email:
-        user = get_user_by_email(body.email.strip().lower())
+        user = await asyncio.to_thread(get_user_by_email, body.email.strip().lower())
         if not user:
             raise HTTPException(status_code=404, detail="User not found for that email")
         target_id = user.user_id
@@ -94,11 +108,16 @@ async def add_member(
         raise HTTPException(status_code=400, detail="email or user_id required")
     if target_id.startswith("guest-"):
         raise HTTPException(status_code=400, detail="Cannot add guests to workspaces")
-    if not get_user_by_id(target_id):
+    if not await asyncio.to_thread(get_user_by_id, target_id):
         raise HTTPException(status_code=404, detail="User not found")
 
     try:
-        member = org_store.add_member(workspace_id, user_id=target_id, role=body.role)
+        member = await asyncio.to_thread(
+            org_store.add_member,
+            workspace_id,
+            user_id=target_id,
+            role=body.role,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return member.to_dict()
@@ -114,11 +133,16 @@ async def remove_member(
     current_user: dict = Depends(get_current_user),
 ):
     try:
-        org_store.require_role(current_user["user_id"], workspace_id, min_role="owner")
+        await asyncio.to_thread(
+            org_store.require_role,
+            current_user["user_id"],
+            workspace_id,
+            min_role="owner",
+        )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     try:
-        ok = org_store.remove_member(workspace_id, member_user_id)
+        ok = await asyncio.to_thread(org_store.remove_member, workspace_id, member_user_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not ok:

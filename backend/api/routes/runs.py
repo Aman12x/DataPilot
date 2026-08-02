@@ -13,6 +13,7 @@ GET   /health                                      → {status: "ok"}
 """
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import json
 import logging
@@ -184,7 +185,10 @@ def _user_from_stream_token(stream_token: str, run_id: str) -> dict[str, str]:
 
 
 def _workspace_of_run(graph: Any, run_id: str) -> tuple[str | None, str | None]:
-    """Return (owner_user_id, workspace_id) from graph state or memory store."""
+    """Return (owner_user_id, workspace_id) from graph state or memory store.
+
+    Two synchronous SQLite reads. Blocking — call via `asyncio.to_thread`.
+    """
     state_uid: str | None = None
     ws_id: str | None = None
     config = {"configurable": {"thread_id": run_id}}
@@ -225,13 +229,13 @@ async def _check_run_access(
     if owner == user_id:
         return
 
-    state_uid, ws_id = _workspace_of_run(graph, run_id)
+    state_uid, ws_id = await asyncio.to_thread(_workspace_of_run, graph, run_id)
     if state_uid == user_id:
         return
 
     if not mutate and ws_id:
         from auth.org_store import get_membership
-        if get_membership(user_id, ws_id) is not None:
+        if await asyncio.to_thread(get_membership, user_id, ws_id) is not None:
             return
 
     if owner is not None or state_uid:
@@ -252,6 +256,7 @@ async def _check_parent_ownership(graph: Any, parent_run_id: str, user_id: str) 
 
 
 def _snap_to_interrupt_payload(graph: Any, run_id: str) -> dict | None:
+    """Blocking: reads the checkpoint. Call via `asyncio.to_thread`."""
     config = {"configurable": {"thread_id": run_id}}
     try:
         state = graph.get_state(config)
@@ -417,7 +422,11 @@ async def create_run(
     bq_credentials_json = req.bq_credentials_json
 
     if connection_id:
-        secrets = workspace_store.get_connection_secrets(user_id, connection_id)
+        secrets = await asyncio.to_thread(
+            workspace_store.get_connection_secrets,
+            user_id,
+            connection_id,
+        )
         if not secrets:
             raise HTTPException(status_code=404, detail="Connection not found")
         db_backend = secrets.backend
@@ -451,7 +460,7 @@ async def create_run(
     metric_pack_id = req.metric_pack_id
     metric_pack_version = None
     if metric_pack_id:
-        pack = workspace_store.get_metric_pack(user_id, metric_pack_id)
+        pack = await asyncio.to_thread(workspace_store.get_metric_pack, user_id, metric_pack_id)
         if not pack:
             raise HTTPException(status_code=404, detail="Metric pack not found")
         try:
@@ -476,7 +485,7 @@ async def create_run(
         await _check_parent_ownership(graph, req.parent_run_id, user_id)
         try:
             parent_config = {"configurable": {"thread_id": req.parent_run_id}}
-            parent_state  = graph.get_state(parent_config)
+            parent_state  = await asyncio.to_thread(graph.get_state, parent_config)
             parent_values = parent_state.values if hasattr(parent_state, "values") else {}
             raw_narrative = (
                 parent_values.get("final_narrative")
@@ -570,7 +579,11 @@ async def stream_run(
             # state, replay it immediately without blocking on the queue.
             # This handles the case where the graph hit an interrupt before the
             # SSE client connected (e.g. intent gate fires during fast startup).
-            interrupt_payload = _snap_to_interrupt_payload(graph, run_id)
+            interrupt_payload = await asyncio.to_thread(
+                _snap_to_interrupt_payload,
+                graph,
+                run_id,
+            )
             if interrupt_payload is not None:
                 gate    = interrupt_payload.get("gate", "unknown")
                 expires = int(time.time()) + _GATE_TIMEOUT_SECS
@@ -607,7 +620,11 @@ async def stream_run(
                 yield {"data": json.dumps({"type": "error", "message": item.get("error", "Unknown error")})}
                 return
 
-            interrupt_payload = _snap_to_interrupt_payload(graph, run_id)
+            interrupt_payload = await asyncio.to_thread(
+                _snap_to_interrupt_payload,
+                graph,
+                run_id,
+            )
 
             if interrupt_payload is not None:
                 gate    = interrupt_payload.get("gate", "unknown")
@@ -629,7 +646,7 @@ async def stream_run(
             # Terminal
             config = {"configurable": {"thread_id": run_id}}
             try:
-                final_state = graph.get_state(config)
+                final_state = await asyncio.to_thread(graph.get_state, config)
                 # Guard against stale "ok" from an intermediate invoke (race condition):
                 # if the graph still has pending nodes, this invoke ended at a gate that
                 # is about to interrupt — keep waiting for the actual terminal invoke.
@@ -729,7 +746,7 @@ async def get_run_detail(
     await _check_run_access(graph, run_id, current_user["user_id"], mutate=False)
     config = {"configurable": {"thread_id": run_id}}
     try:
-        state  = graph.get_state(config)
+        state  = await asyncio.to_thread(graph.get_state, config)
         values = state.values if hasattr(state, "values") else {}
     except Exception:
         raise HTTPException(status_code=404, detail="Run state not found")
@@ -766,7 +783,7 @@ async def get_pdf(
 
     config = {"configurable": {"thread_id": run_id}}
     try:
-        state  = graph.get_state(config)
+        state  = await asyncio.to_thread(graph.get_state, config)
         values = state.values if hasattr(state, "values") else {}
     except Exception:
         raise HTTPException(status_code=404, detail="Run state not found")
@@ -777,7 +794,15 @@ async def get_pdf(
 
     try:
         from ..pdf import build_pdf
-        pdf_bytes = build_pdf(task=task, narrative=narrative, recommendation=recommendation)
+        # Rendering is CPU-bound reportlab work, not I/O, but it still cannot
+        # run here: with --workers 1 it stalls every other request for as long
+        # as the document takes.
+        pdf_bytes = await asyncio.to_thread(
+            build_pdf,
+            task=task,
+            narrative=narrative,
+            recommendation=recommendation,
+        )
         return Response(
             content=pdf_bytes,
             media_type="application/pdf",

@@ -247,7 +247,7 @@ The sending domain must also be verified in Resend. `EMAIL_TIMEOUT_SECONDS`
 | No chain-of-thought events with Redis on | `_publish_sync` needs the passed-in loop |
 | Disk filling | Check `sizes_mb` in the retention log; `graph_free` shows reclaimable bytes |
 | Analyses stall while API stays up | Graph executor saturated — `MAX_CONCURRENT_GRAPH_INVOKES` |
-| Whole API stalls | Something blocking on the event loop |
+| Whole API stalls | Something blocking on the event loop — `pytest tests/test_event_loop_blocking.py` names the call |
 
 Useful commands:
 
