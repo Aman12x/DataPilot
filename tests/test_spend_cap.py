@@ -53,11 +53,41 @@ def test_longest_prefix_wins():
     assert pricing.rates("claude-fable-5")[0] == 10.00
 
 
-def test_unknown_model_bills_at_the_most_expensive_tier():
-    """Under-charging an unknown model would let it slip past the cap."""
-    unknown = pricing.rates("claude-something-unreleased")[0]
-    assert unknown >= max(pricing.rates(m)[0] for m in ("claude-opus-5", "claude-haiku-4-5"))
+def test_unknown_model_bills_at_least_as_much_as_any_known_one():
+    """Under-charging an unknown model would let it slip past the cap.
+
+    Anchored to every entry in the table, not a hand-picked pair: Opus 4.1 is
+    $15/$75, well above the newest models, so a fallback pinned to the current
+    tier would silently under-bill an older, pricier one.
+    """
+    unknown_in, unknown_out, _, _ = pricing.rates("claude-something-unreleased")
+    assert unknown_in >= max(i for i, _ in pricing._PRICES.values())
+    assert unknown_out >= max(o for _, o in pricing._PRICES.values())
     assert not pricing.is_known_model("claude-something-unreleased")
+
+
+def test_unknown_model_is_warned_about_once(caplog):
+    """A silent fallback is how a mispriced model hides."""
+    import logging
+
+    pricing._warned_unknown.discard("claude-mystery-1")
+    with caplog.at_level(logging.WARNING):
+        pricing.rates("claude-mystery-1")
+        pricing.rates("claude-mystery-1")
+    hits = [r for r in caplog.records if "claude-mystery-1" in r.getMessage()]
+    assert len(hits) == 1, f"expected one warning, got {len(hits)}"
+
+
+def test_dated_sonnet_4_snapshot_is_priced():
+    """The production MODEL override is claude-sonnet-4-20250514."""
+    assert pricing.rates("claude-sonnet-4-20250514")[:2] == (3.00, 15.00)
+    assert pricing.is_known_model("claude-sonnet-4-20250514")
+
+
+def test_sonnet_4_entry_does_not_shadow_sonnet_4_5():
+    """Longest-prefix matching must keep the more specific entry winning."""
+    assert pricing.rates("claude-sonnet-4-5-20250929")[:2] == (3.00, 15.00)
+    assert pricing.rates("claude-opus-4-1-20250805")[:2] == (15.00, 75.00)
 
 
 def test_cache_rates_are_derived_from_input_rate():
