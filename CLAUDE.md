@@ -207,3 +207,11 @@ Detail — why each is open, the intended fix, and how to verify — lives in
 - **Connections cover one dataset/schema (except Postgres).** BigQuery and
   MySQL see only the dataset/schema saved on the connection; the planned fix
   is a per-connection scope picker, not unbounded discovery.
+- **Gate-approved SQL evaporates after each run.** A verified-query
+  repository retrieving it as few-shot context is the field's strongest
+  accuracy lever (Cortex ~90% vs ~51% raw schema).
+- **No table retrieval before generation.** The whole schema context ships
+  into the SQL prompt (20K-char truncation); becomes the binding constraint
+  as multi-schema discovery widens.
+- **No per-stage eval.** End-to-end scores exist, but nothing attributes a
+  failure to intent routing vs table choice vs SQL vs audit.

@@ -158,6 +158,101 @@ datasets through the SQL gate.
 
 ---
 
+## 6. Verified-query repository
+
+**What:** persist SQL that a human approved at the query gate, keyed by the
+question (embedding), and retrieve it as few-shot context for future
+generations. The semantic cache already stores question embeddings and
+cached results; this extends the same machinery to certified SQL.
+
+**Why:** the strongest accuracy lever in the field. Snowflake Cortex
+Analyst reaches ~90% (vs ~51% raw-schema prompting) largely on a semantic
+model plus a Verified Query Repository; LinkedIn's certified example
+notebooks are the same idea. DataPilot already produces the raw material:
+every gate-approved query is a human-verified question-to-SQL pair that
+currently evaporates after the run.
+
+**How:** two intake paths into one repository, both keyed by
+(task/name, embedding, SQL, connection, schema fingerprint):
+1. *Automatic:* on query-gate approval, store the approved SQL — every
+   gated run is a free human-verified pair.
+2. *User-contributed:* let users paste their org's canonical queries with
+   a name/description (ConnectionsPanel or PackStudio is the natural
+   home) — the "teach it how we write queries" path. Uber's custom
+   workspace samples and LinkedIn's self-serve indexed example queries
+   are this lever; Meta goes further and mines all query history into
+   per-user context.
+Retrieval: in `generate_sql`, top-k matching examples for the connection
+whose schema fingerprint still matches, added to the few-shot block
+(`_filter_few_shot_by_schema` already guards stale tables). Invalidate on
+schema drift via the snapshot hash.
+
+**Caution from Anthropic's internal build:** raw retrieval over thousands
+of historical queries moved their accuracy by less than one point; the
+gains came from *curated* distillations (skills, semantic layer,
+21% to 95%). So keep contributed queries few, named, and deliberate —
+exemplars, not a query-log dump — and treat volume mining as raw material
+for future curation, not direct context.
+
+**Verify:** unit tests for store/retrieve/invalidation; measure SQL-gate
+edit rate before/after on the demo datasets (the eval harness in item 8
+gives the measurement).
+
+---
+
+## 7. Table retrieval and column pruning before generation
+
+**What:** a pre-generation stage that selects relevant tables (and prunes
+irrelevant columns) instead of shipping the entire schema context,
+which is truncated at 20K chars today.
+
+**Why:** every serious system converged here after trying give-the-model-
+everything: Uber's Intent/Table/Column-Prune agents, LinkedIn's
+retrieve-20 → rank-to-7 pipeline. Currently harmless at demo scale, it
+becomes the binding constraint once multi-schema Postgres (shipped) and
+the BigQuery/MySQL scope picker (item 5) widen discovery — a curated
+scope dilutes into noise without retrieval.
+
+**How:** cheap first version, no embeddings: an LLM ranking call that
+receives the task plus the table list with one-line summaries (name,
+row-count note, annotation headline) and returns the relevant subset;
+only those tables' full column blocks go into the SQL prompt. Column
+pruning can wait — table-level selection captures most of the win.
+Sequence after item 5, or land it first so item 5's wider scopes arrive
+pre-filtered.
+
+**Verify:** golden-question eval (item 8) comparing SQL quality with and
+without retrieval on a multi-schema fixture; assert token count of the
+generation prompt drops on wide schemas.
+
+---
+
+## 8. Component-level golden-question eval set
+
+**What:** a few dozen golden questions against the demo datasets with
+expected intent, tables, and result shape, scored per pipeline stage
+(intent routing, table choice, SQL validity/execution, audit catch rate)
+rather than end-to-end only.
+
+**Why:** Uber evaluates intent accuracy, table overlap, execution success,
+and query similarity separately, with "decoupled" runs (gold intent
+injected) to isolate which stage failed; LinkedIn built a 133-question
+internal benchmark because academic ones do not transfer. Items 6 and 7
+are unmeasurable without this: the runs table already stores tasks and
+eval scores, but nothing attributes failures to a stage.
+
+**How:** a fixtures file of (question, mode, expected tables, expected
+result predicate); a slow-marked pytest harness that runs the graph
+against the demo DuckDB with the LLM live, recording per-stage outcomes;
+a small report script comparing runs. Start with ~20 questions spanning
+lookup/exploratory/A-B modes.
+
+**Verify:** the harness itself runs green on `-m slow` locally; baseline
+numbers recorded in DEVLOG so future prompt/model changes have a
+comparison point.
+
+---
+
 ## Unverified audit claims (triage before trusting)
 
 Items from the April/August audits that have **not** been re-verified recently.
