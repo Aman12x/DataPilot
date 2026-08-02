@@ -7,6 +7,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
   testDir: "./e2e",
+  // Convention: e2e/prod-*.spec.ts drives the DEPLOYED app and talks to the
+  // live API, so those specs cannot run against the local stack this config
+  // starts. They have their own config (playwright.prod.config.mjs). Without
+  // this exclusion CI collected prod-auth.spec.ts here and failed on a session
+  // cookie that was never set locally.
+  testIgnore: /prod-.*\.spec\.ts/,
   timeout: 180_000,
   expect: { timeout: 120_000 },
   fullyParallel: false,
