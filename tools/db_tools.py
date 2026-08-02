@@ -510,20 +510,45 @@ class DBConnection:
             return self._BQ_STRING_TYPES
         return self._POSTGRES_STRING_TYPES
 
+    @staticmethod
+    def _split_pg_table(table: str) -> tuple[str, str]:
+        """Split a possibly schema-qualified table name into (schema, name).
+
+        Names are emitted by _get_tables_postgres: bare for dot-free public
+        tables, "schema.name" otherwise (a public table whose own name contains
+        a dot is emitted as "public.the.name", so splitting on the FIRST dot is
+        always correct)."""
+        if "." in table:
+            schema, name = table.split(".", 1)
+            return schema, name
+        return "public", table
+
     def _get_tables_postgres(self) -> list[str]:
+        # Every schema the role can see, not just public — warehouses organise
+        # tables into named schemas (analytics, marts, ...) and a public-only
+        # view made them silently invisible. Public keeps bare names so
+        # existing annotations and metric packs stay valid.
         df = self._query_postgres(
-            "SELECT table_name FROM information_schema.tables "
-            "WHERE table_schema = 'public' ORDER BY table_name"
+            "SELECT table_schema, table_name FROM information_schema.tables "
+            "WHERE table_schema NOT IN ('pg_catalog', 'information_schema') "
+            "ORDER BY (table_schema <> 'public'), table_schema, table_name"
         )
-        return df["table_name"].tolist()
+        names: list[str] = []
+        for schema, name in zip(df["table_schema"], df["table_name"]):
+            if schema == "public" and "." not in name:
+                names.append(name)
+            else:
+                names.append(f"{schema}.{name}")
+        return names
 
     def _get_columns_postgres(self, table: str) -> list[tuple[str, str]]:
-        # A comparison value, not an identifier — bind it rather than quoting.
+        schema, name = self._split_pg_table(table)
+        # Comparison values, not identifiers — bind them rather than quoting.
         df = self._query_postgres(
             "SELECT column_name, data_type FROM information_schema.columns "
-            "WHERE table_schema = 'public' AND table_name = %s "
+            "WHERE table_schema = %s AND table_name = %s "
             "ORDER BY ordinal_position",
-            params=(table,),
+            params=(schema, name),
         )
         return list(zip(df["column_name"], df["data_type"]))
 
@@ -586,7 +611,11 @@ class DBConnection:
         Returns None on failure or high-cardinality columns.
         """
         try:
-            safe_table = quote_ident(table, self.backend)
+            if self.backend == "postgres":
+                pg_schema, pg_name = self._split_pg_table(table)
+                safe_table = f"{quote_ident(pg_schema)}.{quote_ident(pg_name)}"
+            else:
+                safe_table = quote_ident(table, self.backend)
             safe_col = quote_ident(col, self.backend)
             if self.backend == "postgres":
                 sql = (

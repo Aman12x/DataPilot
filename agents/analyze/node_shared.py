@@ -645,9 +645,11 @@ def _validate_sql_references(sql: str, schema_context: str) -> dict[str, list[st
             alias_map[a] = t   # short alias (e, ex, p) → real table
             alias_map[t] = t   # table name itself
 
-    for m in re.finditer(r'\bFROM\s+(\w+)(?:\s+(?:AS\s+)?(\w+))?', sql, re.IGNORECASE):
+    # [\w.]+ so schema-qualified names (marts.orders) register whole rather
+    # than truncating at the first dot and flagging the schema as a bad table.
+    for m in re.finditer(r'\bFROM\s+([\w.]+)(?:\s+(?:AS\s+)?(\w+))?', sql, re.IGNORECASE):
         _register(m.group(1), m.group(2))
-    for m in re.finditer(r'\bJOIN\s+(\w+)(?:\s+(?:AS\s+)?(\w+))?', sql, re.IGNORECASE):
+    for m in re.finditer(r'\bJOIN\s+([\w.]+)(?:\s+(?:AS\s+)?(\w+))?', sql, re.IGNORECASE):
         _register(m.group(1), m.group(2))
 
     # ── Table validation ─────────────────────────────────────────────────────
@@ -701,8 +703,8 @@ def _tables_in_sql(sql: str) -> set[str]:
         cte_names.add(m.group(1).lower())
 
     tables: set[str] = set()
-    for m in re.finditer(r'\b(?:FROM|JOIN)\s+(\w+)', sql, re.IGNORECASE):
-        name = m.group(1).lower()
+    for m in re.finditer(r'\b(?:FROM|JOIN)\s+([\w.]+)', sql, re.IGNORECASE):
+        name = m.group(1).lower().rstrip(".")
         if name.upper() not in _SQL_KEYWORDS and len(name) > 2 and name not in cte_names:
             tables.add(name)
     return tables

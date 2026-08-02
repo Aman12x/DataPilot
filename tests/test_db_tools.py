@@ -111,3 +111,69 @@ def test_inspect_schema_quotes_unusual_duckdb_identifiers(tmp_path):
     assert "TABLE: odd table" in schema
     assert "select" in schema
     assert "two words" in schema
+
+
+# ── Postgres multi-schema discovery ───────────────────────────────────────────
+
+def _pg_conn():
+    return DBConnection(
+        "postgres",
+        host="127.0.0.1", port=5432, dbname="d", user="u", password="p",
+    )
+
+
+def test_postgres_tables_span_all_schemas(monkeypatch):
+    """Warehouses keep tables in named schemas; public-only made them invisible."""
+    db = _pg_conn()
+    captured = {}
+
+    def fake_query(sql, params=None):
+        captured["sql"] = sql
+        return pd.DataFrame({
+            "table_schema": ["public", "public", "analytics", "marts"],
+            "table_name":   ["events", "weird.name", "sessions", "orders"],
+        })
+
+    monkeypatch.setattr(db, "_query_postgres", fake_query)
+    names = db._get_tables_postgres()
+    # Bare names for dot-free public tables (annotations stay valid); qualified
+    # otherwise — including a public table whose own name contains a dot.
+    assert names == ["events", "public.weird.name", "analytics.sessions", "marts.orders"]
+    assert "pg_catalog" in captured["sql"]  # system schemas excluded
+
+
+def test_postgres_columns_bind_qualified_schema(monkeypatch):
+    db = _pg_conn()
+    captured = {}
+
+    def fake_query(sql, params=None):
+        captured["params"] = params
+        return pd.DataFrame({"column_name": ["id"], "data_type": ["integer"]})
+
+    monkeypatch.setattr(db, "_query_postgres", fake_query)
+
+    db._get_columns_postgres("marts.orders")
+    assert captured["params"] == ("marts", "orders")
+
+    db._get_columns_postgres("events")
+    assert captured["params"] == ("public", "events")
+
+    # First-dot split keeps the rest of a dotted public name intact
+    db._get_columns_postgres("public.weird.name")
+    assert captured["params"] == ("public", "weird.name")
+
+
+def test_postgres_sampling_quotes_schema_and_table_separately(monkeypatch):
+    db = _pg_conn()
+    captured = {}
+
+    def fake_query(sql, params=None):
+        captured["sql"] = sql
+        return pd.DataFrame({"v": ["a", "b"]})
+
+    monkeypatch.setattr(db, "_query_postgres", fake_query)
+    vals = db._sample_distinct_values("marts.orders", "status")
+    assert vals == ["a", "b"]
+    # Quoting the qualified name as ONE identifier would produce "marts.orders"
+    # and query a nonexistent public table.
+    assert '"marts"."orders"' in captured["sql"]

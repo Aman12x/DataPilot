@@ -118,6 +118,46 @@ anything.
 
 ---
 
+## 5. Scope connections beyond a single dataset
+
+**What:** a saved connection covers exactly one BigQuery dataset or one
+MySQL schema (`tools/db_tools.py::_get_tables_bigquery` /
+`_get_tables_mysql`). Postgres now spans all non-system schemas (fixed
+alongside this note), but BigQuery and MySQL cannot see sibling
+datasets/schemas, and there is no way to widen or narrow what any
+connection covers.
+
+**Why:** real warehouses split data across datasets (`raw`, `analytics`,
+`marts`); a one-dataset connection forces users to pick one slice and lose
+joins across them. The opposite failure also matters: "everything" on a
+large warehouse would blow up the schema context (already truncated at
+20K chars in `nodes_narrative`) and degrade SQL quality, so the goal is a
+*chosen* scope, not an unbounded one.
+
+**How, in order:**
+1. *Schema plumbing:* emit qualified names for BigQuery
+   (`dataset.table` via `client.list_datasets()`) and MySQL sibling
+   schemas, mirroring the Postgres pattern: bare names for the
+   connection's home dataset/schema, qualified otherwise. The SQL
+   validator already accepts dotted names (`node_shared._validate_sql_references`),
+   and `_split_pg_table`-style helpers cover quoting in sampling.
+2. *Scope picker:* store a `schemas` list (JSON) on `db_connections`;
+   at save/edit time in ConnectionsPanel, run the connection test, then
+   show the discovered datasets/schemas as checkboxes (default: the home
+   one). `inspect_schema` filters discovery to the stored scope.
+3. *Ripples:* annotations and metric packs key by table name — qualified
+   names work as plain strings, but document that annotations for
+   non-home schemas must use the qualified name. The drift `schema_hash`
+   changes meaning when scope changes; reset the snapshot on scope edit
+   (same pattern as the credential-change health reset).
+
+**Verify:** unit tests mirroring `test_postgres_tables_span_all_schemas`
+for BigQuery/MySQL; a scope-picker flow test in the CSP sweep's Sources
+modal; live check that a two-dataset BigQuery connection can join across
+datasets through the SQL gate.
+
+---
+
 ## Unverified audit claims (triage before trusting)
 
 Items from the April/August audits that have **not** been re-verified recently.

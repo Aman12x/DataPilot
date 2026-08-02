@@ -106,6 +106,11 @@ class TestFewShotFilter:
         sql = "SELECT e.user_id FROM events e JOIN experiment ex ON e.user_id = ex.user_id"
         assert _tables_in_sql(sql) == {"events", "experiment"}
 
+    def test_extracts_schema_qualified_tables(self):
+        """A qualified name must extract whole, not truncate at the first dot."""
+        sql = "SELECT o.total FROM marts.orders o JOIN analytics.sessions s ON o.sid = s.id"
+        assert _tables_in_sql(sql) == {"marts.orders", "analytics.sessions"}
+
     def test_excludes_cte_aliases(self):
         sql = """
         WITH pre AS (SELECT user_id, AVG(session_count) AS cov FROM events GROUP BY user_id)
@@ -830,3 +835,24 @@ class TestSchemaContextParsing:
             f"Row count annotation leaked into table names: {known_tables}"
         assert "customer_id" in known_cols
         assert "variant" in known_cols
+
+
+class TestQualifiedTableValidation:
+    """_validate_sql_references must accept schema-qualified Postgres names."""
+
+    SCHEMA = "TABLE: marts.orders\n  order_id  integer\n  total  numeric\n"
+
+    def test_qualified_from_target_is_not_flagged(self):
+        from agents.analyze.node_shared import _validate_sql_references
+        res = _validate_sql_references(
+            "SELECT o.total FROM marts.orders o WHERE o.order_id > 5", self.SCHEMA,
+        )
+        assert res["bad_tables"] == []
+        assert res["bad_columns"] == []
+
+    def test_unknown_qualified_table_is_flagged_whole(self):
+        from agents.analyze.node_shared import _validate_sql_references
+        res = _validate_sql_references(
+            "SELECT x.a FROM marts.unknown x", self.SCHEMA,
+        )
+        assert res["bad_tables"] == ["marts.unknown"]
