@@ -18,6 +18,7 @@ import functools
 import json
 import logging
 import os
+import threading
 import time
 from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor
@@ -65,6 +66,15 @@ _SHUTDOWN_TIMEOUT = float(os.getenv("SHUTDOWN_CANCEL_TIMEOUT", "10"))
 # that admission cap honest: previously it allowed 32 concurrent invokes on a
 # pool that could only ever run 6.
 _graph_executor: ThreadPoolExecutor | None = None
+
+# One cancellation flag per in-flight run. `asyncio.to_thread` and
+# `run_in_executor` cannot cancel a thread that has already started, so a timed
+# out or shutting down run needs somewhere to leave a note the worker will read.
+_cancel_events: dict[str, threading.Event] = {}
+
+
+class _RunAbandoned(Exception):
+    """Unwinds a worker thread whose result nobody is waiting for any more."""
 
 
 def _get_graph_executor() -> ThreadPoolExecutor:
@@ -360,6 +370,12 @@ async def cancel_active_runs() -> None:
     """
     global _graph_executor
 
+    # Tell every worker thread to stop at its next node boundary. Cancelling
+    # the coroutine alone leaves the thread running the rest of the graph, which
+    # is what made shutdown take up to GRAPH_INVOKE_TIMEOUT of wasted work.
+    for event in list(_cancel_events.values()):
+        event.set()
+
     tasks = [t for t in _active_tasks if not t.done()]
     if tasks:
         logger.info("Cancelling %d in-flight run task(s)", len(tasks))
@@ -427,6 +443,7 @@ def _stream_graph(
     run_id: str,
     loop: asyncio.AbstractEventLoop,
     run_meter: spend.Meter,
+    cancel: threading.Event,
 ) -> dict:
     """Stream graph execution in a worker thread, publishing step events.
 
@@ -435,13 +452,25 @@ def _stream_graph(
     read the total even if this call times out.
     """
     with spend.meter(run_meter):
-        return _run_graph_stream(graph, arg, config, run_id, loop)
+        return _run_graph_stream(graph, arg, config, run_id, loop, cancel)
 
 
 def _run_graph_stream(
-    graph: Any, arg: Any, config: dict, run_id: str, loop: asyncio.AbstractEventLoop
+    graph: Any,
+    arg: Any,
+    config: dict,
+    run_id: str,
+    loop: asyncio.AbstractEventLoop,
+    cancel: threading.Event,
 ) -> dict:
     for chunk in graph.stream(arg, config, stream_mode="updates"):
+        # Checked between nodes, which is the only place this thread is
+        # interruptible — nothing can stop it mid-node. That bounds the work a
+        # timed out or shutting down run keeps doing to one node instead of the
+        # whole remaining graph. LangGraph has already checkpointed everything
+        # up to here, so the run stays resumable.
+        if cancel.is_set():
+            raise _RunAbandoned(run_id)
         if not chunk:
             continue
         node = list(chunk.keys())[0]
@@ -477,8 +506,14 @@ def _publish_sync(run_id: str, payload: dict, loop: asyncio.AbstractEventLoop) -
 
 
 async def _bill_run(run_id: str, run_meter: spend.Meter) -> None:
-    """Charge a finished run's LLM spend to the budget scope it started under."""
-    if run_meter.total_usd <= 0:
+    """Charge a run's unbilled LLM spend to the budget scope it started under.
+
+    Callable more than once per run. An abandoned worker keeps spending after
+    the timeout is reported, so the tail is billed when the thread finally
+    exits; `take_unbilled` makes charging the same dollars twice impossible.
+    """
+    usd, calls = run_meter.take_unbilled()
+    if usd <= 0:
         return
     try:
         from .budget import record_spend
@@ -487,10 +522,10 @@ async def _bill_run(run_id: str, run_meter: spend.Meter) -> None:
         if scope is None:
             owner = await get_owner(run_id)
             scope = f"user:{owner}" if owner else "user:unknown"
-        await record_spend(scope, run_meter.total_usd)
+        await record_spend(scope, usd)
         logger.info(
             "run.spend run=%s scope=%s usd=%.6f calls=%d",
-            run_id, scope, run_meter.total_usd, run_meter.calls,
+            run_id, scope, usd, calls,
         )
     except Exception:
         logger.warning("Could not record spend for run %s", run_id, exc_info=True)
@@ -506,32 +541,91 @@ async def _invoke(graph: Any, arg: Any, run_id: str) -> None:
         return
 
     _active_invokes += 1
+    released = False
+
+    def _release_slot() -> None:
+        """Give the admission slot back exactly once."""
+        nonlocal released
+        global _active_invokes
+        if not released:
+            released = True
+            _active_invokes -= 1
+
     config = {"configurable": {"thread_id": run_id}}
     loop = asyncio.get_running_loop()
     run_meter = spend.Meter()
+    cancel = threading.Event()
+    _cancel_events[run_id] = cancel
+
+    future = loop.run_in_executor(
+        _get_graph_executor(),
+        functools.partial(_stream_graph, graph, arg, config, run_id, loop, run_meter, cancel),
+    )
+    abandoned = False
     try:
-        snap = await asyncio.wait_for(
-            loop.run_in_executor(
-                _get_graph_executor(),
-                functools.partial(_stream_graph, graph, arg, config, run_id, loop, run_meter),
-            ),
-            timeout=_INVOKE_TIMEOUT,
-        )
+        # shield: wait_for cancels what it is waiting on, and cancelling the
+        # executor future would detach us from a thread that is still running.
+        # The shield takes the cancellation so `future` survives and its
+        # completion can still be observed below.
+        snap = await asyncio.wait_for(asyncio.shield(future), timeout=_INVOKE_TIMEOUT)
         await _publish_result(run_id, {"ok": True, "snap": snap})
     except asyncio.TimeoutError:
+        abandoned = True
+        cancel.set()
         msg = f"Analysis timed out after {_INVOKE_TIMEOUT}s. Please try a simpler query."
         logger.error("Graph invoke timed out after %ds for run %s", _INVOKE_TIMEOUT, run_id)
         await _publish_result(run_id, {"ok": False, "error": msg})
         await _store_error(run_id, msg)
         cleanup_run(run_id, drop_owner=False)
-    except Exception as exc:
+    except Exception:
         logger.exception("Graph invoke failed for run %s", run_id)
         msg = "Analysis failed. Please try again."
         await _publish_result(run_id, {"ok": False, "error": msg})
         await _store_error(run_id, msg)
         cleanup_run(run_id, drop_owner=False)
     finally:
-        _active_invokes -= 1
         # Bill on every exit path. A run that failed or timed out still spent
         # whatever tokens it consumed before it stopped.
         await _bill_run(run_id, run_meter)
+        if abandoned:
+            _reap_abandoned(run_id, future, run_meter, _release_slot)
+        else:
+            _cancel_events.pop(run_id, None)
+            _release_slot()
+
+
+def _reap_abandoned(
+    run_id: str,
+    future: asyncio.Future,
+    run_meter: spend.Meter,
+    release_slot: Any,
+) -> None:
+    """Hold the admission slot until an abandoned worker thread actually exits.
+
+    The timeout path used to return the slot immediately while the thread kept
+    running. `_MAX_CONCURRENT` sizes both the admission cap *and* the executor,
+    so the next run was admitted against a pool worker that was still busy: the
+    executor queued it, and a brand-new run hung with nothing wrong with it. Two
+    timeouts on a small pool was enough to stall the queue behind work whose
+    result nobody would ever read.
+
+    Keeping the slot makes the cap honest again, and `cancel` (already set)
+    means the thread unwinds at the next node boundary rather than running to
+    completion.
+    """
+    def _finished(fut: asyncio.Future) -> None:
+        _cancel_events.pop(run_id, None)
+        release_slot()
+        exc = None if fut.cancelled() else fut.exception()
+        if isinstance(exc, _RunAbandoned):
+            logger.info("Abandoned run %s unwound at a node boundary", run_id)
+        elif exc is not None:
+            logger.warning(
+                "Abandoned run %s ended in %s", run_id, type(exc).__name__
+            )
+        # Whatever it spent after the timeout was reported still costs money.
+        task = asyncio.ensure_future(_bill_run(run_id, run_meter))
+        _active_tasks.add(task)
+        task.add_done_callback(_active_tasks.discard)
+
+    future.add_done_callback(_finished)

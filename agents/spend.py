@@ -33,12 +33,29 @@ class Meter:
     def __init__(self) -> None:
         self.total_usd = 0.0
         self.calls = 0
+        self._billed_usd = 0.0
+        self._billed_calls = 0
         self._lock = threading.Lock()
 
     def add(self, usd: float) -> None:
         with self._lock:
             self.total_usd += usd
             self.calls += 1
+
+    def take_unbilled(self) -> tuple[float, int]:
+        """Return the spend not yet charged to a budget, and mark it charged.
+
+        A timed-out run is billed when the timeout is reported, but its worker
+        thread keeps running — and spending — until it unwinds, so the tail has
+        to be billed separately. Draining rather than reading `total_usd` twice
+        makes charging the same dollars twice impossible by construction.
+        """
+        with self._lock:
+            usd = self.total_usd - self._billed_usd
+            calls = self.calls - self._billed_calls
+            self._billed_usd = self.total_usd
+            self._billed_calls = self.calls
+            return usd, calls
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<Meter ${self.total_usd:.6f} over {self.calls} call(s)>"

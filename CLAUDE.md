@@ -92,6 +92,14 @@ environments, so it failed *open*: `staging` got insecure cookies, no HSTS, and
 `allow_origins=["*"]`. `environment.py` inverts it — only known-local names are
 local, everything else is deployed.
 
+**A worker thread can only be stopped between nodes.** `asyncio.wait_for`
+cancels the coroutine, never the thread. `run_manager` passes a
+`threading.Event` into the worker and checks it at each `graph.stream()`
+boundary, so a timed-out or shutting-down run stops after one more node instead
+of running the whole graph. The admission slot is held until the thread really
+exits — `_MAX_CONCURRENT` sizes both the cap and the executor, so releasing
+early admits a run onto a busy worker and it silently queues.
+
 **Every LLM call is metered.** `_anthropic_client()` returns a wrapper that
 prices each response. Don't reach around it — four of seven call sites used to
 record nothing because metering lived at the call sites.
@@ -149,7 +157,5 @@ call. Everything else uses `FAST_MODEL`.
 
 ## Known-open issues
 
-- **A timed-out graph run leaks its worker thread.** `asyncio.to_thread` cannot
-  be cancelled; the request is released but the thread runs to completion.
 - **Backups live on the same volume as the data.** They cover corruption and bad
   deletes, not disk loss.
