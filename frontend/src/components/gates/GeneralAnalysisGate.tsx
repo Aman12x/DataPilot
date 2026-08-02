@@ -60,7 +60,10 @@ function corrColor(r: number): string {
 
 export default function GeneralAnalysisGate({ payload, onSubmit, submitting }: Props) {
   const [notes, setNotes] = useState("");
-  const { describe_result: desc, correlation_result: corr } = payload;
+  // Skipped pipeline steps arrive as {} rather than null (lookup queries skip
+  // find_correlations entirely) — coerce anything without its data to null.
+  const desc = payload.describe_result?.columns ? payload.describe_result : null;
+  const corr = payload.correlation_result?.pairs ? payload.correlation_result : null;
 
   return (
     <div style={{ ...gateCard, maxWidth: 760 }}>

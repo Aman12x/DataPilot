@@ -4,6 +4,7 @@ import client, {
   API_BASE, uploadFile, type UploadResult, logout,
   getActiveWorkspaceId, setActiveWorkspaceId, type WorkspaceSummary,
 } from "../api/client";
+import { downloadRunPdf } from "../utils/downloadPdf";
 import { useSSE, type DoneEvent, type StepEvent, type TrustIndicators, type PowerAnalysisResult, type SensitivityRow } from "../hooks/useSSE";
 import { useTokenRefresh } from "../hooks/useTokenRefresh";
 import PipelineProgress from "../components/PipelineProgress";
@@ -17,6 +18,7 @@ import QueryGate from "../components/gates/QueryGate";
 import AnalysisGate from "../components/gates/AnalysisGate";
 import GeneralAnalysisGate from "../components/gates/GeneralAnalysisGate";
 import NarrativeGate from "../components/gates/NarrativeGate";
+import ErrorBoundary from "../components/ErrorBoundary";
 import {
   type Mode, type PgCreds, type BqCreds, type Sample, type SavedConnection,
   type MetricPackSummary, type RunOptions, MODE_META,
@@ -760,11 +762,7 @@ function FinishedView({ state, runId, steps, onNewAnalysis, onFollowUp }: {
 
   const downloadPdf = async () => {
     try {
-      const { data } = await client.get<{ pdf_token: string }>(`/runs/${runId}/pdf-token`);
-      window.open(
-        `${API_BASE}/runs/${runId}/pdf?pdf_token=${encodeURIComponent(data.pdf_token)}`,
-        "_blank"
-      );
+      await downloadRunPdf(runId);
     } catch {
       alert("Could not generate PDF.");
     }
@@ -973,7 +971,14 @@ function ActiveRun({
   const renderGate = (el: React.ReactNode) => (
     <>
       {errBanner}
-      <div style={s.gateContent}>{el}</div>
+      <div style={s.gateContent}>
+        <ErrorBoundary
+          resetKey={gate?.gate}
+          hint="The analysis is still paused at this gate — reload the page to show it again."
+        >
+          {el}
+        </ErrorBoundary>
+      </div>
     </>
   );
 

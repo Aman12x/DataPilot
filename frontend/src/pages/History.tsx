@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import client, {
-  API_BASE, logout,
+  logout,
   getActiveWorkspaceId, setActiveWorkspaceId, type WorkspaceSummary,
 } from "../api/client";
+import { downloadRunPdf } from "../utils/downloadPdf";
 import Markdown from "../components/Markdown";
 import Spinner from "../components/Spinner";
 import AppShell from "../components/AppShell";
@@ -88,11 +89,7 @@ export default function History() {
     e.stopPropagation();
     setDownloading(run.run_id);
     try {
-      const { data } = await client.get<{ pdf_token: string }>(`/runs/${run.run_id}/pdf-token`);
-      window.open(
-        `${API_BASE}/runs/${run.run_id}/pdf?pdf_token=${encodeURIComponent(data.pdf_token)}`,
-        "_blank"
-      );
+      await downloadRunPdf(run.run_id);
     } catch {
       alert("Could not generate PDF.");
     } finally { setDownloading(null); }

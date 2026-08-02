@@ -6,6 +6,7 @@ import VerifyEmail from "./pages/VerifyEmail";
 import Analysis from "./pages/Analysis";
 import History from "./pages/History";
 import { checkAuth } from "./api/client";
+import ErrorBoundary from "./components/ErrorBoundary";
 import { useEffect, useState } from "react";
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
@@ -37,15 +38,17 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
 export default function App() {
   return (
     <BrowserRouter>
-      <Routes>
-        <Route path="/login" element={<Login />} />
-        <Route path="/verify-email" element={<VerifyEmail />} />
-        <Route path="/forgot-password" element={<ForgotPassword />} />
-        <Route path="/reset-password" element={<ResetPassword />} />
-        <Route path="/" element={<AuthGuard><Analysis /></AuthGuard>} />
-        <Route path="/history" element={<AuthGuard><History /></AuthGuard>} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+      <ErrorBoundary hint="Reload the page to continue — your data and run history are safe.">
+        <Routes>
+          <Route path="/login" element={<Login />} />
+          <Route path="/verify-email" element={<VerifyEmail />} />
+          <Route path="/forgot-password" element={<ForgotPassword />} />
+          <Route path="/reset-password" element={<ResetPassword />} />
+          <Route path="/" element={<AuthGuard><Analysis /></AuthGuard>} />
+          <Route path="/history" element={<AuthGuard><History /></AuthGuard>} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </ErrorBoundary>
     </BrowserRouter>
   );
 }
