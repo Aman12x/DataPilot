@@ -72,6 +72,26 @@ the tree and fails on any new one. It caught six sites the original hand-written
 grep missed. Infrastructure logs under `backend/api/` are exempt: they carry no
 customer data and read better in full.
 
+**The request must never end on an assistant turn.** `generate_narrative` is
+the only multi-turn call. It appends its own output to `conversation_history`,
+which is appended after the task prompt, so an analyst-requested revision used
+to end the request on the previous narrative. Sonnet 4.6+ and Opus 4.6+ reject
+that outright; Haiku 4.5 **accepts it and continues the old narrative** instead
+of rewriting — measured, and the quieter of the two failures.
+`nodes_narrative._conversation_turns` normalises the history and writes the
+result back to state, so no producer has to remember the rule.
+
+**Never index `response.content[0]`.** Use
+`agents.llm_response.response_text()`. Any model with adaptive thinking returns
+`[ThinkingBlock, TextBlock]`, and `content[0].text` raises `AttributeError`
+inside the node, which reads like a node bug rather than a model mismatch.
+
+**Environment posture is `environment.is_deployed()`, never an env *name*.**
+The old `ENV in ("production", "prod")` was an allowlist of strict
+environments, so it failed *open*: `staging` got insecure cookies, no HSTS, and
+`allow_origins=["*"]`. `environment.py` inverts it — only known-local names are
+local, everything else is deployed.
+
 **Every LLM call is metered.** `_anthropic_client()` returns a wrapper that
 prices each response. Don't reach around it — four of seven call sites used to
 record nothing because metering lived at the call sites.
@@ -129,13 +149,6 @@ call. Everything else uses `FAST_MODEL`.
 
 ## Known-open issues
 
-- **`_IS_PRODUCTION` matches only `production`/`prod`.** An environment named
-  `staging` silently relaxes secure cookies, CORS enforcement, and HSTS. Only
-  the `SECRET_KEY` check was widened (`deps._IS_DEPLOYED`).
-- **Trailing-assistant prefill.** `generate_narrative` appends its own output to
-  `conversation_history`, which is appended after the task prompt — so a request
-  can end with an assistant turn. Harmless on Haiku 4.5; **returns 400 on any
-  Sonnet 4.6+ or Opus 4.6+ model**, so moving `FAST_MODEL` will break it.
 - **A timed-out graph run leaks its worker thread.** `asyncio.to_thread` cannot
   be cancelled; the request is released but the thread runs to completion.
 - **Backups live on the same volume as the data.** They cover corruption and bad

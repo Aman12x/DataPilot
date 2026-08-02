@@ -45,6 +45,7 @@ from agents.state import AgentState
 from config.analysis_config import MetricConfig, load_metric_config
 from agents import spend
 from agents.log_safety import redact_exception
+from agents.llm_response import response_text
 from agents.analyze.prompt_safety import wrap_untrusted_content
 from agents.tracer import flush, observe, trace_generation
 from memory import retriever, semantic_cache
@@ -917,7 +918,7 @@ def _llm_correct_sql(
             max_tokens=_MAX_TOKENS_SQL,
             messages=[{"role": "user", "content": prompt}],
         )
-        return _extract_sql(response.content[0].text)
+        return _extract_sql(response_text(response))
     except Exception as exc:
         logger.warning("_llm_correct_sql: correction call failed: %s", redact_exception(exc))
         return sql

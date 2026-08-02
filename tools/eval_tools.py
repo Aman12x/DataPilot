@@ -39,6 +39,8 @@ from typing import Any, Sequence
 
 import pandas as pd
 
+from agents.llm_response import response_text
+
 logger = logging.getLogger(__name__)
 
 
@@ -827,7 +829,7 @@ def score_recommendation(
         max_tokens=256,
         messages=[{"role": "user", "content": prompt}],
     )
-    raw = msg.content[0].text.strip()
+    raw = response_text(msg).strip()
     data = json.loads(raw)
 
     actionability = float(data.get("actionability", 0.5))

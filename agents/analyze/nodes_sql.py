@@ -80,7 +80,7 @@ def generate_sql(state: AgentState) -> dict:
         )
         cost_info = gen.update(response)
 
-    sql = _extract_sql(response.content[0].text)
+    sql = _extract_sql(response_text(response))
 
     # ── Schema validation + one auto-correction pass ──────────────────────────
     # Check both table names and dotted column references against schema_context.

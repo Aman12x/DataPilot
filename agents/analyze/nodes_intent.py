@@ -82,7 +82,7 @@ def _llm_resolve_intent(
             max_tokens=256,
             messages=messages,
         )
-        raw = response.content[0].text.strip()
+        raw = response_text(response).strip()
         # Strip markdown fences if present
         if raw.startswith("```"):
             raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
@@ -311,7 +311,7 @@ def infer_metric_config_node(state: AgentState) -> dict:
         }
 
     try:
-        raw = response.content[0].text.strip()
+        raw = response_text(response).strip()
         # Strip markdown fences if present
         if raw.startswith("```"):
             raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()

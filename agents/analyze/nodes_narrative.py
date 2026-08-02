@@ -6,6 +6,80 @@ import agents.analyze.node_shared as _shared
 from agents.log_safety import redact_exception
 globals().update({k: v for k, v in vars(_shared).items() if not k.startswith("__")})
 
+# ── Conversation history hygiene ──────────────────────────────────────────────
+
+# Cap the content of any single turn, and the number of turns kept. Each
+# revision adds an exchange, and an analyst can decline indefinitely.
+_MAX_TURN_CHARS = 8_000
+_MAX_HISTORY_TURNS = 6
+
+# Injected when the stored history ends on the assistant's own narrative. It has
+# to be an instruction, not just a filler turn: the alternative reading — an
+# assistant message the model continues — is exactly the behaviour being fixed.
+_REVISION_REQUEST = (
+    "Rewrite the narrative in full, using the results and instructions above. "
+    "Produce a complete replacement, not a continuation of the version above."
+)
+
+
+def _conversation_turns(history: list[dict]) -> list[dict]:
+    """Coerce stored history into a well-formed, trailing-user conversation.
+
+    The request is one user block followed by this history, so the history must
+    begin with an assistant turn, alternate, and end with a user turn.
+
+    It does not do that on its own. `generate_narrative` appends its output on
+    every pass, but only the audit path appends a following user turn — so an
+    analyst-requested revision leaves the request ending on an assistant turn.
+    The API reads a trailing assistant message as a prefill to continue: a 400
+    on Sonnet 4.6+ and Opus 4.6+, and on models that accept it (Haiku 4.5), an
+    instruction to *extend* the previous narrative rather than rewrite it. The
+    second failure is the quieter one — it degrades every revision without
+    raising anything.
+
+    Normalising here rather than at each producer means a new path that appends
+    to the history cannot reintroduce the bug, and the result is written back to
+    state so the loop stays well-formed across turns instead of re-accumulating.
+    """
+    turns: list[dict] = []
+    for turn in history:
+        role = turn.get("role")
+        content = turn.get("content")
+        if role not in ("assistant", "user") or not content:
+            continue
+        if isinstance(content, str):
+            turn = {**turn, "content": content[:_MAX_TURN_CHARS]}
+        if not turns:
+            # The history is appended after a user block, so it opens on the
+            # assistant's reply. A leading user turn would double up.
+            if role != "assistant":
+                continue
+            turns.append(turn)
+            continue
+        if turns[-1]["role"] == role:
+            if role == "assistant":
+                # A later narrative supersedes the one before it.
+                turns[-1] = turn
+            else:
+                # Two instructions in a row are both still instructions.
+                prev, cur = turns[-1].get("content"), turn.get("content")
+                if isinstance(prev, str) and isinstance(cur, str):
+                    turns[-1] = {**turns[-1], "content": f"{prev}\n\n{cur}"[:_MAX_TURN_CHARS]}
+                else:
+                    turns[-1] = turn
+            continue
+        turns.append(turn)
+
+    # Trim oldest exchanges in pairs so the alternation and the assistant-first
+    # opening both survive the trim.
+    while len(turns) > _MAX_HISTORY_TURNS:
+        turns = turns[2:]
+
+    if turns and turns[-1]["role"] == "assistant":
+        turns.append({"role": "user", "content": _REVISION_REQUEST})
+    return turns
+
+
 # ── Node 18: generate_narrative ───────────────────────────────────────────────
 
 @observe(name="generate_narrative", as_type="generation")
@@ -120,12 +194,11 @@ def generate_narrative(state: AgentState) -> dict:
     safe_schema = wrap_untrusted_content(schema_context, label="database_schema") if schema_context else ""
     history_text   = _format_history(state.get("relevant_history", []))
 
-    # Multi-turn: prepend static blocks then conversation history.
-    # Cap each conversation turn to avoid runaway growth across revisions.
-    messages = _build_cached_messages(safe_schema, history_text, task_prompt)
-    for turn in state.get("conversation_history", []):
-        capped = {**turn, "content": turn["content"][:8_000]} if isinstance(turn.get("content"), str) else turn
-        messages.append(capped)
+    # Multi-turn: static blocks, then a normalised conversation. See
+    # _conversation_turns — the stored history ends on an assistant turn on any
+    # revision the audit did not trigger, which the API reads as a prefill.
+    prior_turns = _conversation_turns(state.get("conversation_history") or [])
+    messages = _build_cached_messages(safe_schema, history_text, task_prompt) + prior_turns
 
     with trace_generation("generate_narrative", _fast_model(), task_prompt, max_tokens=_MAX_TOKENS_NARRATIVE) as gen:
         response = _anthropic_client().messages.create(
@@ -135,7 +208,7 @@ def generate_narrative(state: AgentState) -> dict:
         )
         cost_info = gen.update(response)
 
-    polished_narrative = response.content[0].text.strip()
+    polished_narrative = response_text(response).strip()
     # Strip outer code fence if Claude wrapped the entire response in one.
     # (The frontend's sanitiseNarrative would remove fenced content, leaving nothing.)
     if polished_narrative.startswith("```"):
@@ -156,7 +229,7 @@ def generate_narrative(state: AgentState) -> dict:
             max_tokens=2048,
             messages=[{"role": "user", "content": audit_prompt}],
         )
-        raw = audit_resp.content[0].text.strip()
+        raw = response_text(audit_resp).strip()
         if raw.startswith("```"):
             raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
         audit_result = NarrativeAuditResult(**json.loads(raw))
@@ -178,9 +251,10 @@ def generate_narrative(state: AgentState) -> dict:
     except Exception as exc:
         logger.warning("generate_narrative: audit failed — %s", redact_exception(exc))
 
-    # Append this turn to conversation history for potential refinement
-    new_history = list(state.get("conversation_history") or [])
-    new_history.append({"role": "assistant", "content": polished_narrative})
+    # Append this turn to conversation history for potential refinement. Built
+    # from the normalised turns, not from raw state, so the stored history stays
+    # well-formed instead of accumulating whatever the previous pass left.
+    new_history = prior_turns + [{"role": "assistant", "content": polished_narrative}]
 
     # When audit finds critical issues, append a precise correction request so
     # the next auto-retry sees exactly what to fix. The LLM picks this up from
@@ -319,7 +393,7 @@ def _generate_deck(state: "AgentState", final_narrative: str) -> dict:
             max_tokens=800,
             messages=[{"role": "user", "content": prompt}],
         )
-        raw = resp.content[0].text.strip()
+        raw = response_text(resp).strip()
         if raw.startswith("```"):
             raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
         return json.loads(raw)
