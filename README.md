@@ -1,155 +1,78 @@
 # DataPilot
 
-**An AI data analyst that shows its work.** Ask a question in plain English; DataPilot writes the SQL, runs the statistics, and drafts a stakeholder-ready report. A human approves the SQL, the method, and the story before anything ships.
+DataPilot is an AI data analyst with human review built into the pipeline. You ask a question in plain English; it writes the SQL, runs the statistics, and drafts a report. Before any of that reaches a stakeholder, a person has approved the query, the analysis, and the wording. I built it because most LLM analytics tools fail silently, and the interesting problem is not generating SQL but making sure a wrong number never leaves the building.
 
-**Live demo:** [datapilotapp.singhaman.dev](https://datapilotapp.singhaman.dev) (guest login, no signup) · **API health:** [datapilot.singhaman.dev/health](https://datapilot.singhaman.dev/health)
-
-**937 backend tests** · **30-test CSP suite against the production build** · **Playwright E2E** · **4 offline eval harnesses with a CI regression gate** · deployed on Railway
+There is a live instance at [datapilotapp.singhaman.dev](https://datapilotapp.singhaman.dev) with a guest login, no signup needed. API health: [datapilot.singhaman.dev/health](https://datapilot.singhaman.dev/health).
 
 ![DataPilot home](docs/screenshots/home.png)
 
----
+## How it works
 
-## The 60-second tour
+A run moves through a LangGraph state machine with four interrupt points. At each one the run pauses, persists to a checkpoint, and waits for a person. Approvals survive page reloads and server restarts because the graph resumes from the checkpoint, not from memory.
 
-1. **Ask.** "Did the new checkout flow increase revenue? Which segments benefited most?"
-2. **Approve the SQL.** The generated query is shown, editable, and never runs without sign-off.
-3. **Approve the analysis.** CUPED-adjusted t-test, subgroup effects, guardrail sweep, novelty check, and every intermediate result, reviewable and overridable.
-4. **Approve the story.** The narrative is audited against the computed statistics before you see it; claims like "significant" or "ship it" are blocked when the numbers disagree.
-5. **Deliver.** A stakeholder deck with a verdict, key evidence, and caveats. One click to PDF.
+```
+  question
+     |
+  semantic cache ------ close match to a past run? -> cached result
+     |
+  schema load + intent resolution -> INTENT GATE   (confirm the interpretation)
+     |
+  SQL generation ------------------> QUERY GATE    (review the SQL before it runs)
+     |
+  execute query
+     |
+     +-- general analysis: describe, correlations, regression,
+     |   time series, anomaly detection, forecast
+     +-- experiment analysis: CUPED, t-test, subgroup effects,
+     |   novelty check, power/MDE, guardrails, funnel
+     |
+  ANALYSIS GATE   (review findings, override anything)
+     |
+  narrative generation + claim audit
+     |
+  NARRATIVE GATE  (approve or request a revision)
+     |
+  report + stakeholder deck + PDF
+```
+
+The LLM's only job is generating SQL and prose. Query validation, execution, and every statistic are deterministic Python (scipy, scikit-learn, Prophet). After the narrative is drafted, an audit step checks its claims against the computed numbers: if the text says "significant" while the confidence interval crosses zero, or "ship it" while a guardrail is breached, the claim is corrected or the narrative is sent back for revision before an analyst ever sees it.
 
 | Reviewing generated SQL | The finished report |
 |---|---|
 | ![SQL gate](docs/screenshots/sql-gate.png) | ![Report](docs/screenshots/report.png) |
 
----
+## Why approval gates?
 
-## Why this project is interesting engineering
+Autonomous agents fail quietly. A hallucinated filter produces a plausible-looking number, and nobody notices until it is in a slide deck. The gates change the failure mode from "wrong number in production" to "analyst clicks reject." Each gate takes a few seconds to approve, and each one has caught real mistakes during development: wrong table joins at the query gate, a misread experiment direction at the analysis gate.
 
-This is not a chatbot wrapper. It is a production-shaped system with the failure modes of real analytics products designed out:
-
-- **Human-in-the-loop as architecture, not UI.** The pipeline is a LangGraph state machine with four interrupt points. Runs pause at each gate, persist to checkpoints, and resume after approval, including across page reloads and server restarts.
-- **The LLM never touches data directly.** It generates SQL; deterministic backend code validates it (SELECT-only, identifier quoting, content checks for empty results, arm imbalance, and JOIN fan-out), executes it, and computes every statistic with scipy/sklearn. Numbers in the report are traceable to tool output, and an automated audit rewrites or blocks claims that contradict them.
-- **Evaluation is CI, not vibes.** Four deterministic harnesses (37 assertions across an experiment scenario, two cross-domain datasets, golden Q&A, and CSV fixtures) run on every push and fail the build if any score drops more than 2% below a committed baseline. Zero API cost, milliseconds to run.
-- **Security posture is tested, not asserted.** An AST scan fails the build on any blocking call inside an async route (it found 56 sites a hand-grep missed). A log-safety test fails on any raw exception logged from the agent layer, because INFO logs become Sentry breadcrumbs and must never carry customer data. The CSP is tested against the production build with deliberate violations, so a policy that silently stopped enforcing would fail the suite.
-- **Cost is governed.** Every LLM call goes through a metering wrapper with daily spend caps (global, per-user, and per-guest-IP, because guest identities are free to mint). Unknown models price at the most expensive known tier so spend can only trip early, never slip past.
-- **Secrets are handled like secrets.** Warehouse credentials are encrypted at rest, never returned by the API, and wiped from workflow checkpoints after schema load. Private-network database hosts are blocked by default (SSRF guard).
-
-The decision log with tradeoffs is in [decisions.md](decisions.md); the operational runbook is in [docs/production-operations.md](docs/production-operations.md).
-
----
-
-## Pipeline
-
-```
-  User question (natural language)
-        |
-        v
-  Semantic cache ---- similar past run? ----> cached result (zero API cost)
-        |
-        v
-  Schema load + intent resolution ---> INTENT GATE (analyst confirms interpretation)
-        |
-        v
-  SQL generation -----------------------> QUERY GATE (analyst reviews SQL before any data is touched)
-        |
-        v
-  Execute query
-        |
-        +--- General analysis: describe, correlations, OLS regression,
-        |    time series, anomaly detection, forecast
-        |
-        +--- Experiment analysis: metric decomposition, CUPED variance
-        |    reduction, t-test, subgroup (HTE) analysis, novelty check,
-        |    MDE and post-hoc power, guardrail sweep, funnel analysis
-        |
-        v
-  ANALYSIS GATE (analyst reviews findings, can override any result)
-        |
-        v
-  Narrative generation + automated claim audit
-        |
-        v
-  NARRATIVE GATE (analyst approves or requests revision)
-        |
-        v
-  Stakeholder deck + full report + PDF, logged with a quality score
-```
-
-Nothing moves past a gate without approval. Each gate takes seconds; skipping them is how wrong SQL and hallucinated statistics reach production.
-
----
+The tradeoff is real: a fully autonomous run would be faster. For exploratory questions on trusted data the gates can feel heavy, which is why cached results skip the pipeline entirely and certified metric packs skip the metric-confirmation step.
 
 ## Data sources
 
-Upload a CSV or Excel file, or connect a warehouse. Connections are first-class objects with health tracking:
+Upload a CSV or Excel file, or connect Postgres, MySQL, or BigQuery. Connections are saved objects with a tested/failed/untested health state, and can be re-tested, edited, and deleted from the UI. Credentials are encrypted at rest, never returned by the API, and wiped from workflow checkpoints once the schema is loaded. Private-network hosts are refused by default to prevent SSRF.
 
 ![Data sources](docs/screenshots/data-sources.png)
 
-- **Backends:** DuckDB (uploads and demo data), PostgreSQL (all schemas, not just `public`), MySQL, BigQuery
-- **Managed lifecycle:** save with a live test, re-test anytime, edit and rotate credentials (health resets on rotation so a stale green badge cannot lie), delete
-- **SSL mode selection** for Postgres/MySQL; service-account JSON for BigQuery
-- **Schema annotations:** column comments and business synonyms injected into the schema context so SQL matches how the team talks about the data
-- **Metric packs:** versioned metric definitions; certified packs skip the confirmation gate and constrain SQL to the agreed definitions
-- **Workspaces:** owner/analyst roles, shared connections, packs, and run history; mutations are owner-only
+Postgres discovery covers all schemas the role can see, not just `public`. Column annotations and business synonyms can be attached per connection and are injected into the schema context, so generated SQL uses the vocabulary your team actually uses. Workspaces add owner/analyst roles with shared connections, metric packs, and run history.
 
----
+## Testing
 
-## Quality and trust
+The backend has 937 tests that run in about 30 seconds. A few are unusual enough to mention:
 
-Six layers stand between a wrong answer and a stakeholder:
+- An AST scan walks every async route and fails on blocking calls in the event loop. The hand-written grep it replaced had found 6 call sites; the scan found 56.
+- A log-safety test fails if any code under `agents/` logs a raw exception, because INFO records become Sentry breadcrumbs and pandas exceptions contain customer column names.
+- The CSP suite (30 Playwright tests) runs against the production build with its generated policy and includes tests that deliberately violate the policy, so a header that silently stopped enforcing would fail the suite.
 
-| Layer | What it catches |
-|-------|----------------|
-| Offline eval harnesses | Wrong tool outputs, missing golden answers, regressions vs the committed baseline |
-| SQL content validation | Empty results, missing experiment arms, arm imbalance, JOIN fan-out, percentage/rate confusion |
-| Claim-accuracy audit | "Significant" when the CI crosses zero, "large effect" with a small Cohen's d, direction contradicting the data. Auto-corrected before the analyst sees it |
-| Safety constraints | Blocks "ship" language under sample-ratio mismatch, breached guardrails, or winner's-curse conditions |
-| Trust indicators | Every report carries a confidence level with the reason, derived from data volume and method |
-| Audit log | Every approved report records the run ID, gate decisions, acknowledgments, and auto-correction count |
+Four offline eval harnesses check the statistics layer against golden answers on every push, and CI fails if any score drops more than 2% below a committed baseline. They are deterministic and run in milliseconds; there is no LLM-as-judge in the gate. Honest caveat: these harnesses cover the deterministic tools, not the LLM stages. SQL generation quality is currently exercised by end-to-end runs rather than a gated benchmark, and building that benchmark is the next planned piece of work.
 
-Current eval scores (run `make eval` locally, no API key needed):
+| Harness | Score | Checks |
+|---------|-------|--------|
+| DAU experiment | 12/13 | subgroup effects, CUPED, t-test, guardrails, forecast |
+| Cross-domain | 13/13 | clinical trial and ecommerce A/B |
+| Transactions Q&A | 7/7 | golden answers on a 10k-row dataset |
+| CSV fixtures | 4/4 | four domains, keyword and faithfulness checks |
 
-| Harness | Score | Validates |
-|---------|-------|-----------|
-| DAU experiment | 12/13 | HTE segment, CUPED, t-test, guardrails, decomposition, forecast |
-| Cross-domain | 13/13 | Clinical trial and ecommerce A/B on real sample data |
-| Transactions Q&A | 7/7 | Golden answers plus faithfulness on a 10k-row dataset |
-| CSV fixtures | 4/4 | Keyword and faithfulness checks across four domains |
-
----
-
-## Stack
-
-| Layer | Technology |
-|-------|-----------|
-| Frontend | React 18, TypeScript, Vite; IBM Plex design system; Recharts |
-| Backend | FastAPI, uvicorn |
-| Agent orchestration | LangGraph with interrupt/resume and SQLite checkpointing |
-| LLM | Anthropic Claude, metered and spend-capped |
-| Query engines | DuckDB, PostgreSQL, MySQL, BigQuery |
-| Statistics | scipy, numpy, scikit-learn, Prophet |
-| Semantic cache | MiniLM embeddings, three-tier similarity thresholds |
-| Auth | JWT (HS256), PBKDF2, HttpOnly cookies, refresh rotation |
-| Observability | Sentry with log redaction, structured logging |
-| CI | pytest (937), offline eval gate, Playwright E2E, CSP suite, gitleaks |
-
----
-
-## Architecture decisions, briefly
-
-- **LangGraph over a plain chain** because the pipeline needs conditional branching and mid-graph interrupt/resume with persistence. A chain cannot pause for a human and pick up where it left off.
-- **Approval gates over full autonomy** because autonomous agents fail silently. The gates make the failure mode "analyst clicks reject" instead of "wrong number in an exec deck."
-- **DuckDB for execution** because columnar engines are built for aggregation and it gives one SQL interface across uploads, demo data, and external warehouses.
-- **Deterministic evals over LLM-as-judge** because judges cost money, add variance, and create circular dependencies. Faithfulness checking (are the narrative's numbers actually in the data?) catches the worst failure mode for free.
-- **SSE over WebSockets** because a run is a one-way event stream with occasional POSTs back; SSE reconnects automatically and needs no proxy configuration.
-- **Semantic cache with local embeddings** because analyst questions repeat in meaning but not in wording, and a cache hit costs zero tokens and zero seconds.
-
-Longer versions with the tradeoffs considered: [decisions.md](decisions.md).
-
----
-
-## Run it locally
+## Running it locally
 
 ```bash
 git clone https://github.com/Aman12x/DataPilot && cd DataPilot
@@ -160,31 +83,49 @@ cp .env.example .env          # add ANTHROPIC_API_KEY
 python data/generate_data.py  # demo dataset
 
 cd backend && uvicorn api.main:app --reload --port 8000
-# new terminal:
+# in another terminal:
 cd frontend && npm install && npm run dev   # http://localhost:5173
 ```
 
-Tests and evals:
-
 ```bash
-./venv/bin/python -m pytest tests/ -m "not integration and not slow" -q   # 937 tests, ~30s
-make eval                                                                 # offline eval harnesses
-cd frontend && npx playwright test                                        # E2E against a local stack
+./venv/bin/python -m pytest tests/ -m "not integration and not slow" -q   # backend tests
+make eval                                                                 # offline evals, no API key
+cd frontend && npx playwright test                                        # end to end
 ```
 
-Deployment notes (Railway, volumes, environment) are in [docs/production-operations.md](docs/production-operations.md).
+Deployment (Railway, volumes, environment variables) is covered in [docs/production-operations.md](docs/production-operations.md).
 
----
+## Design notes
 
-## Documentation map
+**Why LangGraph?** The pipeline needs conditional branching and the ability to pause mid-graph, persist, and resume after a human acts. A plain chain cannot do that, and a hand-rolled state machine would mean reimplementing checkpointing.
 
-| Doc | For |
+**Why DuckDB for execution?** One SQL interface across uploaded files, demo data, and external warehouses, and columnar execution is simply the right tool for aggregation. It also spares the LLM from generating pandas.
+
+**Why no LLM-as-judge in CI?** Judges cost money per run, add variance, and grade the model with a model. Checking whether the narrative's numbers exist in the data is a string-and-arithmetic problem, and it catches the failure that matters most.
+
+**Why SSE instead of WebSockets?** A run is a one-way event stream with occasional POSTs back. SSE reconnects on its own and passes through proxies without ceremony.
+
+**Why a local semantic cache?** Analysts ask the same question in different words. MiniLM embeddings run locally in a few milliseconds, and a cache hit costs zero tokens and returns instantly. Borderline similarity asks the user instead of guessing.
+
+The longer versions, with the options that lost, are in [decisions.md](decisions.md).
+
+## Limitations
+
+Worth knowing before you take the demo apart:
+
+- The default deployment runs a single worker with SQLite checkpoints. That is fine for a demo and small teams, and is the first thing to change for real scale.
+- The eval gate covers the statistics layer, not SQL generation (see Testing above).
+- Guest sessions are rate-limited and spend-capped per IP, so heavy demo use can hit a budget wall by design.
+
+## More documentation
+
+| Doc | What it covers |
 |---|---|
-| [CLAUDE.md](CLAUDE.md) | Working in the codebase: layout, invariants, traps, open issues |
-| [decisions.md](decisions.md) | Architecture decision log |
+| [CLAUDE.md](CLAUDE.md) | Codebase layout, invariants, and traps for anyone working in it |
+| [decisions.md](decisions.md) | Architecture decisions with tradeoffs |
 | [docs/production-operations.md](docs/production-operations.md) | Config, spend caps, retention, CSP, runbook |
-| [evals/README.md](evals/README.md) | Eval harness architecture and how to add one |
+| [evals/README.md](evals/README.md) | How the eval harnesses work and how to add one |
 
 ---
 
-Built by [Aman Singh](https://github.com/Aman12x).
+Built by [Aman Singh](https://github.com/Aman12x). If you read this far, the live demo is the fastest way to see whether any of it holds up.
