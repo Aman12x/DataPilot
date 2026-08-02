@@ -829,12 +829,15 @@ def analysis_gate(state: AgentState) -> dict:
     mode         = state.get("analysis_mode", "ab_test")
     srm_detected = False   # overridden in ab_test branch below
 
+    # Gate payloads cross into the frontend, whose types declare these fields
+    # as `<Result> | null` — send None for a skipped step, not _to_dict's {}
+    # (lookup queries skip find_correlations, so this is a routine case).
     if mode == "power_analysis":
         pa = state.get("power_analysis_result")
         payload = {
             "gate":                   "analysis",
             "analysis_mode":          "power_analysis",
-            "power_analysis_result":  _to_dict(pa),
+            "power_analysis_result":  _to_dict(pa) or None,
             "message":                "Review the power analysis. Approve or add notes.",
         }
 
@@ -844,8 +847,8 @@ def analysis_gate(state: AgentState) -> dict:
         payload = {
             "gate":             "analysis",
             "analysis_mode":    "general",
-            "describe_result":  _to_dict(describe_res),
-            "correlation_result": _to_dict(correlation_res),
+            "describe_result":  _to_dict(describe_res) or None,
+            "correlation_result": _to_dict(correlation_res) or None,
             "message":          "Review the data summary and insights. Approve or add notes.",
         }
     else:
@@ -892,7 +895,7 @@ def analysis_gate(state: AgentState) -> dict:
             "gate":                    "analysis",
             "analysis_mode":           "ab_test",
             "srm_detected":            srm_detected,
-            "decomposition":           _to_dict(state.get("decomposition_result")),
+            "decomposition":           _to_dict(state.get("decomposition_result")) or None,
             "top_anomaly_slice":       top_slice,
             "forecast_outside_ci":     forecast_res.outside_ci if forecast_res else None,
             "cuped_variance_reduction": cuped_res.variance_reduction_pct if cuped_res else None,
