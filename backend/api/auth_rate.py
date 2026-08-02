@@ -28,11 +28,6 @@ def _limits() -> tuple[int, int]:
     return window, max_attempts
 
 
-_IS_PRODUCTION = (
-    os.getenv("RAILWAY_ENVIRONMENT", "") or os.getenv("ENV", "")
-).lower() in ("production", "prod")
-
-
 # Addresses that can only be infrastructure, never a real client. 100.64.0.0/10
 # is CGNAT, which is what Railway's internal proxy hops use.
 _INFRA_NETS = [

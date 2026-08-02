@@ -22,6 +22,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 
 from .cookies import read_access_token, read_refresh_token
+from .environment import ENV as _ENV, IS_DEPLOYED as _IS_DEPLOYED
 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
@@ -30,15 +31,6 @@ STREAM_TOKEN_EXPIRE_MINUTES = 15
 PDF_TOKEN_EXPIRE_MINUTES = 5
 
 logger = logging.getLogger(__name__)
-
-_ENV = os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("ENV", "development")
-_IS_PRODUCTION = _ENV.lower() in ("production", "prod")
-
-# The key check applies to any real deployment, not just one named "production".
-# _IS_PRODUCTION only matches ("production", "prod"), so a Railway service whose
-# environment is called "staging" would otherwise sign tokens with a key nothing
-# validated. Being on Railway at all is enough to demand a real key.
-_IS_DEPLOYED = _IS_PRODUCTION or bool(os.getenv("RAILWAY_ENVIRONMENT"))
 
 # HS256 is HMAC-SHA256: RFC 7518 §3.2 requires a key of at least 256 bits.
 _MIN_SECRET_KEY_LENGTH = 32

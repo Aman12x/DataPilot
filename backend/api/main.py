@@ -24,6 +24,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
+from .environment import ENV, is_deployed
+
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
@@ -243,9 +245,6 @@ async def lifespan(app: FastAPI):
 
 # ── App ───────────────────────────────────────────────────────────────────────
 
-_ENV = os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("ENV", "development")
-_IS_PRODUCTION = _ENV.lower() in ("production", "prod")
-
 app = FastAPI(title="DataPilot API", version="1.0.0", lifespan=lifespan)
 
 
@@ -289,7 +288,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "Content-Security-Policy", _DOCS_CSP if is_docs else _API_CSP
         )
 
-        if _IS_PRODUCTION:
+        if is_deployed():
             response.headers.setdefault(
                 "Strict-Transport-Security",
                 "max-age=31536000; includeSubDomains",
@@ -309,9 +308,9 @@ if not _cors_raw:
 _origins = [o.strip().rstrip("/") for o in _cors_raw.split(",") if o.strip()]
 _wildcard = not _origins
 if _wildcard:
-    if _IS_PRODUCTION:
+    if is_deployed():
         raise RuntimeError(
-            "CORS_ORIGINS must be set in production. "
+            f"CORS_ORIGINS must be set when deployed (environment: {ENV}). "
             "On Railway, add to the backend service: "
             "CORS_ORIGINS=https://<your-frontend>.up.railway.app "
             "(or set APP_URL to the same frontend URL)."

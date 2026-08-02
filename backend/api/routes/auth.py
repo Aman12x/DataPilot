@@ -36,6 +36,7 @@ from auth.store import (
 )
 from ..auth_rate import check_auth_rate
 from ..cookies import clear_auth_cookies, read_refresh_token, set_auth_cookies
+from ..environment import is_deployed
 from ..deps import (
     bootstrap_user_workspace,
     create_access_token,
@@ -48,11 +49,11 @@ from ..deps import (
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-_ENV = os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("ENV", "development")
-_IS_PRODUCTION = _ENV.lower() in ("production", "prod")
+# Echoing tokens in the response body defeats the HttpOnly cookie. On by
+# default locally so tests and API clients can read them; off anywhere deployed.
 _RETURN_TOKENS = os.getenv(
     "AUTH_RETURN_TOKENS",
-    "false" if _IS_PRODUCTION else "true",
+    "false" if is_deployed() else "true",
 ).lower() in ("1", "true", "yes")
 
 

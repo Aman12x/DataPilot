@@ -7,27 +7,25 @@ for tests and API clients.
 """
 from __future__ import annotations
 
-import os
-
 from fastapi import Request, Response
+
+from .environment import is_deployed
 
 ACCESS_COOKIE = "dp_access"
 REFRESH_COOKIE = "dp_refresh"
-
-_ENV = os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("ENV", "development")
-_IS_PRODUCTION = _ENV.lower() in ("production", "prod")
 
 ACCESS_MAX_AGE = 60 * 60          # 1 hour
 REFRESH_MAX_AGE = 60 * 60 * 24 * 30  # 30 days
 
 
 def _secure() -> bool:
-    return _IS_PRODUCTION
+    return is_deployed()
 
 
 def _samesite() -> str:
     # Cross-origin Railway deploys (frontend ↔ backend) need None + Secure.
-    return "none" if _IS_PRODUCTION else "lax"
+    # SameSite=None is only honoured alongside Secure, so these two move together.
+    return "none" if is_deployed() else "lax"
 
 
 def set_auth_cookies(
