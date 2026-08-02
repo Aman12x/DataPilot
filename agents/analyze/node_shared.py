@@ -92,11 +92,13 @@ _SCHEMA_CACHE_PATH    = os.getenv("SCHEMA_CACHE_PATH", "memory/schema_cache.json
 
 # LLM token limits — named constants so they're visible and changeable
 _MAX_TOKENS_SQL       = int(os.getenv("MAX_TOKENS_SQL",       "4096"))
-_MAX_TOKENS_NARRATIVE = int(os.getenv("MAX_TOKENS_NARRATIVE", "4096"))
-# The audit returns a small JSON object, but max_tokens also has to cover the
-# thinking block on adaptive-thinking models (Sonnet 4.6+ think by default and
-# spend from the same budget) — 2048 starved the JSON once on claude-sonnet-5.
+# max_tokens also has to cover the thinking block on adaptive-thinking models
+# (Sonnet 4.6+ think by default and spend from the same budget). 2048 starved
+# the audit JSON once on claude-sonnet-5; 4096 starved the narrative twice in a
+# row on the deployed app (empty draft at the gate, ~$0.10 spent on thinking).
+_MAX_TOKENS_NARRATIVE = int(os.getenv("MAX_TOKENS_NARRATIVE", "8192"))
 _MAX_TOKENS_AUDIT     = int(os.getenv("MAX_TOKENS_AUDIT",     "8192"))
+_MAX_TOKENS_DECK      = int(os.getenv("MAX_TOKENS_DECK",      "4096"))
 
 # Max LLM-based SQL correction retries in execute_query (0 = disabled)
 _MAX_SQL_RETRIES = int(os.getenv("MAX_SQL_RETRIES", "2"))
@@ -177,8 +179,8 @@ def _model() -> str:
 
 
 def _fast_model() -> str:
-    """Haiku for latency-sensitive tasks (SQL gen, correction) where speed > depth."""
-    return os.getenv("FAST_MODEL", "claude-haiku-4-5-20251001")
+    """Workhorse model for SQL gen, narrative, audit, and corrections."""
+    return os.getenv("FAST_MODEL", "claude-sonnet-5")
 
 
 def _build_cached_messages(

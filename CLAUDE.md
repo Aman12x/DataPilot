@@ -198,8 +198,6 @@ Detail — why each is open, the intended fix, and how to verify — lives in
   `langgraph-checkpoint-postgres` is commented out in `backend/requirements.txt`,
   so accounts and history move to Postgres while checkpoints silently stay on
   local SQLite.
-- **`FAST_MODEL` is still Haiku 4.5.** The two blockers (prefill, `content[0]`)
-  are fixed and the move is verified to work; it has simply not been made.
 - **Backups live on the same volume as the data.** They cover corruption and bad
   deletes, not disk loss.
 - **CSP sweep coverage stops short of three surfaces**: PackStudio's inner

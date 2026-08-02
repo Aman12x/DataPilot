@@ -208,6 +208,15 @@ def generate_narrative(state: AgentState) -> dict:
         )
         cost_info = gen.update(response)
 
+    if getattr(response, "stop_reason", None) == "max_tokens":
+        # On adaptive-thinking models the thinking block spends from the same
+        # budget, so truncation can mean an empty draft rather than a short one.
+        logger.warning(
+            "generate_narrative: response truncated at max_tokens=%d "
+            "— raise MAX_TOKENS_NARRATIVE",
+            _MAX_TOKENS_NARRATIVE,
+        )
+
     polished_narrative = response_text(response).strip()
     # Strip outer code fence if Claude wrapped the entire response in one.
     # (The frontend's sanitiseNarrative would remove fenced content, leaving nothing.)
@@ -398,7 +407,7 @@ def _generate_deck(state: "AgentState", final_narrative: str) -> dict:
         )
         resp = _anthropic_client().messages.create(
             model=_fast_model(),
-            max_tokens=800,
+            max_tokens=_MAX_TOKENS_DECK,
             messages=[{"role": "user", "content": prompt}],
         )
         raw = response_text(resp).strip()
