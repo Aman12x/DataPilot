@@ -213,5 +213,8 @@ Detail — why each is open, the intended fix, and how to verify — lives in
 - **No table retrieval before generation.** The whole schema context ships
   into the SQL prompt (20K-char truncation); becomes the binding constraint
   as multi-schema discovery widens.
-- **No per-stage eval.** End-to-end scores exist, but nothing attributes a
-  failure to intent routing vs table choice vs SQL vs audit.
+- **No per-stage eval, and the offline gate cannot see the LLM pipeline.**
+  The four `evals/` harnesses score the deterministic stats layer only;
+  intent routing, table choice, and SQL generation are ungated. Item 8 is
+  therefore a prerequisite for items 6 and 7, and `score_faithfulness`
+  fails open (1.0 when there is nothing to check against).

@@ -195,8 +195,8 @@ exemplars, not a query-log dump — and treat volume mining as raw material
 for future curation, not direct context.
 
 **Verify:** unit tests for store/retrieve/invalidation; measure SQL-gate
-edit rate before/after on the demo datasets (the eval harness in item 8
-gives the measurement).
+edit rate before/after on the demo datasets. **Do item 8 first** — the
+current eval gate cannot see SQL-generation quality at all.
 
 ---
 
@@ -221,35 +221,55 @@ pruning can wait — table-level selection captures most of the win.
 Sequence after item 5, or land it first so item 5's wider scopes arrive
 pre-filtered.
 
-**Verify:** golden-question eval (item 8) comparing SQL quality with and
-without retrieval on a multi-schema fixture; assert token count of the
-generation prompt drops on wide schemas.
+**Verify:** golden-question eval comparing SQL quality with and without
+retrieval on a multi-schema fixture; assert token count of the
+generation prompt drops on wide schemas. **Do item 8 first** — without
+it this change is unmeasurable.
 
 ---
 
-## 8. Component-level golden-question eval set
+## 8. Component-level golden-question eval set — PREREQUISITE for 6 and 7
 
 **What:** a few dozen golden questions against the demo datasets with
 expected intent, tables, and result shape, scored per pipeline stage
 (intent routing, table choice, SQL validity/execution, audit catch rate)
-rather than end-to-end only.
+rather than end-to-end only. **Build this before items 6 and 7**, plus
+two hardening fixes to the existing scorers.
 
-**Why:** Uber evaluates intent accuracy, table overlap, execution success,
-and query similarity separately, with "decoupled" runs (gold intent
-injected) to isolate which stage failed; LinkedIn built a 133-question
-internal benchmark because academic ones do not transfer. Items 6 and 7
-are unmeasurable without this: the runs table already stores tasks and
-eval scores, but nothing attributes failures to a stage.
+**Why (audit, 2026-08-02):** the four offline harnesses in `evals/` are
+solid for what they cover — deterministic, CI-gated at 2% tolerance
+against a committed baseline — but all of them call the stats tools
+directly on DataFrames. Intent routing, table selection, SQL generation,
+and gate behavior are entirely outside the regression gate, which is
+precisely the layer items 6 and 7 change. Either could ship, regress SQL
+quality, and every gated number would stay green. Uber's
+vanilla/decoupled split and LinkedIn's 133-question internal benchmark
+exist for exactly this reason; Anthropic's ablation discipline (vary one
+component against a pinned eval set) is the acceptance test for 6 and 7.
+
+**Hardening fixes to land with it:**
+1. *Fail-open faithfulness:* `score_faithfulness` returns 1.0 both when
+   the narrative has no numbers and when there are no reference values —
+   "could not verify" scores identically to "verified". Return
+   `score: None` in the no-reference case and exclude it from
+   composites.
+2. *Completeness masquerading as quality:* the in-band production
+   `eval_score` is 60% "did the expected nodes produce any result"; the
+   History UI renders it as "High quality". Label it as completeness
+   wherever it surfaces, or split the two numbers.
 
 **How:** a fixtures file of (question, mode, expected tables, expected
 result predicate); a slow-marked pytest harness that runs the graph
 against the demo DuckDB with the LLM live, recording per-stage outcomes;
 a small report script comparing runs. Start with ~20 questions spanning
-lookup/exploratory/A-B modes.
+lookup/exploratory/A-B modes, and include **one multi-schema fixture DB**
+so item 7's pruning benefit is demonstrable. Keep the existing
+deterministic gate untouched — this is a new layer above it (manual or
+nightly, not per-PR), not a replacement.
 
 **Verify:** the harness itself runs green on `-m slow` locally; baseline
-numbers recorded in DEVLOG so future prompt/model changes have a
-comparison point.
+numbers recorded in DEVLOG so items 6 and 7 land with before/after
+evidence rather than assertions.
 
 ---
 

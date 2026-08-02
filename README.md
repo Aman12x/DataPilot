@@ -1,161 +1,121 @@
 # DataPilot
 
-**Agentic AI data analyst with human-in-the-loop approval gates.**
+**An AI data analyst that shows its work.** Ask a question in plain English; DataPilot writes the SQL, runs the statistics, and drafts a stakeholder-ready report. A human approves the SQL, the method, and the story before anything ships.
 
-Ask a question in plain English. DataPilot generates SQL, runs statistical analysis, and produces an evidence-based report. It pauses for analyst review at every decision point before moving forward.
+**Live demo:** [datapilotapp.singhaman.dev](https://datapilotapp.singhaman.dev) (guest login, no signup) · **API health:** [datapilot.singhaman.dev/health](https://datapilot.singhaman.dev/health)
 
-**Live demo:** [datapilotapp.singhaman.dev](https://datapilotapp.singhaman.dev) · **API:** [datapilot.singhaman.dev/health](https://datapilot.singhaman.dev/health)
+**937 backend tests** · **30-test CSP suite against the production build** · **Playwright E2E** · **4 offline eval harnesses with a CI regression gate** · deployed on Railway
 
-**Quality:** 4 offline eval harnesses · baseline regression gate · **824 pytest tests** · Playwright E2E · deterministic RAGAS-inspired scoring
+![DataPilot home](docs/screenshots/home.png)
 
 ---
 
-## Documentation
+## The 60-second tour
 
-| Doc | For |
+1. **Ask.** "Did the new checkout flow increase revenue? Which segments benefited most?"
+2. **Approve the SQL.** The generated query is shown, editable, and never runs without sign-off.
+3. **Approve the analysis.** CUPED-adjusted t-test, subgroup effects, guardrail sweep, novelty check, and every intermediate result, reviewable and overridable.
+4. **Approve the story.** The narrative is audited against the computed statistics before you see it; claims like "significant" or "ship it" are blocked when the numbers disagree.
+5. **Deliver.** A stakeholder deck with a verdict, key evidence, and caveats. One click to PDF.
+
+| Reviewing generated SQL | The finished report |
 |---|---|
-| [CLAUDE.md](CLAUDE.md) | Working in the codebase: layout, invariants, traps, open issues |
-| [docs/production-operations.md](docs/production-operations.md) | Deploying and running it: config, spend caps, retention, CSP, runbook |
-| [docs/future-work.md](docs/future-work.md) | Open issues and planned changes, with context and verification steps |
-| [decisions.md](decisions.md) | Architecture decision log |
-| [evals/README.md](evals/README.md) | Eval harnesses |
+| ![SQL gate](docs/screenshots/sql-gate.png) | ![Report](docs/screenshots/report.png) |
+
+---
+
+## Why this project is interesting engineering
+
+This is not a chatbot wrapper. It is a production-shaped system with the failure modes of real analytics products designed out:
+
+- **Human-in-the-loop as architecture, not UI.** The pipeline is a LangGraph state machine with four interrupt points. Runs pause at each gate, persist to checkpoints, and resume after approval, including across page reloads and server restarts.
+- **The LLM never touches data directly.** It generates SQL; deterministic backend code validates it (SELECT-only, identifier quoting, content checks for empty results, arm imbalance, and JOIN fan-out), executes it, and computes every statistic with scipy/sklearn. Numbers in the report are traceable to tool output, and an automated audit rewrites or blocks claims that contradict them.
+- **Evaluation is CI, not vibes.** Four deterministic harnesses (37 assertions across an experiment scenario, two cross-domain datasets, golden Q&A, and CSV fixtures) run on every push and fail the build if any score drops more than 2% below a committed baseline. Zero API cost, milliseconds to run.
+- **Security posture is tested, not asserted.** An AST scan fails the build on any blocking call inside an async route (it found 56 sites a hand-grep missed). A log-safety test fails on any raw exception logged from the agent layer, because INFO logs become Sentry breadcrumbs and must never carry customer data. The CSP is tested against the production build with deliberate violations, so a policy that silently stopped enforcing would fail the suite.
+- **Cost is governed.** Every LLM call goes through a metering wrapper with daily spend caps (global, per-user, and per-guest-IP, because guest identities are free to mint). Unknown models price at the most expensive known tier so spend can only trip early, never slip past.
+- **Secrets are handled like secrets.** Warehouse credentials are encrypted at rest, never returned by the API, and wiped from workflow checkpoints after schema load. Private-network database hosts are blocked by default (SSRF guard).
+
+The decision log with tradeoffs is in [decisions.md](decisions.md); the operational runbook is in [docs/production-operations.md](docs/production-operations.md); the honest list of open issues is in [docs/future-work.md](docs/future-work.md).
 
 ---
 
 ## Pipeline
 
 ```
-  User submits task (natural language)
-         │
-         ▼
-  ┌─────────────────────────────────────┐
-  │  1. Semantic cache check            │
-  │     similarity > 0.92 → return      │──── cache hit ────► Cached result
-  │     similarity 0.80–0.92 → confirm  │                     (zero API cost)
-  │     similarity < 0.80 → run         │
-  └──────────────┬──────────────────────┘
-                 │ cache miss
-                 ▼
-  ┌─────────────────────────────────────┐
-  │  2. Schema load + intent resolution │
-  │     auto-detects: experiment vs     │
-  │     general analysis                │
-  │     asks ONE question if ambiguous  │
-  └──────────────┬──────────────────────┘
-                 │
-                 ▼
-         🛑 INTENT GATE
-         analyst confirms or corrects
-         task interpretation
-                 │
-                 ▼
-  ┌─────────────────────────────────────┐
-  │  3. SQL generation                  │
-  │     LLM writes query against        │
-  │     inferred schema                 │
-  └──────────────┬──────────────────────┘
-                 │
-                 ▼
-         🛑 QUERY GATE
-         analyst reviews SQL before
-         any data is touched
-                 │
-                 ▼
-  ┌─────────────────────────────────────┐
-  │  4. Execute query → DataFrame       │
-  └──────┬──────────────────────────────┘
-         │
-         ├──── A/B Experiment ───────────────────────────────────────────────────┐
-         │                                                                        │
-         ▼                                                                        ▼
-  ┌──────────────────────┐                                        ┌──────────────────────────┐
-  │  General analysis    │                                        │  Experiment analysis      │
-  │                      │                                        │                           │
-  │  • describe          │                                        │  • metric decomposition   │
-  │  • correlations      │                                        │  • anomaly detection      │
-  │  • OLS regression    │                                        │  • forecast (Prophet)     │
-  │  • time series       │                                        │  • CUPED variance reduction│
-  │  • anomaly/forecast  │                                        │  • t-test (p-value, CI)   │
-  │  • top/bottom rows   │                                        │  • HTE subgroup analysis  │
-  └──────────┬───────────┘                                        │  • novelty effect check   │
-             │                                                     │  • MDE + business impact  │
-             │                                                     │  • guardrail sweep        │
-             │                                                     │  • funnel analysis        │
-             │                                                     └──────────┬───────────────┘
-             │                                                                │
-             └──────────────────────────┬─────────────────────────────────────┘
-                                        │
-                                        ▼
-                                🛑 ANALYSIS GATE
-                                analyst reviews all findings,
-                                can override any result
-                                        │
-                                        ▼
-                        ┌───────────────────────────────┐
-                        │  5. Generate narrative report  │
-                        │                                │
-                        │  • TL;DR                       │
-                        │  • Key findings                │
-                        │  • Subgroup breakdown          │
-                        │  • Confidence level            │
-                        │  • Recommendation              │
-                        │  • Caveats                     │
-                        └──────────────┬─────────────────┘
-                                       │
-                                       ▼
-                               🛑 NARRATIVE GATE
-                               analyst approves or
-                               requests revision
-                                       │
-                                       ▼
-                        ┌───────────────────────────────┐
-                        │  6. Log run + quality score    │
-                        │     RAGAS eval → memory store  │
-                        │     future runs inherit this   │
-                        │     analyst's corrections      │
-                        └──────────────┬─────────────────┘
-                                       │
-                                       ▼
-                              📄 Final report
-
-  🛑 = human-in-the-loop interrupt. Nothing moves forward without analyst approval.
+  User question (natural language)
+        |
+        v
+  Semantic cache ---- similar past run? ----> cached result (zero API cost)
+        |
+        v
+  Schema load + intent resolution ---> INTENT GATE (analyst confirms interpretation)
+        |
+        v
+  SQL generation -----------------------> QUERY GATE (analyst reviews SQL before any data is touched)
+        |
+        v
+  Execute query
+        |
+        +--- General analysis: describe, correlations, OLS regression,
+        |    time series, anomaly detection, forecast
+        |
+        +--- Experiment analysis: metric decomposition, CUPED variance
+        |    reduction, t-test, subgroup (HTE) analysis, novelty check,
+        |    MDE and post-hoc power, guardrail sweep, funnel analysis
+        |
+        v
+  ANALYSIS GATE (analyst reviews findings, can override any result)
+        |
+        v
+  Narrative generation + automated claim audit
+        |
+        v
+  NARRATIVE GATE (analyst approves or requests revision)
+        |
+        v
+  Stakeholder deck + full report + PDF, logged with a quality score
 ```
+
+Nothing moves past a gate without approval. Each gate takes seconds; skipping them is how wrong SQL and hallucinated statistics reach production.
 
 ---
 
-## Use cases
+## Data sources
 
-Works on any uploaded CSV or connected database. No domain configuration required.
+Upload a CSV or Excel file, or connect a warehouse. Connections are first-class objects with health tracking:
 
-**Product / Growth**
-> *"Did the new checkout redesign increase revenue? Which device types drove the effect?"*
+![Data sources](docs/screenshots/data-sources.png)
 
-CUPED-adjusted t-test, HTE by device/platform/segment, novelty effect decay check, guardrail sweep on engagement and opt-out rates.
+- **Backends:** DuckDB (uploads and demo data), PostgreSQL (all schemas, not just `public`), MySQL, BigQuery
+- **Managed lifecycle:** save with a live test, re-test anytime, edit and rotate credentials (health resets on rotation so a stale green badge cannot lie), delete
+- **SSL mode selection** for Postgres/MySQL; service-account JSON for BigQuery
+- **Schema annotations:** column comments and business synonyms injected into the schema context so SQL matches how the team talks about the data
+- **Metric packs:** versioned metric definitions; certified packs skip the confirmation gate and constrain SQL to the agreed definitions
+- **Workspaces:** owner/analyst roles, shared connections, packs, and run history; mutations are owner-only
 
-**SaaS / Retention**
-> *"What factors most strongly predict churn? Which plans and cohorts churn fastest?"*
+---
 
-OLS regression on churn predictors (tenure, support tickets, plan tier), correlation matrix, time series anomaly detection on MRR.
+## Quality and trust
 
-**Ecommerce**
-> *"Is the new recommendation widget increasing basket size? Is it hurting conversion for mobile users?"*
+Six layers stand between a wrong answer and a stakeholder:
 
-Revenue uplift with session-duration CUPED, HTE by device, MDE to check if the experiment was underpowered, funnel impact.
+| Layer | What it catches |
+|-------|----------------|
+| Offline eval harnesses | Wrong tool outputs, missing golden answers, regressions vs the committed baseline |
+| SQL content validation | Empty results, missing experiment arms, arm imbalance, JOIN fan-out, percentage/rate confusion |
+| Claim-accuracy audit | "Significant" when the CI crosses zero, "large effect" with a small Cohen's d, direction contradicting the data. Auto-corrected before the analyst sees it |
+| Safety constraints | Blocks "ship" language under sample-ratio mismatch, breached guardrails, or winner's-curse conditions |
+| Trust indicators | Every report carries a confidence level with the reason, derived from data volume and method |
+| Audit log | Every approved report records the run ID, gate decisions, acknowledgments, and auto-correction count |
 
-**Finance / Risk**
-> *"Which customer segments have the highest default rates? Is the trend worsening?"*
+Current eval scores (run `make eval` locally, no API key needed):
 
-Segment breakdown, trend decomposition, anomaly detection, correlation with leading indicators.
-
-**HR / People analytics**
-> *"Is there a pay gap by department or level?"*
-
-OLS regression with department/level one-hot encoding, VIF multicollinearity check, correlation analysis.
-
-**Clinical research**
-> *"Did Drug A improve 30-day recovery scores vs placebo? Check for differential effects by age group."*
-
-Treatment/control comparison with covariate adjustment, subgroup HTE, guardrail on adverse event rate.
+| Harness | Score | Validates |
+|---------|-------|-----------|
+| DAU experiment | 12/13 | HTE segment, CUPED, t-test, guardrails, decomposition, forecast |
+| Cross-domain | 13/13 | Clinical trial and ecommerce A/B on real sample data |
+| Transactions Q&A | 7/7 | Golden answers plus faithfulness on a 10k-row dataset |
+| CSV fixtures | 4/4 | Keyword and faithfulness checks across four domains |
 
 ---
 
@@ -163,230 +123,69 @@ Treatment/control comparison with covariate adjustment, subgroup HTE, guardrail 
 
 | Layer | Technology |
 |-------|-----------|
-| Frontend | React 18 + TypeScript + Vite |
-| Backend | FastAPI + uvicorn |
-| Agent graph | LangGraph 1.1 (SqliteSaver / PostgresSaver) |
-| LLM | Anthropic Claude via `MODEL`, defaulting to `FAST_MODEL` (`claude-haiku-4-5-20251001`) |
-| Query engine | DuckDB (upload/local) · PostgreSQL · MySQL · BigQuery |
-| Auth | JWT HS256 + PBKDF2 + refresh token rotation |
-| Semantic cache | MiniLM (all-MiniLM-L6-v2) + SQLite |
-| Run state | Redis Streams (multi-pod) · asyncio.Queue (local) |
-| Stats | scipy · numpy · scikit-learn · Prophet |
-| Eval | 4 offline harnesses · RAGAS-inspired (faithfulness + relevancy + key findings) · baseline regression |
-| Observability | Sentry · structured logging |
-| Tests | pytest (824) · Playwright E2E · offline eval gate in CI |
+| Frontend | React 18, TypeScript, Vite; IBM Plex design system; Recharts |
+| Backend | FastAPI, uvicorn |
+| Agent orchestration | LangGraph with interrupt/resume and SQLite checkpointing |
+| LLM | Anthropic Claude, metered and spend-capped |
+| Query engines | DuckDB, PostgreSQL, MySQL, BigQuery |
+| Statistics | scipy, numpy, scikit-learn, Prophet |
+| Semantic cache | MiniLM embeddings, three-tier similarity thresholds |
+| Auth | JWT (HS256), PBKDF2, HttpOnly cookies, refresh rotation |
+| Observability | Sentry with log redaction, structured logging |
+| CI | pytest (937), offline eval gate, Playwright E2E, CSP suite, gitleaks |
 
 ---
 
-## Saved connections & metric packs
+## Architecture decisions, briefly
 
-SMBs can save warehouse connections and reusable metric definitions:
+- **LangGraph over a plain chain** because the pipeline needs conditional branching and mid-graph interrupt/resume with persistence. A chain cannot pause for a human and pick up where it left off.
+- **Approval gates over full autonomy** because autonomous agents fail silently. The gates make the failure mode "analyst clicks reject" instead of "wrong number in an exec deck."
+- **DuckDB for execution** because columnar engines are built for aggregation and it gives one SQL interface across uploads, demo data, and external warehouses.
+- **Deterministic evals over LLM-as-judge** because judges cost money, add variance, and create circular dependencies. Faithfulness checking (are the narrative's numbers actually in the data?) catches the worst failure mode for free.
+- **SSE over WebSockets** because a run is a one-way event stream with occasional POSTs back; SSE reconnects automatically and needs no proxy configuration.
+- **Semantic cache with local embeddings** because analyst questions repeat in meaning but not in wording, and a cache hit costs zero tokens and zero seconds.
 
-- `POST/GET/PATCH/DELETE /connections` — backends: `postgres`, `mysql`, `bigquery`. Secrets encrypted at rest (Fernet; key from `SECRET_KEY` or `CONNECTIONS_ENCRYPTION_KEY`). For BigQuery, store the service-account JSON as the connection password and set `project_id` + dataset (`dbname`). Secrets are wiped from LangGraph checkpoints after schema load and re-resolved via `connection_id`.
-- `POST/GET/PATCH/DELETE /metric-packs` — versioned `MetricConfig` packs; `certified: true` skips the Metric Config HITL gate.
-- `GET/PUT /connections/{id}/annotations` — column comments + business synonyms injected into schema context.
-- `GET /connections/{id}/drift?metric_pack_id=` — pack-vs-snapshot drift; connection tests also return `drift_warnings` / `schema_changed`.
-- Soft per-connection schema cache + dataset fingerprint (`connection|pack|version|schema`) scopes semantic cache and few-shot history.
-- Private DB hosts are blocked by default (SSRF guard); set `ALLOW_PRIVATE_DB_HOSTS=true` for VPC / self-hosted Postgres or MySQL. BigQuery uses GCP IAM (no host SSRF check).
-- The Analysis UI can select DuckDB / Postgres / MySQL / BigQuery, save connections after a live test, and attach metric packs.
-- **Workspaces** (`GET/POST /workspaces`, members under `/workspaces/{id}/members`) with `owner` / `analyst` roles. Send `X-Workspace-Id` to scope connections, packs, and shared run history. Analysts can read teammate runs; only the creator can resume live HITL gates.
-- **UI:** Metric Pack Studio (create / edit / certify from templates), Schema annotations (column comments + business synonyms), Team members panel (add by email of an existing user), connection save/select, workspace switcher, shared History.
-
-## Security
-
-Production deployments must set the variables documented in [`.env.example`](.env.example):
-
-- **`SECRET_KEY`** — JWT signing key (required in production; server refuses to start without it). Also derives connection-password encryption when `CONNECTIONS_ENCRYPTION_KEY` is unset.
-- **`CORS_ORIGINS`** — comma-separated frontend origin(s)
-- **`REDIS_URL`** — recommended for multi-pod run state and rate limits
-
-Other controls:
-
-- **Email verification** on sign-up when `RESEND_API_KEY` is configured (auto-skipped in dev without email)
-- **HttpOnly cookies** for access/refresh tokens (JavaScript cannot read session credentials)
-- Auth endpoint rate limits (Redis-backed when `REDIS_URL` is set; per-IP with `X-Forwarded-For` support)
-- Generic register errors (no username/email enumeration)
-- Password policy: min 8 chars, at least one letter and one number
-- Auth required on API routes; guest sessions use ephemeral `guest-{uuid}` tokens
-- Semantic cache scoped per user and dataset fingerprint
-- SQL guardrails (read-only, no file-read functions, auto `LIMIT`)
-- Saved Postgres / MySQL / BigQuery secrets encrypted at rest; never returned by the API; wiped from checkpoints after schema load
-- SSRF guard on Postgres/MySQL hosts (private/link-local blocked unless `ALLOW_PRIVATE_DB_HOSTS=true`)
-- Short-lived scoped tokens for SSE/PDF streams
-- Refresh token rotation; password reset invalidates all sessions
-- User tasks and schema excerpts wrapped in delimiters before LLM calls
-- LangGraph checkpoints use JSON serde (pickle disabled)
-- Daily LLM spend caps (global / per-user / per-guest-IP); guests are budgeted per IP because `/auth/guest` mints identities on demand
-- `SECRET_KEY` strength enforced at boot when deployed (>=32 chars, entropy, placeholder denylist)
-- Content-Security-Policy on both surfaces — `default-src 'none'` on the API, generated per-deploy for the SPA
-- Analyst task text redacted from logs (INFO records become Sentry breadcrumbs); `LOG_USER_CONTENT=true` opts in locally
-- Connection tests bounded by a connect timeout and rate limited — the host is caller-supplied
-- Retention pass prunes checkpoints, run history, and spent tokens; snapshots the account and history databases
-- Branch rulesets should require `test-backend`, `eval-offline`, `build-frontend`, and `e2e` CI checks
-
-See [`tests/test_security_fixes.py`](tests/test_security_fixes.py) for regression coverage.
+Longer versions with the tradeoffs considered: [decisions.md](decisions.md).
 
 ---
 
-## Eval scores
-
-Four offline harnesses run on every PR. Scores are compared against a committed baseline — CI fails if any harness drops more than 2%.
+## Run it locally
 
 ```bash
-make eval                              # all fast offline evals (no API key)
-make eval-all                          # evals + baseline regression gate (CI uses this)
-make eval-baseline                     # refresh baseline after intentional improvements
-python evals/analyze_eval.py           # DAU experiment scenario
-python evals/generalisability_eval.py  # cross-domain: clinical + ecommerce
-python evals/transactions_eval.py      # golden Q&A on customer_transactions_10k
-python evals/fixture_eval.py           # fixture keyword + faithfulness checks
-```
-
-See [`evals/README.md`](evals/README.md) for architecture and how to add new harnesses.
-
-| Harness | Score | Validates |
-|---------|-------|-----------|
-| DAU experiment | 12/13 (92%) | HTE segment, CUPED, t-test, guardrails, decomposition, forecast |
-| Cross-domain | 13/13 | Clinical recovery scores + ecommerce revenue A/B |
-| Transactions Q&A | 7/7 | 15 golden answers + faithfulness on 10k-row dataset |
-| CSV fixtures | 4/4 | Keyword + faithfulness on healthcare, HR, timeseries, A/B |
-
-Nightly CI runs the full LLM narrative eval when `ANTHROPIC_API_KEY` is configured.
-
-**DAU experiment (12/13 without API key):**
-```
-  PASS  hte_correct_segment       android/new surfaces as top HTE segment
-  PASS  cuped_variance_reduced    >15% variance reduction
-  PASS  ttest_significant         p < 0.05
-  PASS  decomp_identifies_new     new_users is dominant declining component
-  PASS  slice_ranks_android_first slice-and-dice ranks android #1
-  PASS  forecast_flags_drop       actuals outside Prophet CI
-  PASS  guardrails_breached_found at least one guardrail breached
-  PASS  optout_breached           notif_optout specifically flagged
-  PASS  novelty_ruled_out         effect growing, not decaying
-  PASS  narrative_mentions_segment narrative mentions android + new
-  PASS  narrative_has_caveats     caveats section present
-  PASS  narrative_faithful        cited numbers match tool outputs
-  SKIP  narrative_relevant         requires LLM narrative (passes in make eval-full)
-```
-
-**Cross-domain generalisability (13/13):**
-```
-  PASS  🏥 Clinical: t-test on recovery scores
-  PASS  🏥 Clinical: treatment has significantly higher recovery
-  PASS  🏥 Clinical: treatment mean recovery > control
-  PASS  🏥 Clinical: CUPED with baseline_severity covariate
-  PASS  🏥 Clinical: HTE finds subgroup differential
-  PASS  🏥 Clinical: guardrail on side_effect_count
-  PASS  🏥 Clinical: MDE calculation completes
-  PASS  🛒 Ecomm: t-test on revenue_usd
-  PASS  🛒 Ecomm: treatment mean revenue > control
-  PASS  🛒 Ecomm: CUPED variance reduction > 0%
-  PASS  🛒 Ecomm: HTE finds device/segment differential
-  PASS  🛒 Ecomm: guardrail on orders metric
-  PASS  🛒 Ecomm: MDE is a plausible percentage
-```
-
----
-
-## Quick start
-
-```bash
-# 1. Clone and install
-git clone <repo> && cd datapilot
+git clone https://github.com/Aman12x/DataPilot && cd DataPilot
 python -m venv venv && source venv/bin/activate
 pip install -r backend/requirements.txt
 
-# 2. Set API key
-cp .env.example .env
-# Add ANTHROPIC_API_KEY to .env
+cp .env.example .env          # add ANTHROPIC_API_KEY
+python data/generate_data.py  # demo dataset
 
-# 3. Generate demo data
-python data/generate_data.py
-
-# 4. Backend
 cd backend && uvicorn api.main:app --reload --port 8000
-
-# 5. Frontend (new terminal)
-cd frontend && npm install && npm run dev
-# → http://localhost:5173
+# new terminal:
+cd frontend && npm install && npm run dev   # http://localhost:5173
 ```
+
+Tests and evals:
+
+```bash
+./venv/bin/python -m pytest tests/ -m "not integration and not slow" -q   # 937 tests, ~30s
+make eval                                                                 # offline eval harnesses
+cd frontend && npx playwright test                                        # E2E against a local stack
+```
+
+Deployment notes (Railway, volumes, environment) are in [docs/production-operations.md](docs/production-operations.md).
 
 ---
 
-## Deploy (Railway)
+## Documentation map
 
-Two services from the same repo:
-
-| Service | Root dir | Required env vars |
-|---------|----------|-------------------|
-| `backend` | `backend/` | `ANTHROPIC_API_KEY`, `SECRET_KEY`, `CORS_ORIGINS` (or `APP_URL`) |
-| `frontend` | `frontend/` | `VITE_API_URL` (backend's public Railway URL) |
-
-Mount a Railway volume at **`/app/db`** on the backend service — **not**
-`/app/memory`, which shadows the `memory/` Python package and stops the backend
-booting. The mount alone persists nothing; point these at it too:
-
-```
-GRAPH_DB_PATH=/app/db/graph.db
-AUTH_DB_PATH=/app/db/auth.db
-MEMORY_DB_PATH=/app/db/datapilot_memory.db
-UPLOAD_DIR=/app/db/uploads
-```
-
-Without the volume every redeploy wipes accounts and run history; without the
-last two variables it wipes run history and uploads even with the volume
-attached. See [docs/production-operations.md](docs/production-operations.md).
-
-Optional: `REDIS_URL` (multi-pod run state), `SENTRY_DSN` (error tracking), `RESEND_API_KEY` (password reset emails).
+| Doc | For |
+|---|---|
+| [CLAUDE.md](CLAUDE.md) | Working in the codebase: layout, invariants, traps, open issues |
+| [decisions.md](decisions.md) | Architecture decision log |
+| [docs/production-operations.md](docs/production-operations.md) | Config, spend caps, retention, CSP, runbook |
+| [docs/future-work.md](docs/future-work.md) | Open issues and planned work, with context and verification steps |
+| [evals/README.md](evals/README.md) | Eval harness architecture and how to add one |
 
 ---
 
-## Trust and robustness
-
-Six layers prevent wrong reports from reaching stakeholders.
-
-| Layer | What it catches |
-|-------|----------------|
-| **Offline eval harnesses** | Wrong tool outputs, missing golden Q&A answers, score regressions vs committed baseline |
-| **SQL content validation** | 0-row results, missing experiment arms, arm imbalance below 30:70, JOIN fan-out, metric values that appear to be percentages stored as rates |
-| **Claim accuracy blocking** | Narrative says "significant" but CI crosses zero; "large effect" but Cohen's d < 0.5; stated direction contradicts sign of the ATE. Auto-corrected before the analyst sees it. |
-| **Safety constraint checks** | Blocks "ship" language when SRM is detected, a guardrail is breached, or post-hoc power is below 50% (winner's curse risk) |
-| **Winner's curse banner** | Prepended to TL;DR when the experiment is underpowered or the observed effect is likely inflated |
-| **Audit log** | Every approved report appends a structured record: run ID, analyst decisions at each gate, SRM acknowledgment, auto-correction count, SQL warnings |
-
----
-
-## Architecture choices
-
-### LangGraph over a plain chain
-
-The pipeline has conditional branching (experiment vs general), four interrupt points, and needs to resume mid-graph after a human approves a gate. LangGraph's `interrupt()` + `Command(resume=...)` handles this with built-in SQLite/Postgres checkpointing. A plain chain cannot interrupt and resume. A hand-rolled FSM would require reimplementing graph traversal, state persistence, and retry logic.
-
-### HITL gates over a fully autonomous agent
-
-Autonomous agents hallucinate silently. The query gate ensures LLM-generated SQL is human-verified before touching data. The analysis gate lets an analyst catch a wrong interpretation before it becomes a report. The narrative gate closes the loop. Each gate takes seconds to approve; the cost of skipping them is wrong SQL and hallucinated statistics in production.
-
-### DuckDB over pandas for query execution
-
-Aggregations, group-bys, window functions, and joins are what columnar engines are built for. DuckDB on a 500k-row dataset is 10-50x faster than pandas and supports out-of-core execution. The LLM also generates SQL naturally. DuckDB provides a single interface across uploaded CSVs, the demo DB, and external Postgres with no separate code paths.
-
-### SSE over WebSockets
-
-Each run is a one-way stream: gate payloads arrive, the client sends a resume POST, the next gate payload arrives. SSE is HTTP/1.1, works through every proxy without configuration, reconnects automatically, and has no handshake overhead. WebSockets add complexity for no benefit here.
-
-### Semantic cache with MiniLM
-
-Analyst questions are semantically similar but rarely textually identical ("which segment drove the DAU drop" vs "what caused the DAU decline by cohort"). Exact-match misses these. No cache means $0.15-0.40 per run in API tokens and 45-90 seconds of latency. MiniLM (22M params) runs locally in ~5ms. Three-tier threshold: hard hit returns instantly, soft hit asks the analyst to confirm, miss runs the full pipeline.
-
-### CUPED for variance reduction
-
-A raw t-test on DAU or revenue has high variance from pre-existing user differences. CUPED uses a pre-experiment covariate to partial out that variance, typically reducing it 15-40%. The same experiment reaches significance with fewer users, or produces a tighter confidence interval with the same sample size.
-
-### Deterministic RAGAS eval over LLM-as-judge
-
-LLM-as-judge costs $0.10-0.50 per eval run, introduces variance, and creates a circular dependency. The three metrics used here (faithfulness, relevancy, key findings) run in under 100ms with zero API cost. Faithfulness catches the most common failure mode: hallucinated statistics that sound plausible but are not in the data.
-
-### Memory store for self-improvement
-
-Every completed run logs its task, SQL, findings, narrative, and eval score to SQLite. Future runs retrieve the top-k most similar past runs and inject them as few-shot examples into SQL generation. Analyst corrections are stored and retrieved on similar future tasks.
+Built by [Aman Singh](https://github.com/Aman12x).
