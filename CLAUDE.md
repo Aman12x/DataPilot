@@ -1,0 +1,133 @@
+# CLAUDE.md — orientation for coding sessions
+
+Read this before changing anything. It covers the layout, the invariants that
+are easy to break, and the decisions that look wrong until you know why.
+
+For the product pitch and eval scores, see [README.md](README.md). For the
+production runbook and the reasoning behind the operational subsystems, see
+[docs/production-operations.md](docs/production-operations.md).
+
+## Running things
+
+```bash
+./venv/bin/python -m pytest tests/ -m "not integration and not slow" -q
+```
+
+**Use `./venv/bin/python`, not the system Python** — the system interpreter is
+missing `duckdb` and `jose`, and 12 test files fail to collect without them.
+
+- `-m integration` needs live Redis and Postgres containers; CI runs them.
+- `-m slow` downloads the MiniLM model or calls the LLM.
+- Frontend E2E: `cd frontend && npx playwright test`.
+- Against the deployed app: `npx playwright test --config=playwright.prod.config.mjs`.
+
+## Layout
+
+| Path | What lives there |
+|---|---|
+| `backend/api/` | FastAPI app. `main.py` owns the lifespan; routes in `routes/`. |
+| `agents/analyze/` | LangGraph nodes, split by stage (`nodes_sql`, `nodes_analysis`, `nodes_narrative`, `nodes_intent`, `nodes_cache`). `graph.py` wires them. |
+| `agents/` | Cross-cutting: `pricing.py`, `spend.py`, `log_safety.py`, `tracer.py`. |
+| `tools/` | Pure stats/analysis functions. `db_tools.py` owns all SQL construction. |
+| `auth/`, `memory/` | SQLite stores for accounts, workspaces, run history, semantic cache. |
+| `config/` | MetricConfig and analysis defaults. |
+
+`agents/analyze/nodes_analysis.py` starts with
+`globals().update(vars(_shared))` — anything defined in `node_shared.py` is
+available there unqualified. Surprising, but load-bearing.
+
+## Invariants
+
+**Never interpolate an identifier into SQL.** Use
+`tools.db_tools.quote_ident(name, backend)`. It *escapes* (doubles the
+delimiter) rather than allowlisting, because uploaded CSV headers are
+normalised with a Unicode-aware `[^\w]` substitution — `café`, `日本`, and
+`2024_revenue` are all legitimate column names that an
+`^[a-zA-Z_][a-zA-Z0-9_]*$` allowlist would reject. `_SAFE_IDENT_RE` still
+exists for the few places quoting is impossible (BigQuery's
+`project.dataset.table` path); prefer `quote_ident` everywhere else.
+
+**Nothing blocking on the event loop.** The backend runs `--workers 1`, so one
+slow call freezes every other request. Pandas, DuckDB, PBKDF2, `requests`, and
+any DB connect go through `asyncio.to_thread`. Graph execution has its own pool
+(`run_manager._get_graph_executor`) so analyses can't be starved by other work.
+
+**User content is delimiter-wrapped before it reaches a prompt**, via
+`agents/analyze/prompt_safety.wrap_untrusted_content`. Directives go *before*
+the wrapped block, never after — a trailing imperative reads as a continuation
+of whatever was injected.
+
+**User content stays out of logs.** `agents/log_safety.redact()`. INFO records
+become Sentry breadcrumbs, so a verbatim log ships customer data to a third
+party.
+
+**Every LLM call is metered.** `_anthropic_client()` returns a wrapper that
+prices each response. Don't reach around it — four of seven call sites used to
+record nothing because metering lived at the call sites.
+
+## Decisions that look wrong but aren't
+
+**`client_ip` reads the *leftmost* `X-Forwarded-For` entry.** The generic
+advice is to count from the right. That is wrong here, and it was measured:
+Railway sends `<client>, <railway-edge>` where the edge address is *public* and
+rotates per request, and it **replaces** any inbound header (a request carrying
+`X-Forwarded-For: 9.9.9.9` arrives without it). Counting from the right keys
+every request to a different bucket and silently disables all rate limiting.
+`TRUSTED_PROXY_HOPS` pins an exact position for other topologies.
+
+**Guest budgets key on IP, not `user_id`.** `POST /auth/guest` mints a fresh
+`guest-{uuid4}` on demand, so a user-keyed cap resets for free.
+
+**Checkpoint age comes from the `checkpoint_id`.** The table has no timestamp
+column, but LangGraph ids are UUIDv6 with an embedded clock (verified against
+the `ts` inside the msgpack blob, 40/40). Reading the id avoids decoding every
+blob just to learn its age.
+
+**`_get_columns_duckdb` uses `information_schema`, not `pragma_table_info(?)`.**
+DuckDB re-parses that bound value as a qualified name, so it fails on any name
+containing a quote. Parameterising it is not enough.
+
+**Unknown models price at the most expensive known tier.** Under-charging lets
+spend slip past the cap; over-charging only trips it early. An unpriced model
+also logs a warning — the silent fallback is how a mispriced model hides.
+
+## Traps
+
+**`main.py` is not covered by `tests/test_api.py`.** That file replaces
+`app.router.lifespan_context` with a stub, so the real startup and shutdown path
+has no coverage there — which is how an `ImportError` on *every* shutdown
+shipped. Real lifespan coverage lives in `tests/test_run_lifecycle.py`.
+
+**Test fixtures must match production's SQLite mode.** The app opens databases
+in WAL. VACUUM behaves differently under WAL — it writes into the WAL and the
+main file keeps its size until a checkpoint. A non-WAL fixture will pass while
+production reclaims nothing.
+
+**`e2e/prod-*.spec.ts` drives the deployed app.** The default Playwright config
+excludes that prefix; without the exclusion the local CI job collects those
+specs, points them at `127.0.0.1`, and fails on a session cookie that was never
+set.
+
+**Tests import two different module trees.** `tests/test_api.py` uses `api.*`
+(because `backend/` is on `sys.path`); newer tests use `backend.api.*`. They are
+*separate module objects* with separate state — monkeypatching one does not
+affect the other.
+
+**`MODEL` only affects intent resolution** (`nodes_intent.py`), a small JSON
+call. Everything else uses `FAST_MODEL`.
+
+## Known-open issues
+
+- **`_IS_PRODUCTION` matches only `production`/`prod`.** An environment named
+  `staging` silently relaxes secure cookies, CORS enforcement, and HSTS. Only
+  the `SECRET_KEY` check was widened (`deps._IS_DEPLOYED`).
+- **Trailing-assistant prefill.** `generate_narrative` appends its own output to
+  `conversation_history`, which is appended after the task prompt — so a request
+  can end with an assistant turn. Harmless on Haiku 4.5; **returns 400 on any
+  Sonnet 4.6+ or Opus 4.6+ model**, so moving `FAST_MODEL` will break it.
+- **Schema names and raw DB errors are still logged** at warning level in ~30
+  sites (`nodes_sql.py`, `nodes_analysis.py`). `redact()` exists for the sweep.
+- **A timed-out graph run leaks its worker thread.** `asyncio.to_thread` cannot
+  be cancelled; the request is released but the thread runs to completion.
+- **Backups live on the same volume as the data.** They cover corruption and bad
+  deletes, not disk loss.

@@ -6,7 +6,18 @@ Ask a question in plain English. DataPilot generates SQL, runs statistical analy
 
 **Live demo:** [datapilotapp.singhaman.dev](https://datapilotapp.singhaman.dev) · **API:** [datapilot.singhaman.dev/health](https://datapilot.singhaman.dev/health)
 
-**Quality:** 4 offline eval harnesses · baseline regression gate · **578 pytest tests** · Playwright E2E · deterministic RAGAS-inspired scoring
+**Quality:** 4 offline eval harnesses · baseline regression gate · **824 pytest tests** · Playwright E2E · deterministic RAGAS-inspired scoring
+
+---
+
+## Documentation
+
+| Doc | For |
+|---|---|
+| [CLAUDE.md](CLAUDE.md) | Working in the codebase: layout, invariants, traps, open issues |
+| [docs/production-operations.md](docs/production-operations.md) | Deploying and running it: config, spend caps, retention, CSP, runbook |
+| [decisions.md](decisions.md) | Architecture decision log |
+| [evals/README.md](evals/README.md) | Eval harnesses |
 
 ---
 
@@ -162,7 +173,7 @@ Treatment/control comparison with covariate adjustment, subgroup HTE, guardrail 
 | Stats | scipy · numpy · scikit-learn · Prophet |
 | Eval | 4 offline harnesses · RAGAS-inspired (faithfulness + relevancy + key findings) · baseline regression |
 | Observability | Sentry · structured logging |
-| Tests | pytest (578) · Playwright E2E · offline eval gate in CI |
+| Tests | pytest (824) · Playwright E2E · offline eval gate in CI |
 
 ---
 
@@ -204,6 +215,12 @@ Other controls:
 - Refresh token rotation; password reset invalidates all sessions
 - User tasks and schema excerpts wrapped in delimiters before LLM calls
 - LangGraph checkpoints use JSON serde (pickle disabled)
+- Daily LLM spend caps (global / per-user / per-guest-IP); guests are budgeted per IP because `/auth/guest` mints identities on demand
+- `SECRET_KEY` strength enforced at boot when deployed (>=32 chars, entropy, placeholder denylist)
+- Content-Security-Policy on both surfaces — `default-src 'none'` on the API, generated per-deploy for the SPA
+- Analyst task text redacted from logs (INFO records become Sentry breadcrumbs); `LOG_USER_CONTENT=true` opts in locally
+- Connection tests bounded by a connect timeout and rate limited — the host is caller-supplied
+- Retention pass prunes checkpoints, run history, and spent tokens; snapshots the account and history databases
 - Branch rulesets should require `test-backend`, `eval-offline`, `build-frontend`, and `e2e` CI checks
 
 See [`tests/test_security_fixes.py`](tests/test_security_fixes.py) for regression coverage.
@@ -305,7 +322,20 @@ Two services from the same repo:
 | `backend` | `backend/` | `ANTHROPIC_API_KEY`, `SECRET_KEY`, `CORS_ORIGINS` (or `APP_URL`) |
 | `frontend` | `frontend/` | `VITE_API_URL` (backend's public Railway URL) |
 
-Mount a Railway volume at `/app/memory` on the backend service. Without it, every redeploy wipes all user accounts and run history.
+Mount a Railway volume at **`/app/db`** on the backend service — **not**
+`/app/memory`, which shadows the `memory/` Python package and stops the backend
+booting. The mount alone persists nothing; point these at it too:
+
+```
+GRAPH_DB_PATH=/app/db/graph.db
+AUTH_DB_PATH=/app/db/auth.db
+MEMORY_DB_PATH=/app/db/datapilot_memory.db
+UPLOAD_DIR=/app/db/uploads
+```
+
+Without the volume every redeploy wipes accounts and run history; without the
+last two variables it wipes run history and uploads even with the volume
+attached. See [docs/production-operations.md](docs/production-operations.md).
 
 Optional: `REDIS_URL` (multi-pod run state), `SENTRY_DSN` (error tracking), `RESEND_API_KEY` (password reset emails).
 

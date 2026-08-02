@@ -3,11 +3,7 @@
 
 PYTHON ?= python3
 
-.PHONY: app eval eval-all eval-full eval-baseline test data clean e2e
-
-## Start the Streamlit UI
-app:
-	$(PYTHON) -m streamlit run ui/app.py
+.PHONY: eval eval-all eval-full eval-baseline test data clean e2e
 
 ## Run all fast offline evals (no API key)
 eval:
