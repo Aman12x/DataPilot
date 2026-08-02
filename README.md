@@ -35,7 +35,7 @@ This is not a chatbot wrapper. It is a production-shaped system with the failure
 - **Cost is governed.** Every LLM call goes through a metering wrapper with daily spend caps (global, per-user, and per-guest-IP, because guest identities are free to mint). Unknown models price at the most expensive known tier so spend can only trip early, never slip past.
 - **Secrets are handled like secrets.** Warehouse credentials are encrypted at rest, never returned by the API, and wiped from workflow checkpoints after schema load. Private-network database hosts are blocked by default (SSRF guard).
 
-The decision log with tradeoffs is in [decisions.md](decisions.md); the operational runbook is in [docs/production-operations.md](docs/production-operations.md); the honest list of open issues is in [docs/future-work.md](docs/future-work.md).
+The decision log with tradeoffs is in [decisions.md](decisions.md); the operational runbook is in [docs/production-operations.md](docs/production-operations.md).
 
 ---
 
@@ -183,7 +183,6 @@ Deployment notes (Railway, volumes, environment) are in [docs/production-operati
 | [CLAUDE.md](CLAUDE.md) | Working in the codebase: layout, invariants, traps, open issues |
 | [decisions.md](decisions.md) | Architecture decision log |
 | [docs/production-operations.md](docs/production-operations.md) | Config, spend caps, retention, CSP, runbook |
-| [docs/future-work.md](docs/future-work.md) | Open issues and planned work, with context and verification steps |
 | [evals/README.md](evals/README.md) | Eval harness architecture and how to add one |
 
 ---

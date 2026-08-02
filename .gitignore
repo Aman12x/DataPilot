@@ -48,3 +48,7 @@ Thumbs.db
 .claude/
 *.swp
 *.swo
+
+# Local working docs, kept out of the public repo
+DEVLOG.md
+docs/future-work.md
