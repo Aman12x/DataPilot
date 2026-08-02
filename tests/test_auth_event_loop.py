@@ -131,8 +131,16 @@ def test_loop_stays_free_during_password_hashing():
     """A real PBKDF2 hash at the configured cost, off the loop."""
     from auth.store import _hash_password
 
+    def hash_repeatedly():
+        # One hash can finish inside a single heartbeat interval on a fast
+        # runner, which reads as a blocked loop (0 ticks). Several hashes
+        # against a short beat keep the work comfortably longer than the
+        # interval on any hardware.
+        for _ in range(3):
+            _hash_password("correct horse battery", "salt123")
+
     ticks = _heartbeat_during(
-        lambda: asyncio.to_thread(_hash_password, "correct horse battery", "salt123")
+        lambda: asyncio.to_thread(hash_repeatedly), seconds=0.005
     )
     assert ticks >= 1, f"event loop was blocked during hashing: {ticks} ticks"
 
