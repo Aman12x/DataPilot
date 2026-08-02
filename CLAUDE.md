@@ -191,6 +191,9 @@ call. Everything else uses `FAST_MODEL`.
 
 ## Known-open issues
 
+Detail — why each is open, the intended fix, and how to verify — lives in
+[docs/future-work.md](docs/future-work.md). Keep the two in sync.
+
 - **Split-brain storage with `DATABASE_URL` set.**
   `langgraph-checkpoint-postgres` is commented out in `backend/requirements.txt`,
   so accounts and history move to Postgres while checkpoints silently stay on

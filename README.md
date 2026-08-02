@@ -16,6 +16,7 @@ Ask a question in plain English. DataPilot generates SQL, runs statistical analy
 |---|---|
 | [CLAUDE.md](CLAUDE.md) | Working in the codebase: layout, invariants, traps, open issues |
 | [docs/production-operations.md](docs/production-operations.md) | Deploying and running it: config, spend caps, retention, CSP, runbook |
+| [docs/future-work.md](docs/future-work.md) | Open issues and planned changes, with context and verification steps |
 | [decisions.md](decisions.md) | Architecture decision log |
 | [evals/README.md](evals/README.md) | Eval harnesses |
 
