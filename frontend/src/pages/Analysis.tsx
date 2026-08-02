@@ -19,7 +19,7 @@ import AnalysisGate from "../components/gates/AnalysisGate";
 import GeneralAnalysisGate from "../components/gates/GeneralAnalysisGate";
 import NarrativeGate from "../components/gates/NarrativeGate";
 import ErrorBoundary from "../components/ErrorBoundary";
-import { IconAlert, IconArrowLeft, IconCheck, IconChevronDown, IconChevronRight, IconChevronUp, IconClose, IconDownload } from "../components/icons";
+import { IconAlert, IconArrowLeft, IconChart, IconCheck, IconChevronDown, IconChevronRight, IconChevronUp, IconClose, IconDownload, IconPulse, IconSplit, IconTarget } from "../components/icons";
 import {
   type Mode, type PgCreds, type BqCreds, type Sample, type SavedConnection,
   type MetricPackSummary, type RunOptions, MODE_META,
@@ -106,7 +106,7 @@ function ModeSelect({ onSelect, username, onHistory, onSignOut, workspaces, work
 
       <section className="dp-home-hero">
         <div className="dp-home-copy fade-in">
-          <h1 className="dp-home-brand">What would you like to know?</h1>
+          <h1 className="dp-home-brand">What would you like to <em>know</em>?</h1>
           <p className="dp-home-sub">
             Connect a warehouse or upload a file, then run an analysis with
             review at every critical step.
@@ -114,6 +114,7 @@ function ModeSelect({ onSelect, username, onHistory, onSignOut, workspaces, work
 
           <div className="dp-home-actions">
             <button className="dp-mode-action" onClick={() => onSelect("general")}>
+              <span className="dp-mode-icon"><IconChart size={20} /></span>
               <div>
                 <strong>Explore & Understand</strong>
                 <span>Patterns, drivers, and anomalies across any dataset</span>
@@ -123,6 +124,7 @@ function ModeSelect({ onSelect, username, onHistory, onSignOut, workspaces, work
 
             {!showAbSub ? (
               <button className="dp-mode-action" onClick={() => setShowAbSub(true)}>
+                <span className="dp-mode-icon"><IconSplit size={20} /></span>
                 <div>
                   <strong>A/B Testing</strong>
                   <span>Design experiments or interpret completed tests</span>
@@ -136,6 +138,7 @@ function ModeSelect({ onSelect, username, onHistory, onSignOut, workspaces, work
                   <button className="dp-btn dp-btn-link" onClick={() => setShowAbSub(false)}>Back</button>
                 </div>
                 <button onClick={() => onSelect("power_analysis")}>
+                  <span className="dp-mode-icon" style={{ width: 32, height: 32 }}><IconTarget size={16} /></span>
                   <div>
                     <strong>Design Experiment</strong>
                     <small>Sample size, runtime, and sensitivity</small>
@@ -143,6 +146,7 @@ function ModeSelect({ onSelect, username, onHistory, onSignOut, workspaces, work
                   <em style={{ marginLeft: "auto", color: "var(--dp-ink-faint)", fontStyle: "normal" }}><IconChevronRight /></em>
                 </button>
                 <button onClick={() => onSelect("ab_test")}>
+                  <span className="dp-mode-icon" style={{ width: 32, height: 32 }}><IconPulse size={16} /></span>
                   <div>
                     <strong>Interpret Results</strong>
                     <small>Full statistical readout for a finished test</small>
@@ -806,7 +810,7 @@ function FinishedView({ state, runId, steps, onNewAnalysis, onFollowUp }: {
         <div style={s.finHeader}>
           <div style={s.finTitle}>
             <span style={{ color: "var(--dp-success)", fontSize: 18, display: "inline-flex" }}><IconCheck /></span>
-            <h2 style={{ color: "var(--dp-ink)", margin: 0, fontSize: 20, fontWeight: 600, letterSpacing: "-0.01em" }}>Analysis complete</h2>
+            <h2 style={{ color: "var(--dp-ink)", margin: 0, fontSize: 22, fontWeight: 600, letterSpacing: "-0.01em", fontFamily: "var(--dp-display)" }}>Analysis complete</h2>
           </div>
           <div style={s.finActions} className="fin-actions">
             {(hasDetails || hasCharts) && (

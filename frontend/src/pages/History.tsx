@@ -124,7 +124,7 @@ export default function History() {
       <div className="fade-in" style={{ maxWidth: 820, margin: "0 auto" }}>
         <div style={{ marginBottom: 28 }}>
           <h1 style={{
-            fontSize: 24, fontWeight: 600,
+            fontSize: 26, fontWeight: 600, fontFamily: "var(--dp-display)",
             letterSpacing: "-0.01em", color: "var(--dp-ink)", margin: 0,
           }}>
             Analysis history

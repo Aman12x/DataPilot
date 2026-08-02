@@ -224,7 +224,7 @@ export default function AnnotationStudio({
         )}
 
         {connections.length === 0 ? (
-          <p style={s.muted}>Save a Postgres connection first, then come back to annotate it.</p>
+          <p style={s.muted}>Save a database connection (Postgres, MySQL, or BigQuery) first, then come back to annotate it.</p>
         ) : (
           <>
             <div style={s.connRow}>

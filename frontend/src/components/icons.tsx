@@ -102,3 +102,38 @@ export function IconDot({ size, style }: IconProps) {
     </svg>
   );
 }
+
+export function IconChart({ size, strokeWidth = 1.75, style }: IconProps) {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" style={base(size, style)}>
+      <path d="M3 13.5V8M8 13.5V2.5M13 13.5V5.5" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" />
+    </svg>
+  );
+}
+
+export function IconSplit({ size, strokeWidth = 1.5, style }: IconProps) {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" style={base(size, style)}>
+      <path d="M8 13.5V8M8 8C8 5.5 5.5 5 3.5 5M8 8c0-2.5 2.5-3 4.5-3" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M5 3 3.2 5 5 7M11 3l1.8 2L11 7" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+export function IconTarget({ size, strokeWidth = 1.5, style }: IconProps) {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" style={base(size, style)}>
+      <circle cx="8" cy="8" r="5.5" stroke="currentColor" strokeWidth={strokeWidth} />
+      <circle cx="8" cy="8" r="2.75" stroke="currentColor" strokeWidth={strokeWidth} />
+      <circle cx="8" cy="8" r="0.9" fill="currentColor" />
+    </svg>
+  );
+}
+
+export function IconPulse({ size, strokeWidth = 1.5, style }: IconProps) {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" style={base(size, style)}>
+      <path d="M1.5 8h2.6L6 4l2.5 8L10.5 8h4" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
