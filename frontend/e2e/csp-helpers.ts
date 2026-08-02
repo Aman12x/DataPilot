@@ -153,7 +153,24 @@ export async function stubApi(page: Page, opts: StubOptions = {}) {
     if (p === "/workspaces") return route.fulfill(json({ workspaces: [] }));
     if (p === "/metric-packs") return route.fulfill(json({ metric_packs: [] }));
     if (p === "/samples") return route.fulfill(json([]));
-    if (p === "/connections") return route.fulfill(json({ connections: [] }));
+    if (p === "/connections")
+      return route.fulfill(json({
+        connections: [
+          {
+            connection_id: "conn-ok", name: "Prod warehouse", backend: "postgres",
+            host: "db.example.com", port: 5432, dbname: "analytics", username: "reader",
+            sslmode: "require", last_test_ok: true,
+            last_tested_at: "2026-08-02T00:00:00Z", last_test_error: null, project_id: null,
+          },
+          {
+            connection_id: "conn-bad", name: "Staging", backend: "mysql",
+            host: "stage.example.com", port: 3306, dbname: "app", username: "root",
+            sslmode: "prefer", last_test_ok: false,
+            last_tested_at: "2026-08-01T00:00:00Z",
+            last_test_error: "authentication failed for user root", project_id: null,
+          },
+        ],
+      }));
     if (p === "/runs" && method === "POST") return route.fulfill(json({ run_id: RUN_ID }));
     if (p === "/runs") return route.fulfill(json([HISTORY_RUN]));
     if (p === `/runs/${RUN_ID}/stream-token`) return route.fulfill(json({ stream_token: "s" }));

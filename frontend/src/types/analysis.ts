@@ -22,6 +22,8 @@ export interface SavedConnection {
   username: string;
   sslmode: string;
   last_test_ok: boolean | null;
+  last_tested_at?: string | null;
+  last_test_error?: string | null;
   project_id?: string | null;
 }
 

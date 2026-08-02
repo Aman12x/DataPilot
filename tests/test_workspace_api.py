@@ -137,6 +137,79 @@ class TestConnectionsAPI:
         listed2 = client.get("/connections", headers=auth).json()
         assert all(c["connection_id"] != created["connection_id"] for c in listed2["connections"])
 
+    def _create_tested(self, client, auth):
+        with _patch_test_pg() as mock_test:
+            mock_test.return_value = {
+                "success": True, "error": None, "table_count": 1, "tables": ["t"],
+            }
+            return client.post(
+                "/connections",
+                headers=auth,
+                json={
+                    "name": "Prod",
+                    "host": "analytics.example.com",
+                    "port": 5432,
+                    "dbname": "d",
+                    "username": "u",
+                    "password": "p",
+                    "test": True,
+                },
+            ).json()
+
+    def test_patch_credentials_resets_health(self, client, auth, public_dns):
+        created = self._create_tested(client, auth)
+        assert created["last_test_ok"] is True
+
+        r = client.patch(
+            f"/connections/{created['connection_id']}",
+            headers=auth,
+            json={"password": "rotated"},
+        )
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["last_test_ok"] is None
+        assert data["last_tested_at"] is None
+
+    def test_patch_name_only_keeps_health(self, client, auth, public_dns):
+        created = self._create_tested(client, auth)
+
+        r = client.patch(
+            f"/connections/{created['connection_id']}",
+            headers=auth,
+            json={"name": "Renamed"},
+        )
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["name"] == "Renamed"
+        assert data["last_test_ok"] is True
+
+    def test_patch_project_id(self, client, auth):
+        creds = (
+            '{"type":"service_account","client_email":"sa@proj.iam.gserviceaccount.com",'
+            '"private_key":"-----BEGIN PRIVATE KEY-----\\nX\\n-----END PRIVATE KEY-----\\n"}'
+        )
+        with _patch_test_pg():
+            created = client.post(
+                "/connections",
+                headers=auth,
+                json={
+                    "name": "BQ",
+                    "backend": "bigquery",
+                    "project_id": "old-project",
+                    "dbname": "analytics",
+                    "password": creds,
+                    "test": False,
+                },
+            ).json()
+
+        r = client.patch(
+            f"/connections/{created['connection_id']}",
+            headers=auth,
+            json={"project_id": "new-project"},
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["project_id"] == "new-project"
+
     def test_blocks_private_host(self, client, auth):
         r = client.post(
             "/connections",

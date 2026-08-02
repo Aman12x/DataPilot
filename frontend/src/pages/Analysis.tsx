@@ -30,6 +30,7 @@ import StakeholderDeck from "../components/StakeholderDeck";
 import PackStudio from "../components/PackStudio";
 import MembersPanel from "../components/MembersPanel";
 import AnnotationStudio from "../components/AnnotationStudio";
+import ConnectionsPanel, { ConnectionHealthBadge, connectionLabel } from "../components/ConnectionsPanel";
 import type { DeckData } from "../hooks/useSSE";
 import AppShell from "../components/AppShell";
 
@@ -55,6 +56,7 @@ function ModeSelect({ onSelect, username, onHistory, onSignOut, workspaces, work
   onWorkspaceChange: (id: string) => void;
 }) {
   const [showAbSub, setShowAbSub] = useState(false);
+  const [showConnections, setShowConnections] = useState(false);
   const [showPacks, setShowPacks] = useState(false);
   const [showMembers, setShowMembers] = useState(false);
   const [showAnnotations, setShowAnnotations] = useState(false);
@@ -80,6 +82,7 @@ function ModeSelect({ onSelect, username, onHistory, onSignOut, workspaces, work
             </select>
           )}
           {username && <span className="dp-shell-meta">{username}</span>}
+          <button className="dp-btn dp-btn-ghost" onClick={() => setShowConnections(true)}>Sources</button>
           <button className="dp-btn dp-btn-ghost" onClick={() => setShowPacks(true)}>Metrics</button>
           <button className="dp-btn dp-btn-ghost" onClick={() => setShowAnnotations(true)}>Schema</button>
           {workspaceId && (
@@ -90,11 +93,17 @@ function ModeSelect({ onSelect, username, onHistory, onSignOut, workspaces, work
         </>
       )}
     >
+      <ConnectionsPanel
+        open={showConnections}
+        onClose={() => setShowConnections(false)}
+        canEdit={!!canManage || !workspaceId}
+      />
       <PackStudio open={showPacks} onClose={() => setShowPacks(false)} canEdit={!!canManage || !workspaceId} />
       <AnnotationStudio
         open={showAnnotations}
         onClose={() => setShowAnnotations(false)}
         canEdit={!!canManage || !workspaceId}
+        onOpenConnections={() => { setShowAnnotations(false); setShowConnections(true); }}
       />
       <MembersPanel
         open={showMembers}
@@ -190,9 +199,13 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
   const [connectionId,   setConnectionId]   = useState("");
   const [metricPackId,   setMetricPackId]   = useState("");
   const [savingConn,     setSavingConn]     = useState(false);
-  const [connMsg,        setConnMsg]        = useState("");
+  const [connState,      setConnState]      = useState<{ kind: "ok" | "error"; text: string } | null>(null);
+  const [connName,       setConnName]       = useState("");
+  const [connSslmode,    setConnSslmode]    = useState("prefer");
+  const [testingConn,    setTestingConn]    = useState(false);
   const [showPacks,      setShowPacks]      = useState(false);
   const [showAnnotations, setShowAnnotations] = useState(false);
+  const [showConnections, setShowConnections] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const reloadPacks = () => {
@@ -201,14 +214,23 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
       .catch(() => {});
   };
 
+  const reloadConnections = () => {
+    client.get<{ connections: SavedConnection[] }>("/connections")
+      .then(r => {
+        const list = r.data.connections || [];
+        setConnections(list);
+        // The selected connection may have been deleted from the panel.
+        setConnectionId((id) => (id && !list.some((c) => c.connection_id === id) ? "" : id));
+      })
+      .catch(() => {});
+  };
+
   useEffect(() => {
     setSamples(FALLBACK_SAMPLES.filter(s => s.mode === mode));
     client.get<Sample[]>("/samples")
       .then(r => setSamples(r.data.filter(s => s.mode === mode)))
       .catch(() => {});
-    client.get<{ connections: SavedConnection[] }>("/connections")
-      .then(r => setConnections(r.data.connections || []))
-      .catch(() => {});
+    reloadConnections();
     reloadPacks();
   }, [mode]);
 
@@ -246,6 +268,7 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
   };
 
   const usingSavedConn = !!connectionId && !useUpload;
+  const selectedConn = connectionId ? connections.find((c) => c.connection_id === connectionId) : undefined;
   const sqlBackend = db === "postgres" || db === "mysql";
   const pgValid = !sqlBackend || usingSavedConn || !!(pg.host && pg.dbname && pg.user);
   const bqValid = db !== "bigquery" || usingSavedConn || !!(bq.projectId && bq.dataset && bq.credentialsJson);
@@ -271,13 +294,13 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
   };
 
   const saveCurrentConnection = async () => {
-    setSavingConn(true); setConnMsg("");
+    setSavingConn(true); setConnState(null);
     try {
       let payload: Record<string, unknown>;
       if (db === "bigquery") {
         if (!bq.projectId || !bq.dataset || !bq.credentialsJson) return;
         payload = {
-          name: `${bq.dataset}@${bq.projectId}`,
+          name: connName.trim() || `${bq.dataset}@${bq.projectId}`,
           backend: "bigquery",
           project_id: bq.projectId,
           dbname: bq.dataset,
@@ -288,14 +311,14 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
         if (!pg.host || !pg.dbname || !pg.user) return;
         const backend = db === "mysql" ? "mysql" : "postgres";
         payload = {
-          name: `${pg.dbname}@${pg.host}`,
+          name: connName.trim() || `${pg.dbname}@${pg.host}`,
           backend,
           host: pg.host,
           port: parseInt(pg.port) || (backend === "mysql" ? 3306 : 5432),
           dbname: pg.dbname,
           username: pg.user,
           password: pg.password,
-          sslmode: "prefer",
+          sslmode: connSslmode,
           test: true,
         };
       }
@@ -303,10 +326,29 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
       setConnections((c) => [data, ...c]);
       setConnectionId(data.connection_id);
       setDb(data.backend || db);
-      setConnMsg("Connection saved and tested.");
+      setConnName("");
+      setConnState({ kind: "ok", text: "Connection saved and tested." });
     } catch (err) {
-      setConnMsg(extractApiError(err, "Could not save connection."));
+      setConnState({ kind: "error", text: extractApiError(err, "Could not save connection.") });
     } finally { setSavingConn(false); }
+  };
+
+  const testSelectedConnection = async () => {
+    if (!connectionId) return;
+    setTestingConn(true); setConnState(null);
+    try {
+      const { data } = await client.post<{ success: boolean; error?: string; table_count?: number }>(
+        `/connections/${connectionId}/test`,
+      );
+      setConnState(data.success
+        ? { kind: "ok", text: `Connected, ${data.table_count ?? 0} tables visible.` }
+        : { kind: "error", text: data.error || "Connection test failed." });
+    } catch {
+      setConnState({ kind: "error", text: "Connection test failed." });
+    } finally {
+      setTestingConn(false);
+      reloadConnections();
+    }
   };
 
   return (
@@ -358,7 +400,17 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
         />
 
         <div style={s.section}>
-          <div style={s.sectionLabel}>Data source</div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={s.sectionLabel}>Data source</div>
+            <button
+              type="button"
+              className="dp-btn dp-btn-link"
+              style={{ fontSize: 12, padding: 0 }}
+              onClick={() => setShowConnections(true)}
+            >
+              Manage sources
+            </button>
+          </div>
           <div style={s.sourceRow}>
             <label style={s.sourceOption}>
               <input type="radio" checked={!useUpload} onChange={() => { setUseUpload(false); setUploadResult(null); setUploadFileName(""); }} />
@@ -412,18 +464,20 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
                 }}
               >
                 <option value="duckdb">Built-in sample data</option>
-                <option value="postgres">PostgreSQL</option>
-                <option value="mysql">MySQL / MariaDB</option>
-                <option value="bigquery">Google BigQuery</option>
-                {connections.map((c) => (
-                  <option key={c.connection_id} value={`conn:${c.connection_id}`}>
-                    {c.name} ({c.backend})
-                    {c.backend === "bigquery"
-                      ? ` (${c.project_id || "?"}/${c.dbname})`
-                      : ` (${c.host}/${c.dbname})`}
-                    {c.last_test_ok === false ? " (last test failed)" : ""}
-                  </option>
-                ))}
+                {connections.length > 0 && (
+                  <optgroup label="Saved connections">
+                    {connections.map((c) => (
+                      <option key={c.connection_id} value={`conn:${c.connection_id}`}>
+                        {c.name} ({c.backend}, {connectionLabel(c)})
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                <optgroup label="New connection">
+                  <option value="postgres">PostgreSQL</option>
+                  <option value="mysql">MySQL / MariaDB</option>
+                  <option value="bigquery">Google BigQuery</option>
+                </optgroup>
               </select>
             </div>
           )}
@@ -442,6 +496,18 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
                   <input style={s.pgInput} type={type} placeholder={placeholder} value={pg[k]} onChange={setP(k)} />
                 </div>
               ))}
+              <div style={s.pgField}>
+                <label style={s.pgLabel}>SSL mode</label>
+                <select style={s.pgInput} value={connSslmode} onChange={(e) => setConnSslmode(e.target.value)}>
+                  {["disable", "allow", "prefer", "require", "verify-ca", "verify-full"].map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+              </div>
+              <div style={s.pgField}>
+                <label style={s.pgLabel}>Save as (optional)</label>
+                <input style={s.pgInput} type="text" placeholder="Production warehouse" value={connName} onChange={(e) => setConnName(e.target.value)} autoComplete="off" />
+              </div>
               <div style={{ gridColumn: "1 / -1", display: "flex", gap: 10, alignItems: "center" }}>
                 <button
                   type="button"
@@ -452,7 +518,6 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
                 >
                   {savingConn ? "Testing & saving…" : "Save connection"}
                 </button>
-                {connMsg && <span style={{ fontSize: 12, color: connMsg.includes("saved") ? "var(--dp-success)" : "var(--dp-danger)" }}>{connMsg}</span>}
               </div>
             </div>
           )}
@@ -495,6 +560,10 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
                   Paste a GCP service-account key (BigQuery Job User + Data Viewer). Prefer saving to the vault.
                 </div>
               </div>
+              <div style={s.pgField}>
+                <label style={s.pgLabel}>Save as (optional)</label>
+                <input style={s.pgInput} type="text" placeholder="Marketing BigQuery" value={connName} onChange={(e) => setConnName(e.target.value)} autoComplete="off" />
+              </div>
               <div style={{ gridColumn: "1 / -1", display: "flex", gap: 10, alignItems: "center" }}>
                 <button
                   type="button"
@@ -505,22 +574,43 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
                 >
                   {savingConn ? "Testing & saving…" : "Save connection"}
                 </button>
-                {connMsg && <span style={{ fontSize: 12, color: connMsg.includes("saved") ? "var(--dp-success)" : "var(--dp-danger)" }}>{connMsg}</span>}
               </div>
             </div>
           )}
 
-          {connectionId && !useUpload && (
-            <div style={{ marginTop: 10, display: "flex", justifyContent: "flex-end" }}>
-              <button
-                type="button"
-                className="dp-btn dp-btn-link"
-                style={{ fontSize: 12, padding: 0 }}
-                onClick={() => setShowAnnotations(true)}
-              >
-                Annotate schema
-              </button>
+          {selectedConn && !useUpload && (
+            <div style={s.connCard} className="fade-in">
+              <div style={s.connCardMain}>
+                <div style={s.connCardName}>
+                  {selectedConn.name}
+                  <span style={s.connCardChip}>{selectedConn.backend}</span>
+                </div>
+                <div style={s.connCardDetail}>{connectionLabel(selectedConn)}</div>
+                <ConnectionHealthBadge conn={selectedConn} />
+              </div>
+              <div style={s.connCardActions}>
+                <button
+                  type="button"
+                  className="dp-btn dp-btn-ghost"
+                  style={{ padding: "5px 10px", fontSize: 12 }}
+                  onClick={testSelectedConnection}
+                  disabled={testingConn}
+                >
+                  {testingConn ? "Testing" : "Test"}
+                </button>
+                <button type="button" className="dp-btn dp-btn-link" style={{ fontSize: 12 }} onClick={() => setShowConnections(true)}>
+                  Manage
+                </button>
+                <button type="button" className="dp-btn dp-btn-link" style={{ fontSize: 12 }} onClick={() => setShowAnnotations(true)}>
+                  Annotate schema
+                </button>
+              </div>
             </div>
+          )}
+          {connState && (
+            <p style={{ fontSize: 12, margin: "8px 0 0", color: connState.kind === "ok" ? "var(--dp-success)" : "var(--dp-danger)" }}>
+              {connState.text}
+            </p>
           )}
 
           <div style={{ marginTop: 14 }}>
@@ -561,6 +651,11 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
           </div>
         </div>
 
+        <ConnectionsPanel
+          open={showConnections}
+          onClose={() => setShowConnections(false)}
+          onChanged={reloadConnections}
+        />
         <PackStudio
           open={showPacks}
           onClose={() => setShowPacks(false)}
@@ -570,7 +665,16 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
           open={showAnnotations}
           onClose={() => setShowAnnotations(false)}
           initialConnectionId={connectionId}
+          onOpenConnections={() => { setShowAnnotations(false); setShowConnections(true); }}
         />
+
+        {usingSavedConn && selectedConn?.last_test_ok === false && (
+          <div style={s.connWarn} className="fade-in">
+            <IconAlert /> The last test of this connection failed
+            {selectedConn.last_test_error ? `: ${selectedConn.last_test_error}` : "."} The analysis
+            may not be able to reach your database. Test it again or pick another source.
+          </div>
+        )}
 
         {startError && <div style={s.errorBox} className="fade-in">{startError}</div>}
 
@@ -1281,6 +1385,13 @@ const s: Record<string, React.CSSProperties> = {
   pgInput: { padding: "8px 10px", background: "var(--dp-surface)", color: "var(--dp-ink)", border: "1px solid var(--dp-line)", borderRadius: 6, fontSize: 13 },
 
   errorBox:   { background: "var(--dp-danger)11", border: "1px solid var(--dp-danger)44", color: "var(--dp-danger)", borderRadius: 8, padding: "10px 14px", fontSize: 13, marginBottom: 14 },
+  connWarn:   { background: "var(--dp-warning-soft)", border: "1px solid rgba(154,103,0,0.25)", color: "var(--dp-warning)", borderRadius: 6, padding: "10px 14px", fontSize: 13, marginBottom: 14, display: "flex", gap: 8, alignItems: "baseline" },
+  connCard:        { marginTop: 10, display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, border: "1px solid var(--dp-line)", borderRadius: 6, padding: "12px 14px", background: "var(--dp-surface-2)" },
+  connCardMain:    { display: "flex", flexDirection: "column" as const, gap: 3, minWidth: 0 },
+  connCardName:    { color: "var(--dp-ink)", fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 8 },
+  connCardChip:    { background: "var(--dp-surface)", border: "1px solid var(--dp-line)", color: "var(--dp-ink-secondary)", borderRadius: 4, padding: "1px 7px", fontSize: 11, fontWeight: 500 },
+  connCardDetail:  { color: "var(--dp-ink-muted)", fontSize: 12, fontFamily: "var(--dp-mono)" },
+  connCardActions: { display: "flex", gap: 4, alignItems: "center", flexShrink: 0 },
   runBtn:     { width: "100%", padding: "13px 0", color: "var(--dp-surface)", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 15, cursor: "pointer", marginTop: 4, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 },
   btnSpinner: { width: 14, height: 14, border: "2px solid var(--dp-surface)44", borderTop: "2px solid var(--dp-surface)", borderRadius: "50%", animation: "spin 0.7s linear infinite", display: "inline-block", flexShrink: 0 },
 

@@ -125,6 +125,61 @@ class TestConnections:
         secrets = workspace_store.get_connection_secrets("user-1", c.connection_id, path=auth_db)
         assert secrets.password == "new-pass"
 
+    def _tested_connection(self, auth_db):
+        c = workspace_store.create_connection(
+            "user-1",
+            name="Prod",
+            host="db.example.com",
+            port=5432,
+            dbname="analytics",
+            username="reader",
+            password="p",
+            path=auth_db,
+        )
+        workspace_store.record_connection_test(
+            "user-1", c.connection_id, ok=True, error=None, path=auth_db,
+        )
+        return c
+
+    def test_update_credentials_resets_test_status(self, auth_db):
+        """A rotated credential no longer matches the stored green health."""
+        c = self._tested_connection(auth_db)
+        workspace_store.update_connection(
+            "user-1", c.connection_id, password="rotated", path=auth_db,
+        )
+        fresh = workspace_store.get_connection("user-1", c.connection_id, path=auth_db)
+        assert fresh.last_test_ok is None
+        assert fresh.last_tested_at is None
+        assert fresh.last_test_error is None
+
+    def test_rename_preserves_test_status(self, auth_db):
+        c = self._tested_connection(auth_db)
+        workspace_store.update_connection(
+            "user-1", c.connection_id, name="Renamed", path=auth_db,
+        )
+        fresh = workspace_store.get_connection("user-1", c.connection_id, path=auth_db)
+        assert fresh.name == "Renamed"
+        assert fresh.last_test_ok is True
+
+    def test_update_project_id_persists(self, auth_db):
+        c = workspace_store.create_connection(
+            "user-1",
+            name="BQ",
+            host="",
+            port=0,
+            dbname="dataset",
+            username="",
+            password="{}",
+            backend="bigquery",
+            project_id="old-project",
+            path=auth_db,
+        )
+        workspace_store.update_connection(
+            "user-1", c.connection_id, project_id="new-project", path=auth_db,
+        )
+        fresh = workspace_store.get_connection("user-1", c.connection_id, path=auth_db)
+        assert fresh.project_id == "new-project"
+
 
 class TestMetricPacks:
     def test_create_and_validate(self, auth_db):

@@ -366,6 +366,7 @@ test("no CSP violations on history with a run expanded", async ({ page }) => {
 });
 
 const MODALS = [
+  ["Sources", /Manage database connections/i],
   ["Metrics", /Define your metrics once/i],
   ["Schema", /Teach DataPilot your column meanings/i],
 ] as const;

@@ -381,6 +381,7 @@ def update_connection(
     username: str | None = None,
     password: str | None = None,
     sslmode: str | None = None,
+    project_id: str | None = None,
     path: str | None = None,
 ) -> ConnectionPublic | None:
     from backend.api.crypto_secrets import encrypt_secret
@@ -414,9 +415,19 @@ def update_connection(
         _set("password_enc", encrypt_secret(password))
     if sslmode is not None:
         _set("sslmode", sslmode)
+    if project_id is not None:
+        _set("project_id", project_id.strip())
 
     if not fields:
         return existing
+
+    # Anything beyond a rename changes what the connection points at or how it
+    # authenticates — the stored test result no longer describes it. Reset so
+    # the UI shows "not tested" instead of stale green health.
+    if any(not f.startswith("name") for f in fields):
+        _set("last_tested_at", None)
+        _set("last_test_ok", None)
+        _set("last_test_error", None)
 
     _set("updated_at", now)
     params.append(connection_id)

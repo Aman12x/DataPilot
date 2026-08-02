@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { IconClose } from "./icons";
+import { ConnectionHealthBadge, connectionLabel } from "./ConnectionsPanel";
 import client from "../api/client";
 import { extractApiError } from "../utils/error";
 import type { SavedConnection } from "../types/analysis";
@@ -20,6 +21,8 @@ interface Props {
   /** Prefill a connection when opened from the analysis form. */
   initialConnectionId?: string;
   canEdit?: boolean;
+  /** When provided, the empty state links to the data sources panel. */
+  onOpenConnections?: () => void;
 }
 
 function annotationsToRows(ann: Record<string, Record<string, string>>): ColComment[] {
@@ -65,6 +68,7 @@ export default function AnnotationStudio({
   onClose,
   initialConnectionId = "",
   canEdit,
+  onOpenConnections,
 }: Props) {
   const [connections, setConnections] = useState<SavedConnection[]>([]);
   const [connectionId, setConnectionId] = useState("");
@@ -224,7 +228,14 @@ export default function AnnotationStudio({
         )}
 
         {connections.length === 0 ? (
-          <p style={s.muted}>Save a database connection (Postgres, MySQL, or BigQuery) first, then come back to annotate it.</p>
+          <div>
+            <p style={{ ...s.muted, marginBottom: onOpenConnections ? 12 : 0 }}>
+              Save a database connection (Postgres, MySQL, or BigQuery) first, then come back to annotate it.
+            </p>
+            {onOpenConnections && (
+              <button className="dp-btn dp-btn-primary" onClick={onOpenConnections}>Open data sources</button>
+            )}
+          </div>
         ) : (
           <>
             <div style={s.connRow}>
@@ -237,10 +248,14 @@ export default function AnnotationStudio({
                 >
                   {connections.map((c) => (
                     <option key={c.connection_id} value={c.connection_id}>
-                      {c.name} ({c.host}/{c.dbname})
+                      {c.name} ({connectionLabel(c)})
                     </option>
                   ))}
                 </select>
+                {(() => {
+                  const c = connections.find((x) => x.connection_id === connectionId);
+                  return c ? <span style={{ marginTop: 4 }}><ConnectionHealthBadge conn={c} /></span> : null;
+                })()}
               </label>
               <button
                 className="dp-btn dp-btn-ghost"
