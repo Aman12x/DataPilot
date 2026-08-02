@@ -233,37 +233,37 @@ def _request(xff=None, peer="192.0.2.1"):
     )
 
 
-def test_proxy_appended_address_wins_over_a_client_forgery(monkeypatch):
-    """The client's own value sits left of what the proxies appended."""
+def test_railway_shape_resolves_the_real_client(monkeypatch):
+    """Measured from production: '<real client>, <railway edge>'."""
     monkeypatch.delenv("TRUSTED_PROXY_HOPS", raising=False)
     from backend.api import auth_rate
 
-    assert auth_rate.client_ip(_request(xff="1.2.3.4, 203.0.113.7")) == "203.0.113.7"
+    assert auth_rate.client_ip(_request(xff="74.105.77.244, 152.233.47.65")) == "74.105.77.244"
 
 
-def test_internal_proxy_hops_are_skipped(monkeypatch):
-    """Railway appends a CGNAT hop that differs per request.
+def test_rotating_edge_address_does_not_split_the_bucket(monkeypatch):
+    """Railway's edge IP is public and changes per request.
 
-    Keying on it gave every request its own bucket and silently disabled rate
-    limiting in production -- 20 concurrent bad logins, zero 429s.
+    Keying on it gave every request its own bucket, which is why 20 concurrent
+    bad logins produced zero 429s in production.
     """
     monkeypatch.delenv("TRUSTED_PROXY_HOPS", raising=False)
     from backend.api import auth_rate
 
-    a = auth_rate.client_ip(_request(xff="203.0.113.7, 100.64.0.13"))
-    b = auth_rate.client_ip(_request(xff="203.0.113.7, 100.64.0.99"))
-    assert a == b == "203.0.113.7", "varying infra hop leaked into the bucket key"
+    seen = {
+        auth_rate.client_ip(_request(xff=f"74.105.77.244, 152.233.47.{i}"))
+        for i in range(1, 40)
+    }
+    assert seen == {"74.105.77.244"}, f"bucket key not stable: {seen}"
 
 
-def test_same_client_gets_one_bucket_across_requests(monkeypatch):
+def test_cgnat_peer_is_not_used_as_the_key(monkeypatch):
     monkeypatch.delenv("TRUSTED_PROXY_HOPS", raising=False)
     from backend.api import auth_rate
 
-    seen = {
-        auth_rate.client_ip(_request(xff=f"203.0.113.7, 100.64.0.{i}"))
-        for i in range(1, 30)
-    }
-    assert seen == {"203.0.113.7"}
+    a = auth_rate.client_ip(_request(xff="74.105.77.244, 152.233.47.65", peer="100.64.0.3"))
+    b = auth_rate.client_ip(_request(xff="74.105.77.244, 152.233.47.66", peer="100.64.0.9"))
+    assert a == b == "74.105.77.244"
 
 
 def test_falls_back_to_peer_when_no_forwarded_header(monkeypatch):

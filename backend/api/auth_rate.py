@@ -63,36 +63,36 @@ def _trusted_hops() -> int:
 
 
 def client_ip(request: Request) -> str:
-    """Resolve the client IP from X-Forwarded-For, right to left.
+    """Resolve the client IP used to key every per-IP limit.
 
-    Taking the leftmost entry trusts the client: anyone can send
-    `X-Forwarded-For: 1.2.3.4` and land in a fresh bucket, defeating every
-    per-IP limit. Each proxy *appends* the address it saw, so the truth is on
-    the right.
+    Measured on the deployed app rather than assumed. Railway sends:
 
-    A fixed hop count is not enough either. Railway's internal hop addresses
-    come from 100.64.0.0/10 and differ per request, so pinning "one hop from
-    the right" produced a new bucket every time and silently disabled rate
-    limiting entirely -- 20 concurrent bad logins all returned 401, none 429.
+        X-Forwarded-For: <real client>, <railway edge>
+        peer:            100.64.0.x        (CGNAT, varies per request)
 
-    So: scan right to left and take the first address that could plausibly be a
-    client. Infrastructure ranges are skipped, and anything a client forged
-    sits to the left of the addresses the proxies appended, so it is never
-    reached.
+    and it *replaces* any inbound X-Forwarded-For -- a request sent with
+    `X-Forwarded-For: 9.9.9.9` arrived without that value anywhere. So the
+    leftmost entry is both the real client and unforgeable here.
+
+    Two earlier attempts failed because they reasoned from the generic proxy
+    model instead of this evidence. Counting one hop from the right picked the
+    CGNAT peer; skipping infrastructure ranges picked the Railway edge, which
+    is *public* (152.233.47.65, 152.233.47.67, ...) and rotates. Both produced
+    a fresh bucket per request, so 20 concurrent bad logins all returned 401
+    and rate limiting did nothing at all.
+
+    Leftmost is only safe when the edge strips inbound X-Forwarded-For, which
+    is true for Railway and most managed platforms but not for a bare reverse
+    proxy. TRUSTED_PROXY_HOPS pins an exact position for those.
     """
     forwarded = request.headers.get("X-Forwarded-For")
     if forwarded:
         parts = [p.strip() for p in forwarded.split(",") if p.strip()]
-        hops = _trusted_hops()
-        if hops > 0 and parts:
-            return parts[-min(hops, len(parts))]
-        for candidate in reversed(parts):
-            if not _is_infra(candidate):
-                return candidate
-    if request.client and not _is_infra(request.client.host):
-        return request.client.host
-    # Everything looked internal: fall back to the peer so callers still share
-    # a bucket rather than each getting an unlimited one.
+        if parts:
+            hops = _trusted_hops()
+            if hops > 0:
+                return parts[-min(hops, len(parts))]
+            return parts[0]
     return request.client.host if request.client else "unknown"
 
 
