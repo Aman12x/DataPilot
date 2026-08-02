@@ -216,3 +216,36 @@ def test_revision_loop_does_not_accumulate_assistant_turns(monkeypatch):
         assert messages[-1]["role"] == "user", _roles(messages)
         history = out["conversation_history"]
         assert all(a["role"] != b["role"] for a, b in zip(history, history[1:])), _roles(history)
+
+
+def test_audit_call_budgets_for_a_thinking_block(monkeypatch):
+    """The audit's max_tokens must cover thinking + JSON on adaptive-thinking
+    models — 2048 starved the JSON once on claude-sonnet-5 (JSONDecodeError,
+    silently skipped audit). Pin the configurable budget and that the call
+    actually uses it."""
+    import agents.analyze.node_shared as shared
+    import agents.analyze.nodes_narrative as nn
+
+    assert shared._MAX_TOKENS_AUDIT >= 8192
+
+    calls: list[dict] = []
+
+    class _Messages:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                return _StubResponse("polished narrative")
+            return _StubResponse('{"findings": [], "corrected_narrative": ""}')
+
+    class _Client:
+        messages = _Messages()
+
+    monkeypatch.setattr(nn, "_anthropic_client", lambda: _Client())
+    nn.generate_narrative({
+        "analysis_mode": "general",
+        "query_type": "lookup",
+        "task": "what happened to signups",
+        "conversation_history": [],
+    })
+    audit_call = calls[1]
+    assert audit_call["max_tokens"] == shared._MAX_TOKENS_AUDIT

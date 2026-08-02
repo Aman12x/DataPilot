@@ -27,7 +27,8 @@ run against `claude-sonnet-5` three times end-to-end, audit included. The move
 itself has simply not been made.
 
 **How:** set `FAST_MODEL=claude-sonnet-5` (Railway variable; `.env.example`
-documents it). Do item 2 first or at the same time.
+documents it). The audit call is now sized for a thinking model
+(`MAX_TOKENS_AUDIT`, default 8192), so no blocker remains.
 
 **Verify:** run one analysis to completion on the deployed app, decline the
 narrative gate with notes, and confirm the revision is a *rewrite*, not an
@@ -37,33 +38,7 @@ has the entry, so metering is correct on day one.
 
 ---
 
-## 2. Size the narrative-audit call for a thinking model
-
-**What:** the audit call in `agents/analyze/nodes_narrative.py` (second
-`messages.create`, `max_tokens=2048`) validates the narrative against the tool
-results and returns JSON.
-
-**Why:** 2048 tokens does not budget for a thinking block. On models with
-adaptive thinking enabled by default, thinking spends from the same
-`max_tokens`, so a long deliberation can starve the JSON answer. Observed once
-on `claude-sonnet-5`: a `JSONDecodeError` (truncated output) that did not
-reproduce across three further runs. Failure mode is benign today — the
-`except` skips the audit rather than failing the run — but "the accuracy check
-silently didn't run" is exactly the kind of degradation this codebase tries not
-to have.
-
-**How:** raise `max_tokens` (8192 is safe; the JSON itself is small) or make it
-`MAX_TOKENS_AUDIT` env-configurable like `MAX_TOKENS_NARRATIVE`. Also worth
-logging at warning (redacted) when the audit is skipped, so a systematic skip
-is visible in Sentry rather than invisible.
-
-**Verify:** the audit-path tests in `tests/test_narrative_conversation.py`
-still pass; on a live Sonnet run, `audit_result` is a `NarrativeAuditResult`,
-not `None`.
-
----
-
-## 3. Split-brain storage when `DATABASE_URL` is set
+## 2. Split-brain storage when `DATABASE_URL` is set
 
 **What:** `langgraph-checkpoint-postgres` is commented out in
 `backend/requirements.txt`. With `DATABASE_URL` set, accounts and run history
@@ -92,7 +67,7 @@ container.
 
 ---
 
-## 4. Off-box backups
+## 3. Off-box backups
 
 **What:** the retention pass (`backend/api/retention.py`) snapshots `auth.db`
 and `datapilot_memory.db` via `VACUUM INTO`, keeping `BACKUP_KEEP=7` — onto the
@@ -117,7 +92,7 @@ point `AUTH_DB_PATH` at it locally, log in.
 
 ---
 
-## 5. CSP sweep — three uncovered surfaces
+## 4. CSP sweep — three uncovered surfaces
 
 **What:** `frontend/e2e/csp-sweep.spec.ts` renders every screen, gate, and
 modal *except*: PackStudio's inner flows (template → form → save), Annotation-

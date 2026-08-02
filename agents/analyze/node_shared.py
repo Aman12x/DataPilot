@@ -93,6 +93,10 @@ _SCHEMA_CACHE_PATH    = os.getenv("SCHEMA_CACHE_PATH", "memory/schema_cache.json
 # LLM token limits — named constants so they're visible and changeable
 _MAX_TOKENS_SQL       = int(os.getenv("MAX_TOKENS_SQL",       "4096"))
 _MAX_TOKENS_NARRATIVE = int(os.getenv("MAX_TOKENS_NARRATIVE", "4096"))
+# The audit returns a small JSON object, but max_tokens also has to cover the
+# thinking block on adaptive-thinking models (Sonnet 4.6+ think by default and
+# spend from the same budget) — 2048 starved the JSON once on claude-sonnet-5.
+_MAX_TOKENS_AUDIT     = int(os.getenv("MAX_TOKENS_AUDIT",     "8192"))
 
 # Max LLM-based SQL correction retries in execute_query (0 = disabled)
 _MAX_SQL_RETRIES = int(os.getenv("MAX_SQL_RETRIES", "2"))

@@ -226,9 +226,17 @@ def generate_narrative(state: AgentState) -> dict:
         )
         audit_resp = _anthropic_client().messages.create(
             model=_fast_model(),
-            max_tokens=2048,
+            max_tokens=_MAX_TOKENS_AUDIT,
             messages=[{"role": "user", "content": audit_prompt}],
         )
+        if getattr(audit_resp, "stop_reason", None) == "max_tokens":
+            # Truncated output surfaces below as a JSONDecodeError; name the
+            # real cause so a systematic starvation is visible in Sentry.
+            logger.warning(
+                "generate_narrative: audit response truncated at max_tokens=%d "
+                "— raise MAX_TOKENS_AUDIT",
+                _MAX_TOKENS_AUDIT,
+            )
         raw = response_text(audit_resp).strip()
         if raw.startswith("```"):
             raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()

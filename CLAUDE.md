@@ -198,11 +198,6 @@ Detail — why each is open, the intended fix, and how to verify — lives in
   `langgraph-checkpoint-postgres` is commented out in `backend/requirements.txt`,
   so accounts and history move to Postgres while checkpoints silently stay on
   local SQLite.
-- **The narrative audit call is sized for a model that does not think.**
-  `max_tokens=2048` does not budget for a thinking block. One `JSONDecodeError`
-  was observed on `claude-sonnet-5` and did not reproduce across three further
-  runs. It degrades to a skipped audit, not a failed run — but size it before
-  moving `FAST_MODEL`.
 - **`FAST_MODEL` is still Haiku 4.5.** The two blockers (prefill, `content[0]`)
   are fixed and the move is verified to work; it has simply not been made.
 - **Backups live on the same volume as the data.** They cover corruption and bad
