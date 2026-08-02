@@ -207,9 +207,13 @@ blocks are indistinguishable.
 **Coverage.** `e2e/csp-sweep.spec.ts` walks every screen the app can render:
 the four unauthenticated routes, the register form, the mode picker, both task
 forms, the chain-of-thought list, all seven HITL gates, the finished view with
-its disclosure expanded, history with a run expanded, and both modals. That
-breadth is what justified dropping `'unsafe-inline'`; three screens would not
-have.
+its disclosure expanded, the stakeholder deck, the power-analysis result,
+history with a run expanded, and both modals. That breadth is what justified
+dropping `'unsafe-inline'`; three screens would not have.
+
+Two views are reachable only behind the **"Additional details"** disclosure —
+the charts and the power-analysis result — which is the other reason a
+route-level sweep never saw them.
 
 One test asserts the *opposite* direction — that inline style props are still
 computed. A policy that silently stopped applying styles would render the app

@@ -123,6 +123,38 @@ const GENERAL_ANALYSIS_GATE = {
   },
 };
 
+const DECK_DATA = {
+  verdict: "positive" as const,
+  headline: "Variant B is the clear winner",
+  hero_metric: "+21% signups",
+  confidence: "High",
+  recommendation: "Ship variant B to 100%.",
+  evidence: [
+    "Significant at p < 0.01 across 48,213 users",
+    "Holds in every segment except Self-serve",
+  ],
+  watch_out: "Refund rate rose 0.4pp — worth a follow-up.",
+};
+
+const POWER_ANALYSIS = {
+  baseline_mean: 42.5,
+  baseline_std: 11.2,
+  daily_traffic: 4_000,
+  mde_target_pct: 3.0,
+  mde_target_abs: 1.275,
+  required_n_per_arm: 18_400,
+  required_total_n: 36_800,
+  runtime_days: 10,
+  alpha: 0.05,
+  power: 0.8,
+  guardrails_to_watch: ["refund_rate", "latency_p95"],
+  sensitivity: [
+    { mde_pct: 1.0, n_per_arm: 165_000, runtime_days: 83 },
+    { mde_pct: 3.0, n_per_arm: 18_400, runtime_days: 10 },
+    { mde_pct: 5.0, n_per_arm: 6_700, runtime_days: 4 },
+  ],
+};
+
 const STEPS = [
   { type: "step", node: "resolve_intent", label: "Understanding the question", status: "completed" },
   { type: "step", node: "generate_sql", label: "Writing SQL", status: "completed",
@@ -288,6 +320,40 @@ test("no CSP violations on the finished view with details expanded", async ({ pa
   await page.getByText(/Additional details/i).click();
   await expect(page.locator("svg.recharts-surface").first()).toBeVisible({ timeout: 30_000 });
   await expectNoViolations(page, violations, "finished view");
+});
+
+test("no CSP violations on the stakeholder deck", async ({ page }) => {
+  // Rendered instead of the narrative when the run produced deck_data, so a
+  // finished-view test without it never touches this component.
+  const violations = await watchCsp(page);
+  await stubApi(page, {
+    events: [{ type: "done", state: { ...DONE_STATE, deck_data: DECK_DATA } }],
+  });
+  await startAnalysis(page);
+  await expect(page.getByText(DECK_DATA.headline).first()).toBeVisible({ timeout: 20_000 });
+  await expectNoViolations(page, violations, "stakeholder deck");
+});
+
+test("no CSP violations on the power-analysis result", async ({ page }) => {
+  // Its own layout: stat blocks and a sensitivity table nothing else renders.
+  const violations = await watchCsp(page);
+  await stubApi(page, {
+    events: [{
+      type: "done",
+      state: {
+        ...DONE_STATE,
+        analysis_mode: "power_analysis",
+        charts: [],
+        power_analysis_result: POWER_ANALYSIS,
+      },
+    }],
+  });
+  await startAnalysis(page);
+  // Like the charts, this sits behind the disclosure (hasDetails is true for a
+  // power-analysis run), so the summary view alone never renders it.
+  await page.getByText(/Additional details/i).click();
+  await expect(page.getByText(/users per arm/i).first()).toBeVisible({ timeout: 20_000 });
+  await expectNoViolations(page, violations, "power-analysis result");
 });
 
 test("no CSP violations on history with a run expanded", async ({ page }) => {
