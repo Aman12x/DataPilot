@@ -270,7 +270,7 @@ class DBConnection:
         finally:
             conn.close()
 
-    def _query_mysql(self, sql: str) -> pd.DataFrame:
+    def _query_mysql(self, sql: str, params: tuple | None = None) -> pd.DataFrame:
         try:
             import pymysql
         except ImportError as e:
@@ -298,7 +298,7 @@ class DBConnection:
             write_timeout=DB_READ_TIMEOUT,
         )
         try:
-            return pd.read_sql(sql, conn)
+            return pd.read_sql(sql, conn, params=params)
         finally:
             conn.close()
 
@@ -528,25 +528,23 @@ class DBConnection:
         return list(zip(df["column_name"], df["data_type"]))
 
     def _get_tables_mysql(self) -> list[str]:
-        dbname = self._kwargs["dbname"]
-        if not _SAFE_IDENT_RE.match(dbname):
-            raise ValueError(f"Unsafe database name: {dbname!r}")
+        # Comparison values, not identifiers — bind them, exactly as the
+        # Postgres path does. The allowlist that used to guard the string
+        # interpolation here was both the weaker mechanism and the wrong one:
+        # it rejects `café`, `日本`, and `2024_revenue`, all legal MySQL names.
         df = self._query_mysql(
             "SELECT table_name AS table_name FROM information_schema.tables "
-            f"WHERE table_schema = '{dbname}' ORDER BY table_name"
+            "WHERE table_schema = %s ORDER BY table_name",
+            params=(self._kwargs["dbname"],),
         )
         return df["table_name"].tolist()
 
     def _get_columns_mysql(self, table: str) -> list[tuple[str, str]]:
-        if not _SAFE_IDENT_RE.match(table):
-            raise ValueError(f"Unsafe table name: {table!r}")
-        dbname = self._kwargs["dbname"]
-        if not _SAFE_IDENT_RE.match(dbname):
-            raise ValueError(f"Unsafe database name: {dbname!r}")
         df = self._query_mysql(
             "SELECT column_name, data_type FROM information_schema.columns "
-            f"WHERE table_schema = '{dbname}' AND table_name = '{table}' "
-            "ORDER BY ordinal_position"
+            "WHERE table_schema = %s AND table_name = %s "
+            "ORDER BY ordinal_position",
+            params=(self._kwargs["dbname"], table),
         )
         return list(zip(df["column_name"], df["data_type"]))
 

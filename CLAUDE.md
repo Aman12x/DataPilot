@@ -47,6 +47,11 @@ normalised with a Unicode-aware `[^\w]` substitution — `café`, `日本`, and
 exists for the few places quoting is impossible (BigQuery's
 `project.dataset.table` path); prefer `quote_ident` everywhere else.
 
+And when the thing is a *value* rather than an identifier — a schema or table
+name in an `information_schema` predicate — bind it. `_get_*_mysql` used to
+interpolate it into a string literal behind `_SAFE_IDENT_RE`, which is both the
+weaker mechanism and the one that rejects `2024_revenue`.
+
 **Nothing blocking on the event loop.** The backend runs `--workers 1`, so one
 slow call freezes every other request. Pandas, DuckDB, PBKDF2, `requests`, and
 any DB connect go through `asyncio.to_thread`. Graph execution has its own pool
@@ -99,6 +104,12 @@ boundary, so a timed-out or shutting-down run stops after one more node instead
 of running the whole graph. The admission slot is held until the thread really
 exits — `_MAX_CONCURRENT` sizes both the cap and the executor, so releasing
 early admits a run onto a busy worker and it silently queues.
+
+**Access checks re-read membership; they never trust a stored identity.**
+`_user_can_mutate_connection` granted write on creator identity alone, so
+demotion to analyst or removal from the workspace took nothing away — the person
+could still rewrite the host and rotate the stored password. A workspace
+connection is now owner-only, symmetric with creation.
 
 **Every LLM call is metered.** `_anthropic_client()` returns a wrapper that
 prices each response. Don't reach around it — four of seven call sites used to

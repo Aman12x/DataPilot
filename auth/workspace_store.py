@@ -336,7 +336,21 @@ def get_connection_secrets(
 def _user_can_mutate_connection(
     user_id: str, connection_id: str, path: str | None = None
 ) -> bool:
-    """Creator or workspace owner can mutate connection config/secrets."""
+    """Who may change a connection's config or rotate its secrets.
+
+    Personal connection (no workspace): the creator, and only the creator.
+
+    Workspace connection: current owners of that workspace. Creator identity is
+    deliberately *not* a standing grant. It used to be, which meant leaving the
+    workspace — or being demoted to analyst, a role documented as read-only for
+    shared connections — took nothing away: the person could still rewrite the
+    host and rotate the stored password on a connection the team depended on.
+    An access check that never re-reads membership is not an access check.
+
+    Requiring owner here is symmetric with creation, which already goes through
+    `_require_owner`, so nobody who could create a workspace connection loses
+    the ability to edit it while their role is unchanged.
+    """
     path = path or _auth_db_path()
     with _connect(path) as con:
         row = con.execute(
@@ -349,11 +363,9 @@ def _user_can_mutate_connection(
     if not row:
         return False
     d = dict(row)
-    if d.get("user_id") == user_id:
-        return True
     ws = d.get("workspace_id") or ""
     if not ws:
-        return False
+        return d.get("user_id") == user_id
     from auth.org_store import get_membership
     return get_membership(user_id, ws, path=path) == "owner"
 

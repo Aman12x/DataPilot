@@ -90,7 +90,3 @@ def decrypt_secret(ciphertext: str) -> str:
     except InvalidToken as exc:
         raise ValueError("Failed to decrypt connection secret — key may have rotated") from exc
 
-
-def fingerprint_secret(plaintext: str) -> str:
-    """Non-reversible fingerprint for change detection (never for auth)."""
-    return hashlib.sha256(plaintext.encode("utf-8")).hexdigest()[:16]
