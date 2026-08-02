@@ -183,9 +183,25 @@ attributes and Recharts injects styles at runtime. `script-src` does **not** —
 the Vite build emits no inline scripts.
 
 **Rolling it out:** set `CSP_REPORT_ONLY=true` for one deploy, load the app,
-confirm the console is clean, then remove the variable. The suite asserts no
-violations across the authenticated routes, but a rendered chart and a PDF
-download are still unexercised.
+confirm the console is clean, then remove the variable.
+
+**Verification.** `e2e/csp-render.spec.ts` runs against the production build
+served with the generated `dist/serve.json`, so the policy under test is the one
+the generator emits. It renders all four chart types, exports the CSV blob, and
+downloads the PDF, asserting zero violations on each. The Vite dev server cannot
+be used for this — it sends no CSP and injects inline scripts that `script-src
+'self'` would rightly block.
+
+One test in that file deliberately triggers a violation. Without it, "no
+violations" is unfalsifiable: a detector that never fires and a policy that never
+blocks are indistinguishable.
+
+**`style-src 'unsafe-inline'` may not be load-bearing.** Removing it and
+re-running the suite changed nothing — charts still rendered, no violations. React
+and Recharts apply styles through the CSSOM (`node.style.foo = …`), which CSP does
+not govern; only literal `style=` attributes in parsed HTML and `<style>` blocks
+are. The directive is still there because the measurement covers three screens,
+not the whole app, and a wrong tightening breaks styling silently in production.
 
 ---
 

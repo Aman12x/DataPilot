@@ -223,6 +223,15 @@ jobs:
           ENV: development
         run: npm run test:e2e
 
+      # Separate config: this one serves the production build with the CSP that
+      # runtime-config.js generates. The dev server the job above starts sends no
+      # CSP at all, so it cannot test the policy. No backend — the API is stubbed.
+      - name: Run CSP rendering tests
+        working-directory: frontend
+        env:
+          CI: "true"
+        run: npx playwright test --config=playwright.csp.config.mjs
+
       - name: Upload Playwright report
         if: failure()
         uses: actions/upload-artifact@v4

@@ -12,7 +12,9 @@ export default defineConfig({
   // starts. They have their own config (playwright.prod.config.mjs). Without
   // this exclusion CI collected prod-auth.spec.ts here and failed on a session
   // cookie that was never set locally.
-  testIgnore: /prod-.*\.spec\.ts/,
+  // e2e/csp-*.spec.ts needs the production build and its generated CSP header,
+  // which the Vite dev server this config starts does not send.
+  testIgnore: /(prod|csp)-.*\.spec\.ts/,
   timeout: 180_000,
   expect: { timeout: 120_000 },
   fullyParallel: false,

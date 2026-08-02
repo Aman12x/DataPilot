@@ -142,10 +142,17 @@ in WAL. VACUUM behaves differently under WAL — it writes into the WAL and the
 main file keeps its size until a checkpoint. A non-WAL fixture will pass while
 production reclaims nothing.
 
-**`e2e/prod-*.spec.ts` drives the deployed app.** The default Playwright config
-excludes that prefix; without the exclusion the local CI job collects those
-specs, points them at `127.0.0.1`, and fails on a session cookie that was never
-set.
+**Playwright has three configs, and the prefix picks one.** The default config
+starts the local stack and *excludes* `e2e/prod-*` and `e2e/csp-*`. `prod-*`
+drives the deployed app (`playwright.prod.config.mjs`); without the exclusion CI
+collects it, points it at `127.0.0.1`, and fails on a cookie that was never set.
+`csp-*` needs the production build and its generated CSP header
+(`playwright.csp.config.mjs`) — the dev server sends no CSP and injects inline
+scripts that `script-src 'self'` would block, so it can never test the policy.
+
+**A CSP test without a deliberate violation proves nothing.** A detector that
+never fires and a policy that never blocks look the same from the outside.
+`csp-render.spec.ts` injects an inline script and asserts it *is* blocked.
 
 **Tests import two different module trees.** `tests/test_api.py` uses `api.*`
 (because `backend/` is on `sys.path`); newer tests use `backend.api.*`. They are
