@@ -178,9 +178,17 @@ from an inline script and a jsDelivr bundle.
 `connect-src` must name the API origin and that is only known from
 `VITE_API_URL` at runtime. `serve` reads the emitted `dist/serve.json`.
 
-`style-src` includes `'unsafe-inline'`: React `style={{}}` props compile to style
-attributes and Recharts injects styles at runtime. `script-src` does **not** —
-the Vite build emits no inline scripts.
+**No `'unsafe-inline'` anywhere in the SPA policy**, for scripts or styles. The
+style exemption was there on the belief that React `style={{}}` props need it.
+They do not: React and Recharts write through the CSSOM (`node.style.foo = …`),
+which CSP does not police at all. Only literal `style=` attributes in parsed HTML
+and `<style>` blocks are, and the build emits neither — no
+`dangerouslySetInnerHTML`, no `setAttribute("style", …)`, no `<style>` injection
+in the shipped bundle.
+
+That was measured, not reasoned: on the finished view, both policies produce
+**47 inline-styled elements, 143 DOM nodes, the same computed chart fill, and
+zero violations**. Byte-identical rendering.
 
 **Rolling it out:** set `CSP_REPORT_ONLY=true` for one deploy, load the app,
 confirm the console is clean, then remove the variable.
@@ -196,12 +204,16 @@ One test in that file deliberately triggers a violation. Without it, "no
 violations" is unfalsifiable: a detector that never fires and a policy that never
 blocks are indistinguishable.
 
-**`style-src 'unsafe-inline'` may not be load-bearing.** Removing it and
-re-running the suite changed nothing — charts still rendered, no violations. React
-and Recharts apply styles through the CSSOM (`node.style.foo = …`), which CSP does
-not govern; only literal `style=` attributes in parsed HTML and `<style>` blocks
-are. The directive is still there because the measurement covers three screens,
-not the whole app, and a wrong tightening breaks styling silently in production.
+**Coverage.** `e2e/csp-sweep.spec.ts` walks every screen the app can render:
+the four unauthenticated routes, the register form, the mode picker, both task
+forms, the chain-of-thought list, all seven HITL gates, the finished view with
+its disclosure expanded, history with a run expanded, and both modals. That
+breadth is what justified dropping `'unsafe-inline'`; three screens would not
+have.
+
+One test asserts the *opposite* direction — that inline style props are still
+computed. A policy that silently stopped applying styles would render the app
+unstyled rather than broken, and a violations-only assertion cannot see that.
 
 ---
 

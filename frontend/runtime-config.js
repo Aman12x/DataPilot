@@ -35,9 +35,12 @@ function buildCsp(origin) {
     "default-src 'self'",
     // The build emits external modules only; no inline <script> to allow.
     "script-src 'self'",
-    // React style props compile to style attributes, and Recharts injects
-    // styles at runtime, so 'unsafe-inline' is required for styles specifically.
-    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    // No 'unsafe-inline'. The assumption that React style props need it is
+    // wrong: React and Recharts write through the CSSOM (node.style.foo = …),
+    // which CSP does not police. Only literal style= attributes in parsed HTML
+    // and <style> blocks are, and the build emits neither — verified by
+    // e2e/csp-sweep.spec.ts across every screen, gate, and modal.
+    "style-src 'self' https://fonts.googleapis.com",
     "font-src 'self' https://fonts.gstatic.com",
     // blob:/data: cover chart rendering and the PDF download.
     "img-src 'self' data: blob:",

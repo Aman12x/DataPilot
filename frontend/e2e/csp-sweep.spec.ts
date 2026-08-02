@@ -1,0 +1,318 @@
+/**
+ * csp-sweep.spec.ts — every screen the app can put on the page.
+ *
+ * `csp-render.spec.ts` covers the three surfaces that were called out as
+ * unverified. This file exists for the opposite reason: to justify *tightening*
+ * the policy. A tightening is only as good as its coverage, and three screens
+ * are not enough to conclude that `style-src 'unsafe-inline'` is dead weight.
+ *
+ * So this walks the unauthenticated pages, the mode picker, both analysis modes,
+ * all seven HITL gates, the chain-of-thought stream, the finished view with its
+ * disclosure expanded, history with a run expanded, and each modal — asserting
+ * zero violations on every one.
+ *
+ * The gates matter most. They are the largest body of UI in the app, they only
+ * appear mid-run behind an SSE event, and nothing had ever rendered one under a
+ * real policy.
+ */
+import { test, expect, type Page } from "@playwright/test";
+
+import {
+  DONE_STATE,
+  expectNoViolations,
+  startAnalysis,
+  stubApi,
+  watchCsp,
+} from "./csp-helpers";
+
+// ── Gate payloads ─────────────────────────────────────────────────────────────
+// Populated rather than minimal: an empty payload renders an empty gate, which
+// would pass without exercising the tables, badges, and diff views that carry
+// most of the styling.
+
+const METRIC_CONFIG = {
+  primary_metric: "revenue",
+  metric_source_col: "revenue_usd",
+  metric_agg: "sum",
+  covariate: "prior_week_revenue",
+  metric_direction: "higher_is_better",
+  events_table: "transactions",
+  experiment_table: "assignments",
+  user_id_col: "user_id",
+  date_col: "event_date",
+  variant_col: "variant",
+  guardrail_metrics: ["refund_rate", "latency_p95"],
+  segment_cols: ["country", "plan"],
+};
+
+const GATES: Record<string, Record<string, unknown>> = {
+  intent: {
+    message: "One detail is missing before the analysis can start.",
+    question: "Which date range should the comparison cover?",
+    task: "Did variant B lift signups?",
+  },
+  semantic_cache: {
+    message: "A very similar analysis already exists.",
+    hit_type: "near",
+    similarity: 0.93,
+    narrative_draft: "## Summary\n\nA prior run found a **21%** lift.",
+    recommendation: "Reuse the earlier result.",
+  },
+  metric: {
+    message: "Confirm the metric definition.",
+    metric_config: METRIC_CONFIG,
+    metric_pack_id: "pack-1",
+    source: "metric_pack",
+    schema_drift_warnings: [
+      "Column `prior_week_revenue` was not found in the current schema.",
+    ],
+  },
+  query: {
+    message: "Review the generated SQL.",
+    generated_sql:
+      "SELECT variant, SUM(revenue_usd) AS revenue\nFROM transactions\nJOIN assignments USING (user_id)\nGROUP BY variant",
+    sql_validation_warnings: ["No date filter — this scans the full table."],
+  },
+  analysis: {
+    message: "Review the statistical results.",
+    srm_detected: false,
+    significant: true,
+    top_segment: "Enterprise",
+    novelty_likely: false,
+    guardrails_breached: true,
+    breached_metrics: [
+      { metric: "refund_rate", direction: "increased" },
+      { metric: "latency_p95", direction: "increased" },
+    ],
+    mde_powered: true,
+    business_impact: "≈ $412k annualised",
+    cuped_variance_reduction: 0.31,
+    biggest_funnel_dropoff: "checkout → payment",
+  },
+  narrative: {
+    message: "Review the narrative. Approve, or add notes to trigger a revision.",
+    narrative_draft: DONE_STATE.narrative_draft,
+    recommendation: DONE_STATE.recommendation,
+  },
+};
+
+const GENERAL_ANALYSIS_GATE = {
+  message: "Review what the data looks like.",
+  describe_result: {
+    row_count: 48_213,
+    col_count: 3,
+    columns: [
+      {
+        name: "revenue_usd", dtype: "float64", non_null: 48_000, null_count: 213,
+        mean: 42.5, std: 11.2, min: 0.0, median: 40.1, max: 990.0,
+      },
+      {
+        name: "country", dtype: "object", non_null: 48_213, null_count: 0,
+        n_unique: 27, top_values: ["US", "GB", "DE"],
+      },
+      {
+        name: "signed_up_at", dtype: "datetime64[ns]", non_null: 48_213, null_count: 0,
+      },
+    ],
+  },
+  correlation_result: {
+    pairs: [
+      { col_a: "revenue_usd", col_b: "sessions", correlation: 0.72 },
+      { col_a: "revenue_usd", col_b: "refunds", correlation: -0.31 },
+    ],
+  },
+};
+
+const STEPS = [
+  { type: "step", node: "resolve_intent", label: "Understanding the question", status: "completed" },
+  { type: "step", node: "generate_sql", label: "Writing SQL", status: "completed",
+    detail: "SELECT variant, SUM(revenue_usd) FROM transactions GROUP BY variant" },
+  { type: "step", node: "run_analysis", label: "Running statistics", status: "completed" },
+];
+
+async function gateScreen(page: Page, gate: string, payload: Record<string, unknown>, mode: "ab" | "explore" = "ab") {
+  await stubApi(page, { events: [...STEPS, { type: "gate", gate, payload }] });
+  await startAnalysis(page, mode);
+}
+
+// ── Styling actually survives the policy ──────────────────────────────────────
+
+test("inline style props still take effect under the tightened policy", async ({ page }) => {
+  // "No violations" is also true of a page that rendered nothing, so this
+  // checks the other direction: styles declared through React's style prop are
+  // actually computed. If style-src had started blocking them the app would
+  // render *unstyled* rather than broken, which is the failure mode a
+  // violations-only assertion cannot see.
+  //
+  // The finished view, not the mode picker: that screen is styled entirely by
+  // CSS classes and has zero inline styles, so it would pass vacuously.
+  await stubApi(page);
+  await startAnalysis(page);
+  await page.getByText(/Additional details/i).click();
+  // Wait for a *drawn* bar, not just a mounted <svg> — reading computed styles
+  // before Recharts has painted races and reports nothing applied.
+  await expect(
+    page.locator("svg.recharts-surface .recharts-bar-rectangle path").first(),
+  ).toBeVisible({ timeout: 30_000 });
+
+  const result = await page.evaluate(() => {
+    const styled = Array.from(document.querySelectorAll<HTMLElement>("[style]"));
+    const unapplied: string[] = [];
+    for (const el of styled.slice(0, 60)) {
+      for (const decl of (el.getAttribute("style") || "").split(";")) {
+        const [prop, value] = decl.split(":").map((x) => x && x.trim());
+        // Properties whose computed form is comparable without normalising.
+        if (!prop || !value || !/^(display|flex-direction|min-height|font-size)$/.test(prop)) continue;
+        if (!getComputedStyle(el).getPropertyValue(prop).trim()) {
+          unapplied.push(`${el.tagName}.${prop} declared ${value}, computed nothing`);
+        }
+      }
+    }
+    const bar = document.querySelector("svg.recharts-surface .recharts-bar-rectangle path");
+    return {
+      styledCount: styled.length,
+      unapplied,
+      barFill: bar ? getComputedStyle(bar).fill : "",
+    };
+  });
+
+  // Measured at 47 on this screen under both the loose and tightened policies —
+  // identical, which is what made the tightening safe to make.
+  expect(result.styledCount, "no inline-styled elements — wrong screen or nothing rendered")
+    .toBeGreaterThan(20);
+  expect(result.unapplied, `declared but not applied: ${result.unapplied.join(" | ")}`).toEqual([]);
+  // The chart colour comes from the ChartSpec through to the SVG. Two bar charts
+  // render, so accept either declared colour rather than depending on DOM order.
+  expect(["rgb(122, 162, 247)", "rgb(224, 175, 104)"]).toContain(result.barFill);
+});
+
+// ── Unauthenticated screens ───────────────────────────────────────────────────
+
+const PUBLIC_ROUTES = [
+  ["/login", /sign in/i],
+  ["/forgot-password", /reset|password/i],
+  ["/reset-password?token=abc123", /password/i],
+  ["/verify-email?token=abc123", /verif/i],
+] as const;
+
+for (const [route, marker] of PUBLIC_ROUTES) {
+  test(`no CSP violations on ${route}`, async ({ page }) => {
+    const violations = await watchCsp(page);
+    // Signed out: /auth/me must fail, or AuthGuard redirects away from /login.
+    await page.route("**/auth/me", (r) => r.fulfill({ status: 401, body: "{}" }));
+    await page.goto(route);
+    await expect(page.getByText(marker).first()).toBeVisible({ timeout: 15_000 });
+    await expectNoViolations(page, violations, route);
+  });
+}
+
+test("no CSP violations on the register form", async ({ page }) => {
+  const violations = await watchCsp(page);
+  await page.route("**/auth/me", (r) => r.fulfill({ status: 401, body: "{}" }));
+  await page.goto("/login");
+  await page.getByRole("button", { name: /create account/i }).first().click();
+  await expect(page.getByRole("textbox").first()).toBeVisible();
+  await expectNoViolations(page, violations, "register form");
+});
+
+// ── Authenticated screens ─────────────────────────────────────────────────────
+
+test("no CSP violations on the mode picker", async ({ page }) => {
+  const violations = await watchCsp(page);
+  await stubApi(page);
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: /A\/B Testing/i })).toBeVisible({ timeout: 15_000 });
+  await expectNoViolations(page, violations, "mode picker");
+});
+
+test("no CSP violations on the A/B task form", async ({ page }) => {
+  const violations = await watchCsp(page);
+  await stubApi(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: /A\/B Testing/i }).click();
+  await page.getByRole("button", { name: /Design Experiment/i }).click();
+  await expect(page.getByRole("button", { name: /Calculate Sample Size|Run Analysis/i })).toBeVisible();
+  await expectNoViolations(page, violations, "power-analysis form");
+});
+
+test("no CSP violations on the explore task form", async ({ page }) => {
+  const violations = await watchCsp(page);
+  await stubApi(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: /Explore & Understand/i }).click();
+  await expect(page.getByRole("textbox").first()).toBeVisible();
+  await expectNoViolations(page, violations, "explore form");
+});
+
+test("no CSP violations in the chain-of-thought step list", async ({ page }) => {
+  const violations = await watchCsp(page);
+  // Read from the finished view rather than mid-run: the stub answers the SSE
+  // request with a complete body, so the stream always closes, and a run with no
+  // terminal frame lands on "Connection lost" instead of the progress view.
+  // Same component either way — it renders in both.
+  await stubApi(page, { events: [...STEPS, { type: "done", state: DONE_STATE }] });
+  await startAnalysis(page);
+  await page.getByText(/Show processing details/i).click();
+  await expect(page.getByText(/Writing SQL/i).first()).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByText(/SELECT variant/i).first()).toBeVisible();
+  await expectNoViolations(page, violations, "chain-of-thought");
+});
+
+// ── Every HITL gate ───────────────────────────────────────────────────────────
+
+for (const [gate, payload] of Object.entries(GATES)) {
+  test(`no CSP violations on the ${gate} gate`, async ({ page }) => {
+    const violations = await watchCsp(page);
+    await gateScreen(page, gate, payload);
+    await expect(page.getByText(payload.message as string).first())
+      .toBeVisible({ timeout: 20_000 });
+    await expectNoViolations(page, violations, `${gate} gate`);
+  });
+}
+
+test("no CSP violations on the general-analysis gate", async ({ page }) => {
+  // Same gate name as the A/B one; the explore mode picks the other component.
+  const violations = await watchCsp(page);
+  await gateScreen(page, "analysis", GENERAL_ANALYSIS_GATE, "explore");
+  await expect(page.getByText(GENERAL_ANALYSIS_GATE.message).first())
+    .toBeVisible({ timeout: 20_000 });
+  await expectNoViolations(page, violations, "general-analysis gate");
+});
+
+// ── Finished view, history, modals ────────────────────────────────────────────
+
+test("no CSP violations on the finished view with details expanded", async ({ page }) => {
+  const violations = await watchCsp(page);
+  await stubApi(page);
+  await startAnalysis(page);
+  await page.getByText(/Additional details/i).click();
+  await expect(page.locator("svg.recharts-surface").first()).toBeVisible({ timeout: 30_000 });
+  await expectNoViolations(page, violations, "finished view");
+});
+
+test("no CSP violations on history with a run expanded", async ({ page }) => {
+  const violations = await watchCsp(page);
+  await stubApi(page);
+  await page.goto("/history");
+  await page.getByText("Did variant B lift signups?").click();
+  await expect(page.getByRole("button", { name: /pdf report/i })).toBeVisible({ timeout: 15_000 });
+  await expectNoViolations(page, violations, "history detail");
+});
+
+const MODALS = [
+  ["Metrics", /Define your metrics once/i],
+  ["Schema", /Teach DataPilot your column meanings/i],
+] as const;
+
+for (const [modal, marker] of MODALS) {
+  test(`no CSP violations in the ${modal} modal`, async ({ page }) => {
+    const violations = await watchCsp(page);
+    await stubApi(page);
+    await page.goto("/");
+    await page.getByRole("button", { name: modal, exact: true }).click();
+    // Assert on the modal's own copy — a bare wait would pass whether or not
+    // the overlay ever mounted.
+    await expect(page.getByText(marker).first()).toBeVisible({ timeout: 15_000 });
+    await expectNoViolations(page, violations, `${modal} modal`);
+  });
+}

@@ -163,7 +163,13 @@ scripts that `script-src 'self'` would block, so it can never test the policy.
 
 **A CSP test without a deliberate violation proves nothing.** A detector that
 never fires and a policy that never blocks look the same from the outside.
-`csp-render.spec.ts` injects an inline script and asserts it *is* blocked.
+`csp-render.spec.ts` injects an inline script *and* an inline style attribute and
+asserts both are blocked — separate directives, so one does not cover the other.
+
+**CSP does not police the CSSOM.** `node.style.foo = …` — what React and Recharts
+do — is unrestricted; only literal `style=` attributes in parsed HTML and
+`<style>` blocks are governed. This is why the SPA policy carries no
+`'unsafe-inline'` despite being full of `style={{}}` props.
 
 **Tests import two different module trees.** `tests/test_api.py` uses `api.*`
 (because `backend/` is on `sys.path`); newer tests use `backend.api.*`. They are

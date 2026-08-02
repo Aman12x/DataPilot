@@ -124,6 +124,22 @@ def test_spa_policy_blocks_inline_scripts(tmp_path):
 
 
 @_needs_node
+def test_spa_policy_carries_no_unsafe_inline_at_all(tmp_path):
+    """style-src used to carry it on the belief that React needed it.
+
+    It does not: React and Recharts set styles through the CSSOM, which CSP does
+    not govern. Only literal `style=` attributes in parsed HTML and `<style>`
+    blocks are, and the build emits neither. Measured across every screen, gate,
+    and modal by frontend/e2e/csp-sweep.spec.ts before this was tightened.
+
+    Kept as a whole-policy assertion rather than a style-src one: 'unsafe-inline'
+    reappearing anywhere is the thing worth catching.
+    """
+    _, policy = _spa_policy(_generate(tmp_path, VITE_API_URL="https://api.example.com"))
+    assert "'unsafe-inline'" not in policy, policy
+
+
+@_needs_node
 def test_spa_policy_allows_the_google_font_it_actually_loads(tmp_path):
     """index.html links fonts.googleapis.com; the policy must match reality."""
     _, policy = _spa_policy(_generate(tmp_path, VITE_API_URL="https://api.example.com"))
