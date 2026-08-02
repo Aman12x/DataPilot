@@ -57,9 +57,20 @@ any DB connect go through `asyncio.to_thread`. Graph execution has its own pool
 the wrapped block, never after — a trailing imperative reads as a continuation
 of whatever was injected.
 
-**User content stays out of logs.** `agents/log_safety.redact()`. INFO records
-become Sentry breadcrumbs, so a verbatim log ships customer data to a third
-party.
+**User content stays out of logs.** INFO records become Sentry breadcrumbs, so a
+verbatim log ships customer data to a third party. Use
+`agents.log_safety.redact()` for identifiers and free text, and
+`redact_exception()` for any exception raised in the agent layer — pandas
+raises `KeyError: 'revenue_usd'` with a column from someone's upload, and DuckDB
+quotes the failing SQL. `redact_exception` keeps the exception *class* (the
+operational signal) and drops the message.
+
+**No raw exception ever reaches a logger under `agents/`** — no carve-out for
+`debug`, so there is no rule to remember.
+`tests/test_log_safety.py::test_agent_layer_does_not_log_raw_exceptions` scans
+the tree and fails on any new one. It caught six sites the original hand-written
+grep missed. Infrastructure logs under `backend/api/` are exempt: they carry no
+customer data and read better in full.
 
 **Every LLM call is metered.** `_anthropic_client()` returns a wrapper that
 prices each response. Don't reach around it — four of seven call sites used to
@@ -125,8 +136,6 @@ call. Everything else uses `FAST_MODEL`.
   `conversation_history`, which is appended after the task prompt — so a request
   can end with an assistant turn. Harmless on Haiku 4.5; **returns 400 on any
   Sonnet 4.6+ or Opus 4.6+ model**, so moving `FAST_MODEL` will break it.
-- **Schema names and raw DB errors are still logged** at warning level in ~30
-  sites (`nodes_sql.py`, `nodes_analysis.py`). `redact()` exists for the sweep.
 - **A timed-out graph run leaks its worker thread.** `asyncio.to_thread` cannot
   be cancelled; the request is released but the thread runs to completion.
 - **Backups live on the same volume as the data.** They cover corruption and bad

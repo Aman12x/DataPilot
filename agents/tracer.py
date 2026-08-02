@@ -30,6 +30,7 @@ from contextlib import contextmanager
 from typing import Any, Generator
 
 from agents import pricing
+from agents.log_safety import redact_exception
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +142,7 @@ class GenerationContext:
                     },
                 )
             except Exception as exc:      # noqa: BLE001
-                logger.debug("Langfuse update_current_generation failed: %s", exc)
+                logger.debug("Langfuse update_current_generation failed: %s", redact_exception(exc))
 
         return {
             "input_tokens":        input_tokens,
@@ -181,7 +182,7 @@ def trace_generation(
                 yield ctx
                 return
         except Exception as exc:      # noqa: BLE001
-            logger.debug("Langfuse start_as_current_observation failed: %s", exc)
+            logger.debug("Langfuse start_as_current_observation failed: %s", redact_exception(exc))
 
     # No-op path
     yield ctx
@@ -193,4 +194,4 @@ def flush() -> None:
         try:
             _client.flush()
         except Exception as exc:      # noqa: BLE001
-            logger.debug("Langfuse flush failed: %s", exc)
+            logger.debug("Langfuse flush failed: %s", redact_exception(exc))

@@ -8,6 +8,8 @@ unless schema drift was detected (force_metric_gate).
 
 from __future__ import annotations
 
+from agents.log_safety import redact, redact_exception
+
 import logging
 
 from langgraph.types import interrupt
@@ -108,7 +110,7 @@ def metric_config_gate(state: AgentState) -> dict:
             updated = MetricConfig(**base)
             updated, issues = _sanitise_metric_config(updated, schema_context, mc)
             if issues:
-                logger.info("metric_config_gate: sanitiser issues: %s", issues)
+                logger.info("metric_config_gate: %d sanitiser issue(s): %s", len(issues), redact(issues))
             return {
                 "metric_config_approved": True,
                 "metric_config": updated,
@@ -117,7 +119,7 @@ def metric_config_gate(state: AgentState) -> dict:
                 "force_metric_gate": False,
             }
         except Exception as exc:
-            logger.warning("metric_config_gate: invalid edits ignored: %s", exc)
+            logger.warning("metric_config_gate: invalid edits ignored: %s", redact_exception(exc))
 
     return {
         "metric_config_approved": True,

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import agents.analyze.node_shared as _shared
 from agents.analyze.prompt_safety import wrap_untrusted_content
-from agents.log_safety import redact
+from agents.log_safety import redact, redact_exception
 
 globals().update({k: v for k, v in vars(_shared).items() if not k.startswith("__")})
 
@@ -92,7 +92,7 @@ def _llm_resolve_intent(
             result.setdefault(key, default_val)
         return result
     except Exception as exc:
-        logger.warning("_llm_resolve_intent: parse failed (%s) — using defaults.", exc)
+        logger.warning("_llm_resolve_intent: parse failed (%s) — using defaults.", redact_exception(exc))
         return safe_default
 
 
@@ -160,7 +160,7 @@ def _apply_intent_to_config(
         # Run through sanitise to catch any edge-case mismatches
         updated, warnings = _sanitise_metric_config(updated, schema_context, defaults)
         for w in warnings:
-            logger.warning("_apply_intent_to_config: %s", w)
+            logger.warning("_apply_intent_to_config: %s", redact(w))
         return updated
     except Exception as exc:
         logger.warning(
@@ -303,7 +303,7 @@ def infer_metric_config_node(state: AgentState) -> dict:
             )
             gen.update(response)
     except Exception as exc:
-        logger.warning("infer_metric_config: LLM call failed (%s), using defaults.", exc)
+        logger.warning("infer_metric_config: LLM call failed (%s), using defaults.", redact_exception(exc))
         return {
             "metric_config": defaults,
             "metric": defaults.primary_metric,
@@ -317,7 +317,7 @@ def infer_metric_config_node(state: AgentState) -> dict:
             raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
         inferred = MetricConfig(**json.loads(raw))
     except Exception as exc:
-        logger.warning("infer_metric_config: LLM response parsing failed (%s), using defaults.", exc)
+        logger.warning("infer_metric_config: LLM response parsing failed (%s), using defaults.", redact_exception(exc))
         inferred = defaults
 
     # ── Cross-check every inferred column/table name against the live schema ──
@@ -326,7 +326,7 @@ def infer_metric_config_node(state: AgentState) -> dict:
     # propagating to _canonical_experiment_sql() and generating broken SQL.
     inferred, issues = _sanitise_metric_config(inferred, schema_context, defaults)
     for w in issues:
-        logger.warning("infer_metric_config: schema mismatch — %s", w)
+        logger.warning("infer_metric_config: schema mismatch — %s", redact(w))
 
     return {
         "metric_config": inferred,

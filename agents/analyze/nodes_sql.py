@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from agents.analyze.prompt_safety import wrap_untrusted_content
 import agents.analyze.node_shared as _shared
+from agents.log_safety import redact, redact_exception
 globals().update({k: v for k, v in vars(_shared).items() if not k.startswith("__")})
 
 # ── Node 4: generate_sql ──────────────────────────────────────────────────────
@@ -91,7 +92,8 @@ def generate_sql(state: AgentState) -> dict:
     all_issues  = validation["bad_tables"] + validation["bad_columns"]
 
     if all_issues:
-        logger.warning("generate_sql: schema issues detected %s — auto-correcting.", all_issues)
+        logger.warning("generate_sql: %d schema issue(s) detected %s — auto-correcting.",
+                       len(all_issues), redact(all_issues))
         issue_lines = "\n".join(f"  - {v}" for v in all_issues)
         correction_hint = (
             f"The following names in the SQL don't exist in the schema:\n"
@@ -301,14 +303,14 @@ def execute_query(state: AgentState) -> dict:
                     else:
                         logger.warning("execute_query: aggregation fix still has duplicates — keeping original.")
                 except Exception as exc:
-                    logger.warning("execute_query: aggregation fix failed (%s) — keeping original.", exc)
+                    logger.warning("execute_query: aggregation fix failed (%s) — keeping original.", redact_exception(exc))
 
     # ── Phase 4: Content validation ───────────────────────────────────────────
     # Replace (not append) so stale warnings from a prior 0-row attempt don't
     # persist after the analyst fixes the SQL and re-executes.
     content_warnings = _validate_query_content(df, mc, state.get("analysis_mode", "ab_test"))
     for w in content_warnings:
-        logger.warning("execute_query: content validation — %s", w)
+        logger.warning("execute_query: content validation — %s", redact(w))
 
     result: dict = {
         "query_result":            df,

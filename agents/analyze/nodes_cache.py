@@ -1,6 +1,8 @@
 """Analyze graph nodes — cache + schema load (Phase 2 soft cache / annotations)."""
 from __future__ import annotations
 
+from agents.log_safety import redact_exception
+
 import agents.analyze.node_shared as _shared
 globals().update({k: v for k, v in vars(_shared).items() if not k.startswith("__")})
 
@@ -132,7 +134,7 @@ def load_schema(state: AgentState) -> dict:
                 annotations = ann.annotations or {}
                 synonyms = ann.synonyms or {}
         except Exception as exc:
-            logger.debug("load_schema: annotations lookup failed: %s", exc)
+            logger.debug("load_schema: annotations lookup failed: %s", redact_exception(exc))
 
     schema_context = None
     cache_path = None
@@ -167,7 +169,7 @@ def load_schema(state: AgentState) -> dict:
                         "schema_hash": schema_hash(schema_context),
                     }, f, indent=2)
             except OSError as exc:
-                logger.debug("load_schema: could not write connection cache: %s", exc)
+                logger.debug("load_schema: could not write connection cache: %s", redact_exception(exc))
             if user_id:
                 try:
                     from auth.workspace_store import record_schema_snapshot
@@ -177,7 +179,7 @@ def load_schema(state: AgentState) -> dict:
                         schema_hash=schema_hash(schema_context),
                     )
                 except Exception as exc:
-                    logger.debug("load_schema: snapshot persist failed: %s", exc)
+                    logger.debug("load_schema: snapshot persist failed: %s", redact_exception(exc))
         elif not is_upload and not is_byo_db:
             os.makedirs(os.path.dirname(_SCHEMA_CACHE_PATH) or ".", exist_ok=True)
             with open(_SCHEMA_CACHE_PATH, "w") as f:

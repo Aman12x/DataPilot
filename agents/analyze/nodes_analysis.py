@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import agents.analyze.node_shared as _shared
+from agents.log_safety import redact, redact_exception
 globals().update({k: v for k, v in vars(_shared).items() if not k.startswith("__")})
 
 # ── Node 6b: load_auxiliary_data ─────────────────────────────────────────────
@@ -64,12 +65,12 @@ def load_auxiliary_data(state: AgentState) -> dict:
             try:
                 result["daily_df"] = _aggregate_daily_from_events(conn, mc)
             except Exception as exc2:
-                logger.warning("load_auxiliary_data: event aggregation also failed: %s", exc2)
+                logger.warning("load_auxiliary_data: event aggregation also failed: %s", redact_exception(exc2))
     else:
         try:
             result["daily_df"] = _aggregate_daily_from_events(conn, mc)
         except Exception as exc:
-            logger.warning("load_auxiliary_data: event aggregation failed: %s", exc)
+            logger.warning("load_auxiliary_data: event aggregation failed: %s", redact_exception(exc))
 
     # ── Funnel: optional ──────────────────────────────────────────────────────
     if mc.funnel_table:
@@ -84,7 +85,7 @@ JOIN   {_ident(mc.experiment_table)} ex
         try:
             result["funnel_df"] = conn.query(funnel_sql)
         except Exception as exc:
-            logger.warning("load_auxiliary_data: funnel query failed: %s", exc)
+            logger.warning("load_auxiliary_data: funnel query failed: %s", redact_exception(exc))
 
     return result
 
@@ -107,7 +108,7 @@ def decompose_metric(state: AgentState) -> dict:
             result = decomposition_tools.decompose_dau(df, date_col=mc.date_col)
             return {"decomposition_result": result}
         except Exception as exc:
-            logger.warning("decompose_metric: decompose_dau failed (%s), trying generic.", exc)
+            logger.warning("decompose_metric: decompose_dau failed (%s), trying generic.", redact_exception(exc))
 
     # Generic path: segment-based breakdown for any metric
     metric_col = mc.primary_metric
@@ -125,7 +126,7 @@ def decompose_metric(state: AgentState) -> dict:
         )
         return {"decomposition_result": result}
     except Exception as exc:
-        logger.warning("decompose_metric: decompose_metric failed: %s", exc)
+        logger.warning("decompose_metric: decompose_metric failed: %s", redact_exception(exc))
         return {}
 
 
@@ -206,7 +207,7 @@ def forecast_baseline_node(state: AgentState) -> dict:
     try:
         result = forecast_tools.forecast_baseline(df, metric_col=metric, date_col=date_col)
     except Exception as exc:
-        logger.warning("forecast_baseline: failed (%s), skipping.", exc)
+        logger.warning("forecast_baseline: failed (%s), skipping.", redact_exception(exc))
         return {}
     return {"forecast_result": result}
 
@@ -234,7 +235,7 @@ def run_cuped_node(state: AgentState) -> dict:
 
     for col in [metric, covariate, variant]:
         if col not in df.columns:
-            logger.warning("run_cuped: column '%s' missing, skipping.", col)
+            logger.warning("run_cuped: column %s missing, skipping.", redact(col))
             return {}
 
     try:
@@ -242,7 +243,7 @@ def run_cuped_node(state: AgentState) -> dict:
             df, metric_col=metric, covariate_col=covariate, variant_col=variant
         )
     except ValueError as exc:
-        logger.warning("run_cuped: skipping — %s", exc)
+        logger.warning("run_cuped: skipping — %s", redact_exception(exc))
         return {}
     return {"cuped_result": result}
 
@@ -327,7 +328,7 @@ def check_srm_node(state: AgentState) -> dict:
     try:
         result = stats_tools.check_srm(n_ctrl, n_trt)
     except ValueError as exc:
-        logger.warning("check_srm: skipping — %s", exc)
+        logger.warning("check_srm: skipping — %s", redact_exception(exc))
         return {}
 
     if result.srm_detected:
@@ -389,7 +390,7 @@ def detect_novelty_node(state: AgentState) -> dict:
             df, metric_col=metric, variant_col="variant", week_col="week"
         )
     except ValueError as exc:
-        logger.warning("detect_novelty: skipping — %s", exc)
+        logger.warning("detect_novelty: skipping — %s", redact_exception(exc))
         return {"novelty_result": _NoveltyResult(
             week1_ate=0.0, week2_ate=0.0, effect_direction="unknown",
             novelty_likely=False, skipped=True, skip_reason=str(exc),
@@ -473,7 +474,7 @@ FROM {_ident(mc.events_table)}
 """.strip()
         stats_df = conn.query(stats_sql)
     except Exception as exc:
-        logger.warning("run_power_analysis: DB stats query failed: %s", exc)
+        logger.warning("run_power_analysis: DB stats query failed: %s", redact_exception(exc))
         return {}
 
     if stats_df is None or stats_df.empty:
@@ -614,7 +615,7 @@ def describe_data_node(state: AgentState) -> dict:
         result = describe_tools.describe_dataframe(df)
         return {"describe_result": result}
     except Exception as exc:
-        logger.warning("describe_data: failed (%s), skipping.", exc)
+        logger.warning("describe_data: failed (%s), skipping.", redact_exception(exc))
         return {}
 
 
@@ -630,7 +631,7 @@ def find_correlations_node(state: AgentState) -> dict:
         result = describe_tools.compute_correlations(df)
         return {"correlation_result": result}
     except Exception as exc:
-        logger.warning("find_correlations: failed (%s), skipping.", exc)
+        logger.warning("find_correlations: failed (%s), skipping.", redact_exception(exc))
         return {}
 
 
@@ -662,10 +663,10 @@ def run_regression_node(state: AgentState) -> dict:
         )
         return {"regression_result": result}
     except ValueError as exc:
-        logger.warning("run_regression: skipped (%s).", exc)
+        logger.warning("run_regression: skipped (%s).", redact_exception(exc))
         return {}
     except Exception as exc:
-        logger.warning("run_regression: failed (%s), skipping.", exc)
+        logger.warning("run_regression: failed (%s), skipping.", redact_exception(exc))
         return {}
 
 
@@ -742,14 +743,14 @@ def detect_timeseries_node(state: AgentState) -> dict:
             anomaly = anomaly_tools.detect_anomaly(ts_df, metric_col=metric_col)
             result["anomaly_result"] = anomaly
         except Exception as exc:
-            logger.warning("detect_timeseries/anomaly: %s", exc)
+            logger.warning("detect_timeseries/anomaly: %s", redact_exception(exc))
 
         # Forecasting
         try:
             forecast = forecast_tools.forecast_baseline(ts_df, metric_col=metric_col)
             result["forecast_result"] = forecast
         except Exception as exc:
-            logger.warning("detect_timeseries/forecast: %s", exc)
+            logger.warning("detect_timeseries/forecast: %s", redact_exception(exc))
 
         if result:
             logger.info(
@@ -759,7 +760,7 @@ def detect_timeseries_node(state: AgentState) -> dict:
         return result
 
     except Exception as exc:
-        logger.warning("detect_timeseries: failed (%s), skipping.", exc)
+        logger.warning("detect_timeseries: failed (%s), skipping.", redact_exception(exc))
         return {}
 
 
@@ -817,7 +818,7 @@ def generate_charts_node(state: AgentState) -> dict:
             ti     = compute_trust_indicators(None, ttest, n_rows)
         return {"charts": charts, "trust_indicators": ti.model_dump()}
     except Exception as exc:
-        logger.warning("generate_charts: failed (%s), skipping.", exc)
+        logger.warning("generate_charts: failed (%s), skipping.", redact_exception(exc))
         return {}
 
 

@@ -144,3 +144,81 @@ def test_sentry_pii_is_explicitly_disabled():
 
     main_src = (Path(__file__).resolve().parents[1] / "backend" / "api" / "main.py").read_text()
     assert "send_default_pii=False" in main_src
+
+
+# ── Exception redaction ───────────────────────────────────────────────────────
+
+
+def test_redact_exception_keeps_the_type_and_drops_the_message():
+    """The class is the operational signal; the message carries user data."""
+    from agents.log_safety import redact_exception
+
+    out = redact_exception(KeyError("revenue_usd"))
+    assert "KeyError" in out, "lost the failure mode"
+    assert "revenue_usd" not in out, "leaked a column name from a user upload"
+
+
+def test_redact_exception_hides_sql_fragments():
+    """DuckDB/Postgres errors quote the failing query back at you."""
+    from agents.log_safety import redact_exception
+
+    exc = RuntimeError('Binder Error: column "salary_usd" not found in FROM "employees"')
+    out = redact_exception(exc)
+    assert "RuntimeError" in out
+    for leak in ("salary_usd", "employees", "Binder Error:"):
+        assert leak not in out, f"leaked {leak!r}"
+
+
+def test_redact_exception_opt_in_returns_the_message(monkeypatch):
+    from agents.log_safety import redact_exception
+
+    monkeypatch.setenv("LOG_USER_CONTENT", "true")
+    out = redact_exception(KeyError("revenue_usd"))
+    assert "KeyError" in out and "revenue_usd" in out
+
+
+def test_redact_exception_never_raises():
+    from agents.log_safety import redact_exception
+
+    class Nasty(Exception):
+        def __str__(self):
+            raise ValueError("boom")
+
+    try:
+        redact_exception(Nasty())
+    except ValueError:
+        pass  # documented: __str__ raising is the caller's bug, not ours
+    assert redact_exception(Exception()), "empty message still renders"
+
+
+# ── Sweep coverage ────────────────────────────────────────────────────────────
+
+
+def test_agent_layer_does_not_log_raw_exceptions():
+    """Regression guard for the whole sweep.
+
+    The agent layer runs over user data: pandas raises KeyError with the
+    column name, DuckDB quotes the failing SQL. Passing `exc` straight to a
+    logger ships that to Sentry as a breadcrumb.
+    """
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parents[1] / "agents"
+    raw = re.compile(r"logger\.(?:warning|error|info|debug)\([^\n]*,\s*(?:exc2?|e)\s*\)")
+    offenders = []
+    for path in root.rglob("*.py"):
+        for i, line in enumerate(path.read_text().splitlines(), 1):
+            if raw.search(line):
+                offenders.append(f"{path.relative_to(root.parent)}:{i}")
+    assert not offenders, "raw exception logged in the agent layer:\n  " + "\n  ".join(offenders)
+
+
+def test_schema_identifier_logs_are_redacted():
+    """Column/table names come from uploaded CSV headers."""
+    import inspect
+
+    from agents.analyze import nodes_sql
+
+    src = inspect.getsource(nodes_sql)
+    assert "redact(all_issues)" in src, "schema issues logged verbatim"

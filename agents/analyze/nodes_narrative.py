@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from agents.analyze.prompt_safety import wrap_untrusted_content
 import agents.analyze.node_shared as _shared
+from agents.log_safety import redact_exception
 globals().update({k: v for k, v in vars(_shared).items() if not k.startswith("__")})
 
 # ── Node 18: generate_narrative ───────────────────────────────────────────────
@@ -103,7 +104,7 @@ def generate_narrative(state: AgentState) -> dict:
                 srm_result=_to_dict(state.get("srm_result")),
             )
         except Exception as exc:
-            logger.warning("narrative_tools.format_narrative failed: %s", exc)
+            logger.warning("narrative_tools.format_narrative failed: %s", redact_exception(exc))
             from tools.schemas import NarrativeResult
             template_out = NarrativeResult(narrative_draft="", recommendation="")
 
@@ -175,7 +176,7 @@ def generate_narrative(state: AgentState) -> dict:
         else:
             audit_blocked = True
     except Exception as exc:
-        logger.warning("generate_narrative: audit failed — %s", exc)
+        logger.warning("generate_narrative: audit failed — %s", redact_exception(exc))
 
     # Append this turn to conversation history for potential refinement
     new_history = list(state.get("conversation_history") or [])
@@ -323,7 +324,7 @@ def _generate_deck(state: "AgentState", final_narrative: str) -> dict:
             raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
         return json.loads(raw)
     except Exception as exc:
-        logger.warning("deck generation failed: %s", exc)
+        logger.warning("deck generation failed: %s", redact_exception(exc))
         return {}
 
 
@@ -435,7 +436,7 @@ def _compute_quality_score(state: AgentState) -> float:
             result = evaluate_run(task, narrative, df=df)
             ragas_score = result.score if result.relevancy >= 0 else result.faithfulness
         except Exception as exc:
-            logger.debug("_compute_quality_score: eval_tools failed — %s", exc)
+            logger.debug("_compute_quality_score: eval_tools failed — %s", redact_exception(exc))
 
     # ── Claim accuracy (always-on for A/B, deterministic, zero cost) ─────────────
     if mode == "ab_test" and narrative:
@@ -459,7 +460,7 @@ def _compute_quality_score(state: AgentState) -> float:
                     logger.warning("Safety constraint violations: %s", safety["violations"])
                     ragas_score = min(ragas_score if ragas_score is not None else 1.0, 0.6)
             except Exception as exc:
-                logger.debug("_compute_quality_score: claim_accuracy failed — %s", exc)
+                logger.debug("_compute_quality_score: claim_accuracy failed — %s", redact_exception(exc))
 
     # ── General-mode claim accuracy (correlation direction/strength) ────────────
     if mode == "general" and narrative:
@@ -474,7 +475,7 @@ def _compute_quality_score(state: AgentState) -> float:
                 logger.warning("General claim accuracy violations: %s", general["violations"])
                 ragas_score = min(ragas_score if ragas_score is not None else 1.0, 0.6)
         except Exception as exc:
-            logger.debug("_compute_quality_score: general_claim_accuracy failed — %s", exc)
+            logger.debug("_compute_quality_score: general_claim_accuracy failed — %s", redact_exception(exc))
 
     # ── LLM judge (opt-in via ENABLE_LLM_JUDGE=true) ─────────────────────────
     if os.getenv("ENABLE_LLM_JUDGE") == "true" and narrative and task:
@@ -487,7 +488,7 @@ def _compute_quality_score(state: AgentState) -> float:
                 logger.info("LLM judge score=%.3f actionability=%.2f specificity=%.2f grounding=%.2f",
                             rec["score"], rec["actionability"], rec["specificity"], rec["grounding"])
             except Exception as exc:
-                logger.debug("LLM judge failed: %s", exc)
+                logger.debug("LLM judge failed: %s", redact_exception(exc))
 
     if ragas_score is not None:
         return round(0.6 * completeness + 0.4 * ragas_score, 4)

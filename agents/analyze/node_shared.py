@@ -44,6 +44,7 @@ from agents.analyze.prompts import (
 from agents.state import AgentState
 from config.analysis_config import MetricConfig, load_metric_config
 from agents import spend
+from agents.log_safety import redact_exception
 from agents.analyze.prompt_safety import wrap_untrusted_content
 from agents.tracer import flush, observe, trace_generation
 from memory import retriever, semantic_cache
@@ -444,7 +445,7 @@ def _db_conn(state: AgentState) -> DBConnection:
                 connection_id, user_id,
             )
         except Exception as exc:
-            logger.warning("_db_conn: vault resolve failed: %s", exc)
+            logger.warning("_db_conn: vault resolve failed: %s", redact_exception(exc))
 
     if backend in ("postgres", "mysql"):
         default_port = "3306" if backend == "mysql" else "5432"
@@ -918,5 +919,5 @@ def _llm_correct_sql(
         )
         return _extract_sql(response.content[0].text)
     except Exception as exc:
-        logger.warning("_llm_correct_sql: correction call failed: %s", exc)
+        logger.warning("_llm_correct_sql: correction call failed: %s", redact_exception(exc))
         return sql
