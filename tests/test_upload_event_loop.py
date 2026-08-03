@@ -8,6 +8,7 @@ entire API stopped serving for the duration of every upload.
 import asyncio
 import inspect
 import time
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -128,8 +129,9 @@ def test_event_loop_keeps_serving_during_a_slow_upload(monkeypatch, tmp_path):
                 ticks += 1
 
         hb = asyncio.create_task(heartbeat())
+        fake_request = SimpleNamespace(headers={}, client=SimpleNamespace(host="203.0.113.5"))
         result = await upload_route.upload_file(
-            file=_FakeUpload(csv), current_user={"user_id": "u1"}
+            request=fake_request, file=_FakeUpload(csv), current_user={"user_id": "u1"}
         )
         hb.cancel()
         return ticks, result

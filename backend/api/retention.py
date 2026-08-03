@@ -23,7 +23,9 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import sqlite3
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -35,6 +37,10 @@ _GREGORIAN_OFFSET = 0x01B21DD213814000
 
 CHECKPOINT_RETENTION_DAYS = float(os.getenv("CHECKPOINT_RETENTION_DAYS", "30"))
 RUN_RETENTION_DAYS = float(os.getenv("RUN_RETENTION_DAYS", "180"))
+# Guest access tokens expire after 60 minutes and cannot be refreshed, so a
+# guest upload this old is unreachable by anyone — it only consumes the volume
+# the databases live on.
+GUEST_UPLOAD_RETENTION_HOURS = float(os.getenv("GUEST_UPLOAD_RETENTION_HOURS", "48"))
 
 try:  # source of truth for how long a refresh token stays valid
     from .deps import REFRESH_TOKEN_EXPIRE_DAYS as _REFRESH_DAYS
@@ -252,6 +258,39 @@ def backup_database(db_path: str, backup_dir: str, keep: int = BACKUP_KEEP) -> s
 
 # ── Orchestration ─────────────────────────────────────────────────────────────
 
+def prune_guest_uploads(
+    upload_dir: str, older_than_hours: float = GUEST_UPLOAD_RETENTION_HOURS
+) -> dict:
+    """Delete guest upload directories whose newest file is past the cutoff.
+
+    Only directories named guest-* are candidates; registered users' uploads
+    are never touched. The age check uses the newest file inside the directory
+    so an actively-used guest session is not swept mid-analysis.
+    """
+    root = Path(upload_dir)
+    result = {"dirs": 0, "mb": 0.0}
+    if not root.exists():
+        return result
+    cutoff = time.time() - older_than_hours * 3600
+    for d in root.iterdir():
+        if not d.is_dir() or not d.name.startswith("guest-"):
+            continue
+        try:
+            newest = max(
+                (f.stat().st_mtime for f in d.rglob("*") if f.is_file()),
+                default=d.stat().st_mtime,
+            )
+            if newest >= cutoff:
+                continue
+            size = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+            shutil.rmtree(d)
+            result["dirs"] += 1
+            result["mb"] = round(result["mb"] + size / 1e6, 1)
+        except OSError:
+            logger.warning("could not prune guest upload dir %s", d.name, exc_info=True)
+    return result
+
+
 def _paths() -> dict[str, str]:
     return {
         "graph": os.getenv("GRAPH_DB_PATH", "memory/graph.db"),
@@ -285,6 +324,12 @@ def run_maintenance() -> dict:
         report["tokens"] = prune_auth_tokens(paths["auth"])
     except Exception:
         logger.warning("token prune failed", exc_info=True)
+    try:
+        report["guest_uploads"] = prune_guest_uploads(
+            os.getenv("UPLOAD_DIR", "tmp_uploads")
+        )
+    except Exception:
+        logger.warning("guest upload prune failed", exc_info=True)
 
     # VACUUM when this pass deleted something, or when a previous one left
     # free pages behind. Keying only on "did I delete just now" stranded the

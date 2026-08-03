@@ -42,6 +42,7 @@ from ..deps import (
 )
 from ..run_manager import (
     check_rate_limit,
+    check_resume_rate_limit,
     cleanup_run,
     get_cached_error,
     get_gate_deadline,
@@ -690,8 +691,11 @@ async def resume_run_endpoint(
     await _check_ownership(graph, run_id, current_user["user_id"])
 
     # A resume restarts the graph and spends more tokens, so it faces the same
-    # budget check as a fresh run.
-    await check_budget(current_user["user_id"], client_ip(request))
+    # budget check as a fresh run — plus its own, looser rate bucket (a normal
+    # run answers ~5 gates in minutes, so the run limit would break it).
+    ip = client_ip(request)
+    await check_resume_rate_limit(scope_for(current_user["user_id"], ip))
+    await check_budget(current_user["user_id"], ip)
 
     # Reject resume if the gate window has expired
     deadline = await get_gate_deadline(run_id)

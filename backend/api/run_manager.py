@@ -46,11 +46,16 @@ _STREAM_TTL  = 6 * 60 * 60   # 6 h
 _OWNER_TTL   = 48 * 60 * 60  # 48 h
 
 _MAX_RUNS    = int(os.getenv("MAX_RUNS_PER_WINDOW", "5"))
+_MAX_RESUMES = int(os.getenv("MAX_RESUMES_PER_WINDOW", "30"))
 _WINDOW_SECS = int(os.getenv("RATE_WINDOW_SECONDS", "300"))
 
 _local_rate: dict[str, deque] = {}
 _gate_deadlines: dict[str, int] = {}
 _MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT_GRAPH_INVOKES", "32"))
+# Guest scopes ("ip:…") get a per-scope ceiling so one IP cannot hold a large
+# share of the global slots. 0 disables. Registered users are uncapped.
+_MAX_CONCURRENT_GUEST = int(os.getenv("MAX_CONCURRENT_RUNS_PER_GUEST", "2"))
+_active_by_scope: dict[str, int] = {}
 _GATE_TIMEOUT_SECS = int(os.getenv("GATE_TIMEOUT_SECONDS", str(4 * 60 * 60)))
 _active_invokes = 0
 
@@ -201,18 +206,11 @@ async def get_cached_error(run_id: str) -> str | None:
 
 # ── Rate limiting ─────────────────────────────────────────────────────────────
 
-async def check_rate_limit(scope: str) -> None:
-    """Cap run creation per budget scope, not per user_id.
-
-    POST /auth/guest mints a fresh guest-{uuid4} on demand, so a user_id-keyed
-    limit resets for free — the same hole budget.py closes for spend. Callers
-    pass budget.scope_for(user_id, ip): "ip:…" for guests, "user:…" otherwise.
-    """
+async def _check_window_limit(key: str, max_events: int, detail: str) -> None:
     from fastapi import HTTPException, status as st
 
     if _redis:
         now    = time.time()
-        key    = f"rate:{scope}"
         window = now - _WINDOW_SECS
         pipe   = _redis.pipeline()
         pipe.zremrangebyscore(key, "-inf", window)
@@ -221,22 +219,45 @@ async def check_rate_limit(scope: str) -> None:
         pipe.expire(key, _WINDOW_SECS + 10)
         results = await pipe.execute()
         count   = results[2]
-        if count > _MAX_RUNS:
-            raise HTTPException(
-                status_code=st.HTTP_429_TOO_MANY_REQUESTS,
-                detail=f"Rate limit: max {_MAX_RUNS} runs per {_WINDOW_SECS}s",
-            )
+        if count > max_events:
+            raise HTTPException(status_code=st.HTTP_429_TOO_MANY_REQUESTS, detail=detail)
     else:
         now = time.monotonic()
-        dq  = _local_rate.setdefault(scope, deque())
+        dq  = _local_rate.setdefault(key, deque())
         while dq and dq[0] < now - _WINDOW_SECS:
             dq.popleft()
-        if len(dq) >= _MAX_RUNS:
-            raise HTTPException(
-                status_code=429,
-                detail=f"Rate limit: max {_MAX_RUNS} runs per {_WINDOW_SECS}s",
-            )
+        if len(dq) >= max_events:
+            raise HTTPException(status_code=429, detail=detail)
         dq.append(now)
+
+
+async def check_rate_limit(scope: str) -> None:
+    """Cap run creation per budget scope, not per user_id.
+
+    POST /auth/guest mints a fresh guest-{uuid4} on demand, so a user_id-keyed
+    limit resets for free — the same hole budget.py closes for spend. Callers
+    pass budget.scope_for(user_id, ip): "ip:…" for guests, "user:…" otherwise.
+    """
+    await _check_window_limit(
+        f"rate:{scope}",
+        _MAX_RUNS,
+        f"Rate limit: max {_MAX_RUNS} runs per {_WINDOW_SECS}s",
+    )
+
+
+async def check_resume_rate_limit(scope: str) -> None:
+    """Cap gate resumes per budget scope.
+
+    A legitimate run answers ~5 gates in a few minutes, so this bucket is much
+    looser than the run limit — its job is to stop resume spam from restarting
+    the graph over and over (each resume spawns a fresh invoke; the SSE replay
+    race showed a client can do this by accident, let alone on purpose).
+    """
+    await _check_window_limit(
+        f"rate:resume:{scope}",
+        _MAX_RESUMES,
+        f"Rate limit: max {_MAX_RESUMES} gate responses per {_WINDOW_SECS}s",
+    )
 
 
 # ── Node labels for Chain-of-Thought streaming ────────────────────────────────
@@ -546,7 +567,22 @@ async def _invoke(graph: Any, arg: Any, run_id: str) -> None:
         cleanup_run(run_id)
         return
 
+    scope = await get_budget_scope(run_id)
+    if (
+        _MAX_CONCURRENT_GUEST > 0
+        and scope is not None
+        and scope.startswith("ip:")
+        and _active_by_scope.get(scope, 0) >= _MAX_CONCURRENT_GUEST
+    ):
+        msg = "Too many analyses running at once from this connection. Please wait for one to finish."
+        await _publish_result(run_id, {"ok": False, "error": msg})
+        await _store_error(run_id, msg)
+        cleanup_run(run_id)
+        return
+
     _active_invokes += 1
+    if scope is not None:
+        _active_by_scope[scope] = _active_by_scope.get(scope, 0) + 1
     released = False
 
     def _release_slot() -> None:
@@ -556,6 +592,12 @@ async def _invoke(graph: Any, arg: Any, run_id: str) -> None:
         if not released:
             released = True
             _active_invokes -= 1
+            if scope is not None:
+                remaining = _active_by_scope.get(scope, 0) - 1
+                if remaining <= 0:
+                    _active_by_scope.pop(scope, None)
+                else:
+                    _active_by_scope[scope] = remaining
 
     config = {"configurable": {"thread_id": run_id}}
     loop = asyncio.get_running_loop()

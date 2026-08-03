@@ -254,6 +254,98 @@ def test_registered_users_do_not_share_a_rate_bucket_by_ip(monkeypatch):
     run_manager._local_rate.clear()
 
 
+def test_guest_upload_quota_is_keyed_on_ip(monkeypatch):
+    monkeypatch.setenv("GUEST_UPLOADS_PER_DAY", "2")
+
+    async def scenario():
+        ip = "198.51.100.9"
+        await budget.record_guest_upload("guest-aaaa", ip)
+        await budget.record_guest_upload("guest-aaaa", ip)
+        # A fresh guest identity from the same IP is still over quota.
+        with pytest.raises(Exception) as exc:
+            await budget.check_guest_upload_quota("guest-zzzz", ip)
+        assert exc.value.status_code == 429
+        # A different IP is unaffected.
+        await budget.check_guest_upload_quota("guest-zzzz", "198.51.100.10")
+
+    asyncio.run(scenario())
+
+
+def test_registered_users_have_no_upload_quota(monkeypatch):
+    monkeypatch.setenv("GUEST_UPLOADS_PER_DAY", "1")
+
+    async def scenario():
+        await budget.record_guest_upload("user-a", "198.51.100.9")  # no-op
+        await budget.check_guest_upload_quota("user-a", "198.51.100.9")
+
+    asyncio.run(scenario())
+
+
+def test_upload_quota_does_not_touch_the_spend_ledger(monkeypatch):
+    monkeypatch.setenv("LLM_GUEST_DAILY_BUDGET_USD", "0.50")
+    monkeypatch.setenv("LLM_DAILY_BUDGET_USD", "0")
+
+    async def scenario():
+        ip = "198.51.100.9"
+        for _ in range(3):
+            await budget.record_guest_upload("guest-aaaa", ip)
+        # Three counted uploads must not consume the $0.50 spend budget.
+        await budget.check_budget("guest-aaaa", ip)
+
+    asyncio.run(scenario())
+
+
+def test_resume_rate_limit_is_looser_but_still_binds(monkeypatch):
+    from backend.api import run_manager
+
+    monkeypatch.setattr(run_manager, "_MAX_RESUMES", 3)
+    run_manager._local_rate.clear()
+
+    async def scenario():
+        scope = budget.scope_for("guest-aaaa", "198.51.100.9")
+        for _ in range(3):
+            await run_manager.check_resume_rate_limit(scope)
+        with pytest.raises(Exception) as exc:
+            await run_manager.check_resume_rate_limit(scope)
+        assert exc.value.status_code == 429
+        # The resume bucket is separate from the run-creation bucket.
+        await run_manager.check_rate_limit(scope)
+
+    asyncio.run(scenario())
+    run_manager._local_rate.clear()
+
+
+def test_guest_scope_concurrency_cap_rejects_at_limit(monkeypatch):
+    from backend.api import run_manager
+
+    async def scenario():
+        monkeypatch.setattr(run_manager, "_MAX_CONCURRENT_GUEST", 1)
+        published = []
+
+        async def fake_publish(run_id, item):
+            published.append(item)
+
+        async def fake_store(run_id, msg):
+            pass
+
+        monkeypatch.setattr(run_manager, "_publish_result", fake_publish)
+        monkeypatch.setattr(run_manager, "_store_error", fake_store)
+        monkeypatch.setattr(run_manager, "cleanup_run", lambda run_id, **kw: None)
+
+        scope = "ip:198.51.100.9"
+        await run_manager.set_budget_scope("run-cap-test", scope)
+        run_manager._active_by_scope[scope] = 1  # one invoke already in flight
+        try:
+            await run_manager._invoke(None, None, "run-cap-test")
+        finally:
+            run_manager._active_by_scope.pop(scope, None)
+
+        assert published and published[0]["ok"] is False
+        assert "Too many analyses" in published[0]["error"]
+
+    asyncio.run(scenario())
+
+
 def test_global_cap_blocks_everyone_with_503(monkeypatch):
     monkeypatch.setenv("LLM_DAILY_BUDGET_USD", "10.00")
     monkeypatch.setenv("LLM_USER_DAILY_BUDGET_USD", "1000")

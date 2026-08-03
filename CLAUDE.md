@@ -135,9 +135,13 @@ rotates per request, and it **replaces** any inbound header (a request carrying
 every request to a different bucket and silently disables all rate limiting.
 `TRUSTED_PROXY_HOPS` pins an exact position for other topologies.
 
-**Guest budgets *and* the run rate limit key on IP, not `user_id`.**
-`POST /auth/guest` mints a fresh `guest-{uuid4}` on demand, so any user-keyed
-limit resets for free. Both use `budget.scope_for(user_id, ip)`.
+**Every guest limit keys on IP, not `user_id`.** `POST /auth/guest` mints a
+fresh `guest-{uuid4}` on demand, so any user-keyed limit resets for free.
+Budgets, the run and resume rate limits, the per-guest concurrency cap, and
+the upload quota all use `budget.scope_for(user_id, ip)`. Uploads need a quota
+of their own because they are the one guest action with no LLM spend — the
+$-caps never bind — and the retention pass deletes `guest-*` upload dirs after
+48 h (guest tokens die in 60 min, so old guest files are unreachable garbage).
 
 **Checkpoint age comes from the `checkpoint_id`.** The table has no timestamp
 column, but LangGraph ids are UUIDv6 with an embedded clock (verified against

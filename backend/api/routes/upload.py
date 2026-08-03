@@ -24,10 +24,12 @@ _UUID_RE = re.compile(
 
 import duckdb
 import pandas as pd
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 
 from tools.db_tools import quote_ident
 
+from ..auth_rate import client_ip
+from ..budget import check_guest_upload_quota, record_guest_upload
 from ..deps import get_current_user
 
 logger = logging.getLogger(__name__)
@@ -244,9 +246,15 @@ def _build_duckdb(df: pd.DataFrame, db_path: str) -> None:
 
 @router.post("/upload", status_code=status.HTTP_201_CREATED)
 async def upload_file(
+    request: Request,
     file: UploadFile = File(...),
     current_user: dict = Depends(get_current_user),
 ) -> dict[str, Any]:
+    # Before reading the body: a guest over quota shouldn't cost us 50 MB of
+    # buffering to find out.
+    ip = client_ip(request)
+    await check_guest_upload_quota(current_user["user_id"], ip)
+
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in _ALLOWED_EXT:
         raise HTTPException(
@@ -289,6 +297,7 @@ async def upload_file(
             detail="Could not process upload",
         )
 
+    await record_guest_upload(current_user["user_id"], ip)
     logger.info("upload user=%s id=%s rows=%d cols=%d",
                 current_user["user_id"], upload_id, len(df), len(df.columns))
 

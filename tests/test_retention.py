@@ -123,6 +123,37 @@ def test_prune_handles_a_missing_database(tmp_path):
     assert retention.prune_checkpoints(str(tmp_path / "nope.db"))["threads"] == 0
 
 
+def test_prune_guest_uploads_removes_only_stale_guest_dirs(tmp_path):
+    import os
+    import time as _time
+
+    uploads = tmp_path / "uploads"
+    old = _time.time() - 72 * 3600
+
+    stale_guest = uploads / "guest-aaaa"
+    fresh_guest = uploads / "guest-bbbb"
+    user_dir = uploads / "user-cccc"
+    for d in (stale_guest, fresh_guest, user_dir):
+        d.mkdir(parents=True)
+        (d / "u.db").write_bytes(b"x" * 10)
+    # Backdate the stale guest dir and, crucially, the registered user's dir:
+    # age alone must never be enough to sweep a non-guest directory.
+    for d in (stale_guest, user_dir):
+        os.utime(d / "u.db", (old, old))
+        os.utime(d, (old, old))
+
+    result = retention.prune_guest_uploads(str(uploads), older_than_hours=48)
+
+    assert result["dirs"] == 1
+    assert not stale_guest.exists()
+    assert fresh_guest.exists()
+    assert user_dir.exists()
+
+
+def test_prune_guest_uploads_handles_missing_dir(tmp_path):
+    assert retention.prune_guest_uploads(str(tmp_path / "nope"))["dirs"] == 0
+
+
 def test_prune_survives_unparseable_checkpoint_ids(tmp_path):
     """A row with a non-UUIDv6 id must be skipped, not crash the pass."""
     now = datetime.now(timezone.utc)

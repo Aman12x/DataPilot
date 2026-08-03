@@ -66,29 +66,30 @@ def limit_for(scope: str) -> float:
 
 # ── Storage ───────────────────────────────────────────────────────────────────
 
-async def _get(day: str, scope: str) -> float:
+async def _get(day: str, scope: str, prefix: str = "spend") -> float:
     from .run_manager import get_redis_client
 
     redis = get_redis_client()
     if redis:
-        raw = await redis.get(f"spend:{day}:{scope}")
+        raw = await redis.get(f"{prefix}:{day}:{scope}")
         return float(raw) if raw else 0.0
     with _local_lock:
-        return _local.get(day, {}).get(scope, 0.0)
+        return _local.get(day, {}).get(f"{prefix}:{scope}", 0.0)
 
 
-async def _incr(day: str, scope: str, usd: float) -> None:
+async def _incr(day: str, scope: str, amount: float, prefix: str = "spend") -> None:
     from .run_manager import get_redis_client
 
     redis = get_redis_client()
     if redis:
-        key = f"spend:{day}:{scope}"
-        await redis.incrbyfloat(key, usd)
+        key = f"{prefix}:{day}:{scope}"
+        await redis.incrbyfloat(key, amount)
         await redis.expire(key, _DAY_TTL_SECONDS)
         return
     with _local_lock:
         bucket = _local.setdefault(day, {})
-        bucket[scope] = bucket.get(scope, 0.0) + usd
+        key = f"{prefix}:{scope}"
+        bucket[key] = bucket.get(key, 0.0) + amount
         # Days only ever move forward; drop anything that is not current.
         for stale in [d for d in _local if d != day]:
             del _local[stale]
@@ -128,6 +129,38 @@ async def check_budget(user_id: str, ip: str | None) -> None:
                 else "Daily usage limit reached. Please try again tomorrow."
             )
             raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=detail)
+
+
+async def check_guest_upload_quota(user_id: str, ip: str | None) -> None:
+    """Cap daily uploads per guest IP.
+
+    Uploads are the one guest action with no marginal LLM cost, so spend caps
+    never bind — and upload files live on the same fixed-size volume as the
+    databases. Registered users are exempt: their uploads are attributable.
+    """
+    if not is_guest(user_id):
+        return
+    limit = int(os.getenv("GUEST_UPLOADS_PER_DAY", "10"))
+    if limit <= 0:
+        return
+    scope = scope_for(user_id, ip)
+    count = await _get(_today(), scope, prefix="uploads")
+    if count >= limit:
+        logger.warning("budget.upload_quota_exhausted scope=%s count=%d limit=%d", scope, count, limit)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Guest upload limit reached. Sign up for a full account to continue.",
+        )
+
+
+async def record_guest_upload(user_id: str, ip: str | None) -> None:
+    """Count a successfully stored guest upload against the daily quota."""
+    if not is_guest(user_id):
+        return
+    try:
+        await _incr(_today(), scope_for(user_id, ip), 1.0, prefix="uploads")
+    except Exception:
+        logger.warning("budget.upload_record_failed", exc_info=True)
 
 
 async def record_spend(scope: str, usd: float) -> None:
