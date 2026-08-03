@@ -199,9 +199,6 @@ call. Everything else uses `FAST_MODEL`.
 Detail — why each is open, the intended fix, and how to verify — lives in
 `docs/future-work.md` (local, untracked). Keep the two in sync.
 
-- **Connections cover one dataset/schema (except Postgres).** BigQuery and
-  MySQL see only the dataset/schema saved on the connection; the planned fix
-  is a per-connection scope picker, not unbounded discovery.
 - **Per-stage eval is partial.** `evals/sql_generation_eval.py` (LLM-live,
   manual/nightly, not per-PR) now scores SQL generation and table choice per
   stage — baseline 20/20 strict on claude-sonnet-5 — and `score_faithfulness`

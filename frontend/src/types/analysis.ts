@@ -25,6 +25,7 @@ export interface SavedConnection {
   last_tested_at?: string | null;
   last_test_error?: string | null;
   project_id?: string | null;
+  schemas?: string[];
 }
 
 export interface MetricPackSummary {

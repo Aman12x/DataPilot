@@ -15,7 +15,7 @@ import json
 import logging
 import os
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
@@ -92,6 +92,7 @@ def init_workspace_tables(path: str | None = None) -> None:
             ("schema_snapshot_at", "TEXT"),
             ("workspace_id", "TEXT"),
             ("project_id", "TEXT"),
+            ("schemas_json", "TEXT"),
         ):
             try:
                 con.execute(f"ALTER TABLE db_connections ADD COLUMN {col} {defn}")
@@ -139,6 +140,7 @@ class ConnectionPublic:
     updated_at: str
     workspace_id: str | None = None
     project_id: str | None = None
+    schemas: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -157,6 +159,7 @@ class ConnectionPublic:
             "updated_at": self.updated_at,
             "workspace_id": self.workspace_id,
             "project_id": self.project_id,
+            "schemas": self.schemas,
         }
 
 
@@ -173,6 +176,19 @@ class ConnectionSecrets:
     password: str
     sslmode: str
     project_id: str = ""
+    schemas: list[str] = field(default_factory=list)
+
+
+def _schemas_from_row(d: dict) -> list[str]:
+    """Parse the stored scope; empty list means backend-default discovery."""
+    raw = d.get("schemas_json")
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+        return [str(s) for s in parsed if str(s).strip()] if isinstance(parsed, list) else []
+    except (TypeError, ValueError):
+        return []
 
 
 def _row_to_public(row: Any) -> ConnectionPublic:
@@ -194,6 +210,7 @@ def _row_to_public(row: Any) -> ConnectionPublic:
         updated_at=d["updated_at"],
         workspace_id=d.get("workspace_id") or None,
         project_id=d.get("project_id") or None,
+        schemas=_schemas_from_row(d),
     )
 
 
@@ -224,6 +241,7 @@ def create_connection(
     sslmode: str = "prefer",
     project_id: str = "",
     workspace_id: str | None = None,
+    schemas: list[str] | None = None,
     path: str | None = None,
 ) -> ConnectionPublic:
     from backend.api.crypto_secrets import encrypt_secret
@@ -233,6 +251,7 @@ def create_connection(
     connection_id = str(uuid.uuid4())
     now = _utcnow()
     password_enc = encrypt_secret(password)
+    schemas_json = json.dumps([s.strip() for s in schemas if s.strip()]) if schemas else None
 
     with _connect(path) as con:
         con.execute(
@@ -240,14 +259,14 @@ def create_connection(
             INSERT INTO db_connections (
                 connection_id, user_id, name, backend, host, port, dbname,
                 username, password_enc, sslmode, created_at, updated_at,
-                workspace_id, project_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                workspace_id, project_id, schemas_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 connection_id, user_id, name.strip(), backend, (host or "").strip(),
                 int(port or 0), (dbname or "").strip(), (username or "").strip(),
                 password_enc, sslmode or "prefer", now, now, workspace_id,
-                (project_id or "").strip() or None,
+                (project_id or "").strip() or None, schemas_json,
             ),
         )
     return get_connection(user_id, connection_id, path=path)  # type: ignore[return-value]
@@ -330,6 +349,7 @@ def get_connection_secrets(
         password=decrypt_secret(d["password_enc"]),
         sslmode=d.get("sslmode") or "prefer",
         project_id=d.get("project_id") or "",
+        schemas=_schemas_from_row(d),
     )
 
 
@@ -382,6 +402,7 @@ def update_connection(
     password: str | None = None,
     sslmode: str | None = None,
     project_id: str | None = None,
+    schemas: list[str] | None = None,
     path: str | None = None,
 ) -> ConnectionPublic | None:
     from backend.api.crypto_secrets import encrypt_secret
@@ -417,6 +438,15 @@ def update_connection(
         _set("sslmode", sslmode)
     if project_id is not None:
         _set("project_id", project_id.strip())
+    if schemas is not None:
+        _set("schemas_json", json.dumps([s.strip() for s in schemas if s.strip()]))
+        # The drift hash's meaning changes when the scope changes — a snapshot
+        # taken over a different set of schemas would report false drift (or
+        # hide real drift). Reset it, same pattern as the credential-change
+        # health reset below.
+        _set("schema_snapshot_json", None)
+        _set("schema_hash", None)
+        _set("schema_snapshot_at", None)
 
     if not fields:
         return existing

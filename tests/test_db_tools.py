@@ -177,3 +177,159 @@ def test_postgres_sampling_quotes_schema_and_table_separately(monkeypatch):
     # Quoting the qualified name as ONE identifier would produce "marts.orders"
     # and query a nonexistent public table.
     assert '"marts"."orders"' in captured["sql"]
+
+
+# ── Multi-schema discovery: MySQL + BigQuery mirror the Postgres pattern ──────
+
+
+def _mysql_conn(schemas=None):
+    kwargs = dict(host="127.0.0.1", port=3306, dbname="app", user="u", password="p")
+    if schemas is not None:
+        kwargs["schemas"] = schemas
+    return DBConnection("mysql", **kwargs)
+
+
+def test_mysql_tables_default_to_home_schema_only(monkeypatch):
+    """Without a stored scope, MySQL keeps its historical home-only view."""
+    db = _mysql_conn()
+    captured = {}
+
+    def fake_query(sql, params=None):
+        captured["sql"], captured["params"] = sql, params
+        return pd.DataFrame({"table_schema": ["app"], "table_name": ["events"]})
+
+    monkeypatch.setattr(db, "_query_mysql", fake_query)
+    assert db._get_tables_mysql() == ["events"]
+    assert captured["params"] == ("app", "app")  # scope + home ordering bind
+
+
+def test_mysql_scope_emits_qualified_sibling_names(monkeypatch):
+    db = _mysql_conn(schemas=["app", "analytics"])
+    captured = {}
+
+    def fake_query(sql, params=None):
+        captured["params"] = params
+        return pd.DataFrame({
+            "table_schema": ["app", "app", "analytics"],
+            "table_name":   ["events", "weird.name", "sessions"],
+        })
+
+    monkeypatch.setattr(db, "_query_mysql", fake_query)
+    names = db._get_tables_mysql()
+    # Bare for dot-free home tables, qualified otherwise — same rule as Postgres.
+    assert names == ["events", "app.weird.name", "analytics.sessions"]
+    assert captured["params"] == ("app", "analytics", "app")
+
+
+def test_mysql_columns_bind_qualified_schema(monkeypatch):
+    db = _mysql_conn(schemas=["app", "analytics"])
+    captured = {}
+
+    def fake_query(sql, params=None):
+        captured["params"] = params
+        return pd.DataFrame({"column_name": ["id"], "data_type": ["int"]})
+
+    monkeypatch.setattr(db, "_query_mysql", fake_query)
+    db._get_columns_mysql("analytics.sessions")
+    assert captured["params"] == ("analytics", "sessions")
+    db._get_columns_mysql("events")
+    assert captured["params"] == ("app", "events")  # bare name → home schema
+
+
+class _FakeBQTable:
+    def __init__(self, table_id):
+        self.table_id = table_id
+
+
+class _FakeBQDataset:
+    def __init__(self, dataset_id):
+        self.dataset_id = dataset_id
+
+
+class _FakeBQClient:
+    def __init__(self, datasets):
+        self._datasets = datasets  # {dataset_id: [table_id, ...]}
+
+    def list_tables(self, dataset):
+        if dataset not in self._datasets:
+            raise RuntimeError("dataset not found")
+        return [_FakeBQTable(t) for t in self._datasets[dataset]]
+
+    def list_datasets(self):
+        return [_FakeBQDataset(d) for d in self._datasets]
+
+
+def _bq_conn(schemas=None):
+    kwargs = dict(project_id="proj", dataset="raw",
+                  credentials_json='{"type":"service_account"}')
+    if schemas is not None:
+        kwargs["schemas"] = schemas
+    return DBConnection("bigquery", **kwargs)
+
+
+def test_bigquery_tables_default_to_home_dataset(monkeypatch):
+    db = _bq_conn()
+    monkeypatch.setattr(db, "_bq_client",
+                        lambda: _FakeBQClient({"raw": ["events"], "marts": ["orders"]}))
+    assert db._get_tables_bigquery() == ["events"]
+
+
+def test_bigquery_scope_emits_qualified_dataset_names(monkeypatch):
+    db = _bq_conn(schemas=["raw", "marts"])
+    monkeypatch.setattr(db, "_bq_client",
+                        lambda: _FakeBQClient({"raw": ["events"], "marts": ["orders"]}))
+    assert db._get_tables_bigquery() == ["events", "marts.orders"]
+
+
+def test_bigquery_dropped_scoped_dataset_is_skipped_not_fatal(monkeypatch):
+    db = _bq_conn(schemas=["raw", "gone"])
+    monkeypatch.setattr(db, "_bq_client", lambda: _FakeBQClient({"raw": ["events"]}))
+    assert db._get_tables_bigquery() == ["events"]
+
+
+def test_bigquery_columns_split_qualified_name(monkeypatch):
+    db = _bq_conn(schemas=["raw", "marts"])
+    seen = {}
+
+    class Meta:
+        schema = []
+
+    class Client(_FakeBQClient):
+        def get_table(self, full):
+            seen["full"] = full
+            return Meta()
+
+    monkeypatch.setattr(db, "_bq_client", lambda: Client({"raw": [], "marts": []}))
+    db._get_columns_bigquery("marts.orders")
+    assert seen["full"] == "proj.marts.orders"
+    db._get_columns_bigquery("events")
+    assert seen["full"] == "proj.raw.events"
+    with pytest.raises(ValueError, match="Unsafe"):
+        db._get_columns_bigquery('marts.orders"; DROP')
+
+
+def test_postgres_scope_filters_discovery(monkeypatch):
+    db = DBConnection("postgres", host="h", port=5432, dbname="d", user="u",
+                      password="p", schemas=["public", "marts"])
+    captured = {}
+
+    def fake_query(sql, params=None):
+        captured["sql"], captured["params"] = sql, params
+        return pd.DataFrame({"table_schema": [], "table_name": []})
+
+    monkeypatch.setattr(db, "_query_postgres", fake_query)
+    db._get_tables_postgres()
+    assert captured["params"] == ("public", "marts")
+    assert "IN (%s, %s)" in captured["sql"]
+
+
+def test_list_available_schemas_orders_home_first(monkeypatch):
+    db = _mysql_conn()
+    monkeypatch.setattr(db, "_query_mysql",
+                        lambda sql, params=None: pd.DataFrame({"schema_name": ["app", "analytics"]}))
+    assert db.list_available_schemas() == ["app", "analytics"]
+
+    bq = _bq_conn()
+    monkeypatch.setattr(bq, "_bq_client",
+                        lambda: _FakeBQClient({"marts": [], "raw": [], "archive": []}))
+    assert bq.list_available_schemas() == ["raw", "archive", "marts"]

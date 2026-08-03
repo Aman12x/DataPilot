@@ -238,3 +238,57 @@ class TestMetricPacks:
                 connection_id="00000000-0000-4000-8000-000000000000",
                 path=auth_db,
             )
+
+
+class TestConnectionScope:
+    """Item 5: the schemas list stored on a connection (the scope picker)."""
+
+    def _create(self, auth_db, schemas=None):
+        return workspace_store.create_connection(
+            "user-1", name="wh", host="db.example.com", port=5432,
+            dbname="app", username="u", password="pw", backend="mysql",
+            schemas=schemas, path=auth_db,
+        )
+
+    def test_scope_roundtrips_through_public_and_secrets(self, auth_db):
+        c = self._create(auth_db, schemas=["app", "analytics", "  "])
+        assert c.schemas == ["app", "analytics"]  # blanks dropped
+        secrets = workspace_store.get_connection_secrets("user-1", c.connection_id, path=auth_db)
+        assert secrets.schemas == ["app", "analytics"]
+        assert c.to_dict()["schemas"] == ["app", "analytics"]
+
+    def test_no_scope_means_empty_list(self, auth_db):
+        c = self._create(auth_db)
+        assert c.schemas == []
+        secrets = workspace_store.get_connection_secrets("user-1", c.connection_id, path=auth_db)
+        assert secrets.schemas == []
+
+    def test_scope_change_resets_schema_snapshot(self, auth_db):
+        c = self._create(auth_db, schemas=["app"])
+        workspace_store.record_schema_snapshot(
+            "user-1", c.connection_id,
+            schema_context="TABLE: events", schema_hash="abc123", path=auth_db,
+        )
+        assert workspace_store.get_schema_snapshot(
+            "user-1", c.connection_id, path=auth_db)["schema_hash"] == "abc123"
+
+        updated = workspace_store.update_connection(
+            "user-1", c.connection_id, schemas=["app", "analytics"], path=auth_db,
+        )
+        assert updated.schemas == ["app", "analytics"]
+        # The drift hash's meaning changed with the scope — snapshot must reset.
+        snap = workspace_store.get_schema_snapshot("user-1", c.connection_id, path=auth_db)
+        assert not snap or not snap.get("schema_hash")
+
+    def test_rename_does_not_touch_scope_or_snapshot(self, auth_db):
+        c = self._create(auth_db, schemas=["app"])
+        workspace_store.record_schema_snapshot(
+            "user-1", c.connection_id,
+            schema_context="TABLE: events", schema_hash="abc123", path=auth_db,
+        )
+        renamed = workspace_store.update_connection(
+            "user-1", c.connection_id, name="warehouse", path=auth_db,
+        )
+        assert renamed.schemas == ["app"]
+        assert workspace_store.get_schema_snapshot(
+            "user-1", c.connection_id, path=auth_db)["schema_hash"] == "abc123"

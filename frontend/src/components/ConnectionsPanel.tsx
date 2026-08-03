@@ -115,6 +115,10 @@ export default function ConnectionsPanel({ open, onClose, onChanged, canEdit }: 
   const [mode, setMode] = useState<"list" | "add" | "edit">("list");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<FormState>({ ...EMPTY_FORM });
+  // Hooks must precede the `if (!open) return null` early return below —
+  // declaring one after it crashes with React #310 the moment the modal opens.
+  const [availableSchemas, setAvailableSchemas] = useState<string[]>([]);
+  const [scopeSel, setScopeSel] = useState<string[]>([]);
 
   const load = () => {
     setLoading(true);
@@ -203,11 +207,15 @@ export default function ConnectionsPanel({ open, onClose, onChanged, canEdit }: 
     setForm({ ...EMPTY_FORM });
     setMsg(null);
     setDrift([]);
+    setAvailableSchemas([]);
+    setScopeSel([]);
   };
 
   const startEdit = (c: SavedConnection) => {
     setMode("edit");
     setEditingId(c.connection_id);
+    setAvailableSchemas([]);
+    setScopeSel(c.schemas || []);
     setForm({
       name: c.name,
       backend: (c.backend as FormState["backend"]) || "postgres",
@@ -274,26 +282,39 @@ export default function ConnectionsPanel({ open, onClose, onChanged, canEdit }: 
     }
   };
 
+  const homeSchema = () => (isBq ? form.dbname.trim() : form.dbname.trim());
+
+  const onTested = (schemas?: string[]) => {
+    if (!schemas || schemas.length < 2) return;
+    setAvailableSchemas(schemas);
+    // Default the selection to the saved scope, or just the home schema.
+    setScopeSel((sel) => (sel.length ? sel : [homeSchema()].filter(Boolean)));
+  };
+
+  type TestResp = { success: boolean; error?: string; table_count?: number; available_schemas?: string[] };
+
   const testForm = async () => {
     setBusy(true);
     setMsg(null);
     try {
       if (mode === "edit" && !form.password && editingId) {
         // No new credential entered: exercise the stored one.
-        const { data } = await client.post<{ success: boolean; error?: string; table_count?: number }>(
+        const { data } = await client.post<TestResp>(
           `/connections/${editingId}/test`,
         );
         setMsg(data.success
           ? { kind: "ok", text: `Connected, ${data.table_count ?? 0} tables visible (using the saved credential).` }
           : { kind: "error", text: data.error || "Connection test failed." });
+        if (data.success) onTested(data.available_schemas);
       } else {
-        const { data } = await client.post<{ success: boolean; error?: string; table_count?: number }>(
+        const { data } = await client.post<TestResp>(
           "/connections/test-ephemeral",
           formPayload(),
         );
         setMsg(data.success
           ? { kind: "ok", text: `Connected, ${data.table_count ?? 0} tables visible.` }
           : { kind: "error", text: data.error || "Connection test failed." });
+        if (data.success) onTested(data.available_schemas);
       }
     } catch (err) {
       const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
@@ -308,10 +329,13 @@ export default function ConnectionsPanel({ open, onClose, onChanged, canEdit }: 
     setMsg(null);
     try {
       if (mode === "add") {
-        await client.post("/connections", { ...formPayload(), test: true });
+        const body: Record<string, unknown> = { ...formPayload(), test: true };
+        if (scopeSel.length) body.schemas = scopeSel;
+        await client.post("/connections", body);
         setMsg({ kind: "ok", text: "Connection saved and tested." });
       } else if (editingId) {
         const payload: Record<string, unknown> = { name: form.name.trim() || undefined };
+        if (scopeSel.length) payload.schemas = scopeSel;
         if (isBq) {
           payload.project_id = form.projectId.trim();
           payload.dbname = form.dbname.trim();
@@ -615,6 +639,35 @@ export default function ConnectionsPanel({ open, onClose, onChanged, canEdit }: 
                 </>
               )}
             </div>
+
+            {availableSchemas.length > 1 && (
+              <div style={{ marginTop: 12 }}>
+                <span style={s.label}>
+                  {isBq ? "Datasets analyses can see" : "Schemas analyses can see"}
+                </span>
+                <p style={{ ...s.muted, margin: "2px 0 8px" }}>
+                  Pick only what analyses need — a focused scope keeps generated SQL
+                  sharp. Tables outside the home {isBq ? "dataset" : "schema"} appear
+                  with qualified names (like{" "}
+                  <code style={{ fontFamily: "ui-monospace, monospace" }}>
+                    {availableSchemas.find((sch) => sch !== homeSchema()) || "analytics"}.orders
+                  </code>).
+                </p>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 14px" }}>
+                  {availableSchemas.map((sch) => (
+                    <label key={sch} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--dp-ink)" }}>
+                      <input
+                        type="checkbox"
+                        checked={scopeSel.includes(sch)}
+                        onChange={(e) => setScopeSel((sel) =>
+                          e.target.checked ? [...sel, sch] : sel.filter((x) => x !== sch))}
+                      />
+                      {sch}{sch === homeSchema() ? " (home)" : ""}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div style={s.formActions}>
               <button className="dp-btn dp-btn-ghost" onClick={testForm} disabled={busy || !formValid}>

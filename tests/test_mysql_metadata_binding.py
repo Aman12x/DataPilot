@@ -41,7 +41,7 @@ def mysql_db(monkeypatch):
 
     def _capture(sql, params=None):
         calls.append((sql, params))
-        return pd.DataFrame({"table_name": [], "column_name": [], "data_type": []})
+        return pd.DataFrame({"table_schema": [], "table_name": [], "column_name": [], "data_type": []})
 
     monkeypatch.setattr(db, "_query_mysql", _capture)
     db.captured = calls  # type: ignore[attr-defined]
@@ -52,7 +52,9 @@ def test_table_listing_binds_the_schema_name(mysql_db):
     mysql_db._get_tables_mysql()
     sql, params = mysql_db.captured[0]
     assert "%s" in sql
-    assert params == ("analytics",)
+    # Multi-schema discovery binds the scope list plus the home schema for
+    # ordering — every occurrence is a bound value, never interpolated.
+    assert params == ("analytics", "analytics")
     assert "'analytics'" not in sql, "schema name was interpolated, not bound"
 
 
@@ -90,12 +92,12 @@ def test_hostile_schema_name_never_reaches_the_statement(monkeypatch):
     calls: list[tuple[str, tuple | None]] = []
     monkeypatch.setattr(
         db, "_query_mysql",
-        lambda sql, params=None: (calls.append((sql, params)), pd.DataFrame({"table_name": []}))[1],
+        lambda sql, params=None: (calls.append((sql, params)), pd.DataFrame({"table_schema": [], "table_name": []}))[1],
     )
     db._get_tables_mysql()
     sql, params = calls[0]
     assert "DROP TABLE" not in sql
-    assert params == ("analytics'; DROP TABLE users; --",)
+    assert params == ("analytics'; DROP TABLE users; --", "analytics'; DROP TABLE users; --")
 
 
 def test_query_mysql_forwards_params_to_the_driver(monkeypatch):

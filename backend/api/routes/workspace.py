@@ -99,6 +99,7 @@ def _build_db_connection(
     password: str = "",
     sslmode: str = "prefer",
     project_id: str = "",
+    schemas: list[str] | None = None,
 ) -> DBConnection:
     if backend == "bigquery":
         return DBConnection(
@@ -106,6 +107,7 @@ def _build_db_connection(
             project_id=project_id,
             dataset=dbname,
             credentials_json=password,
+            schemas=schemas or None,
         )
     return DBConnection(
         backend=backend,
@@ -115,6 +117,7 @@ def _build_db_connection(
         user=user,
         password=password,
         sslmode=sslmode,
+        schemas=schemas or None,
     )
 
 
@@ -128,6 +131,7 @@ def _test_db(
     password: str = "",
     sslmode: str = "prefer",
     project_id: str = "",
+    schemas: list[str] | None = None,
 ) -> dict[str, Any]:
     conn = _build_db_connection(
         backend=backend,
@@ -138,6 +142,7 @@ def _test_db(
         password=password,
         sslmode=sslmode,
         project_id=project_id,
+        schemas=schemas,
     )
     result = conn.test_connection()
     if result.get("success"):
@@ -150,6 +155,11 @@ def _test_db(
                 pass
             result["tables"] = names
             result["schema_preview"] = (preview or "")[:2000]
+            # Feeds the scope picker: which schemas/datasets the role can see.
+            try:
+                result["available_schemas"] = conn.list_available_schemas()
+            except Exception:
+                result["available_schemas"] = []
         except Exception as exc:
             logger.debug("schema enrich failed: %s", exc)
     return result
@@ -199,6 +209,7 @@ class ConnectionCreate(BaseModel):
     password: str = Field(default="", max_length=65_536)  # BQ service-account JSON
     project_id: str = Field(default="", max_length=128)
     sslmode: str = "prefer"
+    schemas: list[str] | None = Field(default=None, max_length=30)
     test: bool = True  # test before save by default
 
     @field_validator("sslmode")
@@ -218,6 +229,7 @@ class ConnectionUpdate(BaseModel):
     password: Optional[str] = Field(default=None, max_length=65_536)
     project_id: Optional[str] = Field(default=None, max_length=128)
     sslmode: Optional[str] = None
+    schemas: Optional[list[str]] = Field(default=None, max_length=30)
 
     @field_validator("sslmode")
     @classmethod
@@ -315,6 +327,7 @@ async def create_connection(
         sslmode=sslmode,
         project_id=project_id,
         workspace_id=workspace_id,
+        schemas=body.schemas,
     )
     if body.test:
         await asyncio.to_thread(
@@ -371,6 +384,7 @@ async def update_connection(
             password=body.password,
             sslmode=body.sslmode,
             project_id=body.project_id,
+            schemas=body.schemas,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -421,7 +435,7 @@ async def test_saved_connection(
         backend=secrets.backend,
         host=secrets.host, port=secrets.port, dbname=secrets.dbname,
         user=secrets.username, password=secrets.password, sslmode=secrets.sslmode,
-        project_id=secrets.project_id,
+        project_id=secrets.project_id, schemas=secrets.schemas,
     )
     await asyncio.to_thread(
         workspace_store.record_connection_test,

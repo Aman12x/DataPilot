@@ -440,6 +440,7 @@ def _db_conn(state: AgentState) -> DBConnection:
                         project_id=secrets.project_id,
                         dataset=secrets.dbname,
                         credentials_json=secrets.password,
+                        schemas=secrets.schemas or None,
                     )
                 return DBConnection(
                     backend=secrets.backend or backend,
@@ -449,6 +450,7 @@ def _db_conn(state: AgentState) -> DBConnection:
                     user=secrets.username,
                     password=secrets.password,
                     sslmode=secrets.sslmode,
+                    schemas=secrets.schemas or None,
                 )
             logger.warning(
                 "_db_conn: connection_id=%s not found for user=%s — falling back",

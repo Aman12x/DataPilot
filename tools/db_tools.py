@@ -569,16 +569,52 @@ class DBConnection:
             return schema, name
         return "public", table
 
+    def _split_home_table(self, table: str, home: str) -> tuple[str, str]:
+        """Split "schema.name" with `home` as the bare-name default.
+
+        Same first-dot rule as _split_pg_table: a home table whose own name
+        contains a dot is emitted qualified, so bare names never contain dots.
+        """
+        if "." in table:
+            schema, name = table.split(".", 1)
+            return schema, name
+        return home, table
+
+    def _scope(self) -> list[str] | None:
+        """The connection's selected schema/dataset scope, or None (default).
+
+        None keeps each backend's historical behaviour: Postgres sees every
+        non-system schema; MySQL and BigQuery see only the home
+        schema/dataset. A stored scope makes discovery *chosen*, not
+        unbounded — "everything" on a large warehouse would blow up the
+        schema context and degrade SQL quality.
+        """
+        scope = self._kwargs.get("schemas")
+        if not scope:
+            return None
+        cleaned = [str(s).strip() for s in scope if str(s).strip()]
+        return cleaned or None
+
     def _get_tables_postgres(self) -> list[str]:
         # Every schema the role can see, not just public — warehouses organise
         # tables into named schemas (analytics, marts, ...) and a public-only
         # view made them silently invisible. Public keeps bare names so
         # existing annotations and metric packs stay valid.
-        df = self._query_postgres(
-            "SELECT table_schema, table_name FROM information_schema.tables "
-            "WHERE table_schema NOT IN ('pg_catalog', 'information_schema') "
-            "ORDER BY (table_schema <> 'public'), table_schema, table_name"
-        )
+        scope = self._scope()
+        if scope:
+            placeholders = ", ".join(["%s"] * len(scope))
+            df = self._query_postgres(
+                "SELECT table_schema, table_name FROM information_schema.tables "
+                f"WHERE table_schema IN ({placeholders}) "
+                "ORDER BY (table_schema <> 'public'), table_schema, table_name",
+                params=tuple(scope),
+            )
+        else:
+            df = self._query_postgres(
+                "SELECT table_schema, table_name FROM information_schema.tables "
+                "WHERE table_schema NOT IN ('pg_catalog', 'information_schema') "
+                "ORDER BY (table_schema <> 'public'), table_schema, table_name"
+            )
         names: list[str] = []
         for schema, name in zip(df["table_schema"], df["table_name"]):
             if schema == "public" and "." not in name:
@@ -603,36 +639,98 @@ class DBConnection:
         # Postgres path does. The allowlist that used to guard the string
         # interpolation here was both the weaker mechanism and the wrong one:
         # it rejects `café`, `日本`, and `2024_revenue`, all legal MySQL names.
+        # Mirrors the Postgres naming pattern: bare names for the home schema
+        # (annotations and metric packs stay valid), qualified for siblings.
+        home = self._kwargs["dbname"]
+        schemas = self._scope() or [home]
+        placeholders = ", ".join(["%s"] * len(schemas))
         df = self._query_mysql(
-            "SELECT table_name AS table_name FROM information_schema.tables "
-            "WHERE table_schema = %s ORDER BY table_name",
-            params=(self._kwargs["dbname"],),
+            "SELECT table_schema AS table_schema, table_name AS table_name "
+            "FROM information_schema.tables "
+            f"WHERE table_schema IN ({placeholders}) "
+            "ORDER BY (table_schema <> %s), table_schema, table_name",
+            params=tuple(schemas) + (home,),
         )
-        return df["table_name"].tolist()
+        names: list[str] = []
+        for schema, name in zip(df["table_schema"], df["table_name"]):
+            if schema == home and "." not in name:
+                names.append(name)
+            else:
+                names.append(f"{schema}.{name}")
+        return names
 
     def _get_columns_mysql(self, table: str) -> list[tuple[str, str]]:
+        schema, name = self._split_home_table(table, self._kwargs["dbname"])
         df = self._query_mysql(
             "SELECT column_name, data_type FROM information_schema.columns "
             "WHERE table_schema = %s AND table_name = %s "
             "ORDER BY ordinal_position",
-            params=(self._kwargs["dbname"], table),
+            params=(schema, name),
         )
         return list(zip(df["column_name"], df["data_type"]))
 
     def _get_tables_bigquery(self) -> list[str]:
         client = self._bq_client()
-        dataset = self._kwargs["dataset"]
-        return [t.table_id for t in client.list_tables(dataset)]
+        home = self._kwargs["dataset"]
+        datasets = self._scope() or [home]
+        names: list[str] = []
+        # Home first so its bare names lead the schema context.
+        for dataset in sorted(datasets, key=lambda d: d != home):
+            try:
+                tables = client.list_tables(dataset)
+            except Exception:
+                # A scoped dataset may have been dropped or the role may have
+                # lost access — skip it rather than failing all discovery.
+                continue
+            for t in tables:
+                if dataset == home and "." not in t.table_id:
+                    names.append(t.table_id)
+                else:
+                    names.append(f"{dataset}.{t.table_id}")
+        return names
 
     def _get_columns_bigquery(self, table: str) -> list[tuple[str, str]]:
-        if not _SAFE_IDENT_RE.match(table):
-            raise ValueError(f"Unsafe table name: {table!r}")
+        dataset, name = self._split_home_table(table, self._kwargs["dataset"])
+        # BigQuery is the documented allowlist exception: the project.dataset
+        # .table path cannot be quoted per-part here, so each part must pass
+        # the strict identifier check.
+        for part in (dataset, name):
+            if not _SAFE_IDENT_RE.match(part):
+                raise ValueError(f"Unsafe table name: {table!r}")
         client = self._bq_client()
         project = self._kwargs["project_id"]
-        dataset = self._kwargs["dataset"]
-        full = f"{project}.{dataset}.{table}"
+        full = f"{project}.{dataset}.{name}"
         meta = client.get_table(full)
         return [(f.name, f.field_type) for f in meta.schema]
+
+    def list_available_schemas(self) -> list[str]:
+        """Discoverable schemas/datasets, for the connection scope picker.
+
+        Home first, then alphabetical. DuckDB has no picker (single file).
+        """
+        if self.backend == "postgres":
+            df = self._query_postgres(
+                "SELECT schema_name FROM information_schema.schemata "
+                "WHERE schema_name NOT IN ('pg_catalog', 'information_schema') "
+                "ORDER BY (schema_name <> 'public'), schema_name"
+            )
+            return df["schema_name"].tolist()
+        if self.backend == "mysql":
+            home = self._kwargs["dbname"]
+            df = self._query_mysql(
+                "SELECT schema_name AS schema_name FROM information_schema.schemata "
+                "WHERE schema_name NOT IN "
+                "('information_schema', 'mysql', 'performance_schema', 'sys') "
+                "ORDER BY (schema_name <> %s), schema_name",
+                params=(home,),
+            )
+            return df["schema_name"].tolist()
+        if self.backend == "bigquery":
+            client = self._bq_client()
+            home = self._kwargs["dataset"]
+            datasets = [d.dataset_id for d in client.list_datasets()]
+            return sorted(datasets, key=lambda d: (d != home, d))
+        return []
 
     # String-ish types that may contain categorical values worth sampling.
     _POSTGRES_STRING_TYPES = frozenset({
@@ -660,7 +758,12 @@ class DBConnection:
             if self.backend == "postgres":
                 pg_schema, pg_name = self._split_pg_table(table)
                 safe_table = f"{quote_ident(pg_schema)}.{quote_ident(pg_name)}"
+            elif self.backend == "mysql":
+                my_schema, my_name = self._split_home_table(table, self._kwargs["dbname"])
+                safe_table = f"{quote_ident(my_schema, 'mysql')}.{quote_ident(my_name, 'mysql')}"
             else:
+                # BigQuery backticks quote the whole dotted path as one
+                # identifier, so a qualified "dataset.table" is fine as-is.
                 safe_table = quote_ident(table, self.backend)
             safe_col = quote_ident(col, self.backend)
             if self.backend == "postgres":
