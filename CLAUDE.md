@@ -199,8 +199,6 @@ call. Everything else uses `FAST_MODEL`.
 Detail — why each is open, the intended fix, and how to verify — lives in
 `docs/future-work.md` (local, untracked). Keep the two in sync.
 
-- **Backups live on the same volume as the data.** They cover corruption and bad
-  deletes, not disk loss.
 - **CSP sweep coverage stops short of three surfaces**: PackStudio's inner
   flows, AnnotationStudio with a live connection, and MembersPanel.
 - **Connections cover one dataset/schema (except Postgres).** BigQuery and

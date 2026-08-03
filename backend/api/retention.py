@@ -307,6 +307,80 @@ def backup_dir() -> str:
     return str(Path(_paths()["auth"]).parent / "backups")
 
 
+# ── Off-box backups (future-work item 3) ─────────────────────────────────────
+# On-volume snapshots cover corruption and bad deletes; they do not cover
+# losing the volume — the scenario people usually mean by "backups". When
+# BACKUP_S3_BUCKET is set, each snapshot is also uploaded to S3-compatible
+# object storage and remote copies are pruned with the same BACKUP_KEEP
+# logic. Encryption is deliberately bucket-side (BACKUP_S3_SSE), never the
+# app's Fernet key: a backup you can't decrypt after losing the box is not
+# a backup.
+
+
+def _offbox_client():
+    import boto3  # imported lazily — only when off-box backups are configured
+
+    return boto3.client(
+        "s3",
+        endpoint_url=os.getenv("BACKUP_S3_ENDPOINT") or None,
+        aws_access_key_id=os.getenv("BACKUP_S3_ACCESS_KEY") or None,
+        aws_secret_access_key=os.getenv("BACKUP_S3_SECRET_KEY") or None,
+        region_name=os.getenv("BACKUP_S3_REGION") or None,
+    )
+
+
+def upload_backups_offbox(local_paths: list[str], keep: int = BACKUP_KEEP) -> dict:
+    """Upload fresh snapshots and prune stale remote copies.
+
+    Returns a report dict; every failure is recorded there and logged at
+    warning — an off-box hiccup must never fail the maintenance pass.
+    """
+    bucket = os.getenv("BACKUP_S3_BUCKET", "").strip()
+    if not bucket:
+        return {"enabled": False}
+    prefix = os.getenv("BACKUP_S3_PREFIX", "datapilot-backups/")
+    if prefix and not prefix.endswith("/"):
+        prefix += "/"
+    sse = os.getenv("BACKUP_S3_SSE", "").strip()  # e.g. AES256 or aws:kms
+    extra = {"ServerSideEncryption": sse} if sse else None
+
+    report: dict[str, object] = {"enabled": True, "uploaded": [], "pruned": [], "errors": []}
+    try:
+        client = _offbox_client()
+    except Exception as exc:
+        logger.warning("offbox backup client unavailable: %s", exc)
+        report["errors"] = [f"client: {exc}"]
+        return report
+
+    stems: set[str] = set()
+    for path in local_paths:
+        base = os.path.basename(path)
+        stems.add(base.rsplit("-", 1)[0])
+        key = prefix + base
+        try:
+            if extra:
+                client.upload_file(path, bucket, key, ExtraArgs=extra)
+            else:
+                client.upload_file(path, bucket, key)
+            report["uploaded"].append(key)
+        except Exception as exc:
+            logger.warning("offbox upload failed for %s: %s", base, exc)
+            report["errors"].append(f"upload {base}: {exc}")
+
+    # Same retention as local snapshots: newest `keep` per database stem.
+    for stem in sorted(stems):
+        try:
+            resp = client.list_objects_v2(Bucket=bucket, Prefix=f"{prefix}{stem}-")
+            keys = sorted((o["Key"] for o in resp.get("Contents", [])), reverse=True)
+            for stale in keys[keep:]:
+                client.delete_object(Bucket=bucket, Key=stale)
+                report["pruned"].append(stale)
+        except Exception as exc:
+            logger.warning("offbox prune failed for %s: %s", stem, exc)
+            report["errors"].append(f"prune {stem}: {exc}")
+    return report
+
+
 def run_maintenance() -> dict:
     """One prune + backup pass. Blocking; call via asyncio.to_thread."""
     paths = _paths()
@@ -356,14 +430,24 @@ def run_maintenance() -> dict:
     # Only the small, irreplaceable databases. graph.db is transient run state
     # and is the thing filling the disk; snapshotting it would defeat the point.
     made = []
+    made_paths = []
     for key in ("auth", "memory"):
         try:
             dest = backup_database(paths[key], backup_dir())
             if dest:
                 made.append(os.path.basename(dest))
+                made_paths.append(dest)
         except Exception:
             logger.warning("backup of %s failed", key, exc_info=True)
     report["backups"] = made
+
+    if made_paths:
+        try:
+            offbox = upload_backups_offbox(made_paths)
+            if offbox.get("enabled"):
+                report["offbox"] = offbox
+        except Exception:
+            logger.warning("offbox backup failed", exc_info=True)
 
     # Sizes on every pass: without them there is no way to tell which file is
     # consuming a fixed-size volume, or to see growth before the disk is full.

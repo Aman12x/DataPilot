@@ -477,3 +477,95 @@ def test_disk_report_breaks_down_volume_usage(tmp_path, monkeypatch):
     assert rep["graph"] > 0
     assert rep["auth"] == 0        # missing file, not an error
     assert "graph_free" in rep
+
+
+class _FakeS3:
+    """Minimal boto3-shaped S3 client for off-box backup tests."""
+
+    def __init__(self, fail_upload: bool = False):
+        self.objects: dict[str, str] = {}
+        self.fail_upload = fail_upload
+
+    def upload_file(self, path, bucket, key, ExtraArgs=None):
+        if self.fail_upload:
+            raise RuntimeError("network down")
+        self.objects[key] = path
+        self.last_extra = ExtraArgs
+
+    def list_objects_v2(self, Bucket, Prefix):
+        return {"Contents": [{"Key": k} for k in self.objects if k.startswith(Prefix)]}
+
+    def delete_object(self, Bucket, Key):
+        self.objects.pop(Key, None)
+
+
+def _offbox_env(monkeypatch, bucket="bkt"):
+    monkeypatch.setenv("BACKUP_S3_BUCKET", bucket)
+    monkeypatch.setenv("BACKUP_S3_PREFIX", "dp/")
+    monkeypatch.delenv("BACKUP_S3_SSE", raising=False)
+
+
+def test_offbox_disabled_without_bucket(monkeypatch):
+    monkeypatch.delenv("BACKUP_S3_BUCKET", raising=False)
+    assert retention.upload_backups_offbox(["/x/auth-1.db"]) == {"enabled": False}
+
+
+def test_offbox_uploads_and_prunes_per_stem(monkeypatch, tmp_path):
+    _offbox_env(monkeypatch)
+    fake = _FakeS3()
+    # Pre-existing remote copies: 8 old auth snapshots and one memory snapshot.
+    for i in range(8):
+        fake.objects[f"dp/auth-202601{i:02d}.db"] = "old"
+    fake.objects["dp/memory-20260101.db"] = "old"
+    monkeypatch.setattr(retention, "_offbox_client", lambda: fake)
+
+    local = tmp_path / "auth-20260801.db"
+    local.write_bytes(b"snapshot")
+    report = retention.upload_backups_offbox([str(local)], keep=7)
+
+    assert report["uploaded"] == ["dp/auth-20260801.db"]
+    auth_keys = sorted(k for k in fake.objects if k.startswith("dp/auth-"))
+    assert len(auth_keys) == 7                      # 9 total → newest 7 kept
+    assert "dp/auth-20260801.db" in auth_keys       # the fresh one survives
+    assert "dp/memory-20260101.db" in fake.objects  # other stems untouched
+    assert report["errors"] == []
+
+
+def test_offbox_upload_failure_is_recorded_not_raised(monkeypatch, tmp_path):
+    _offbox_env(monkeypatch)
+    monkeypatch.setattr(retention, "_offbox_client", lambda: _FakeS3(fail_upload=True))
+    local = tmp_path / "auth-20260801.db"
+    local.write_bytes(b"snapshot")
+    report = retention.upload_backups_offbox([str(local)])
+    assert report["uploaded"] == []
+    assert report["errors"] and "upload" in report["errors"][0]
+
+
+def test_offbox_sse_is_passed_through(monkeypatch, tmp_path):
+    _offbox_env(monkeypatch)
+    monkeypatch.setenv("BACKUP_S3_SSE", "AES256")
+    fake = _FakeS3()
+    monkeypatch.setattr(retention, "_offbox_client", lambda: fake)
+    local = tmp_path / "memory-20260801.db"
+    local.write_bytes(b"snapshot")
+    retention.upload_backups_offbox([str(local)])
+    assert fake.last_extra == {"ServerSideEncryption": "AES256"}
+
+
+def test_maintenance_pass_includes_offbox_report(monkeypatch, tmp_path):
+    fake = _FakeS3()
+    monkeypatch.setattr(retention, "_offbox_client", lambda: fake)
+    _offbox_env(monkeypatch)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("GRAPH_DB_PATH", str(tmp_path / "graph.db"))
+    monkeypatch.setenv("MEMORY_DB_PATH", str(tmp_path / "memory.db"))
+    monkeypatch.setenv("AUTH_DB_PATH", str(tmp_path / "auth.db"))
+    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path / "uploads"))
+    monkeypatch.setenv("BACKUP_DIR", str(tmp_path / "backups"))
+    import sqlite3
+    for name in ("memory.db", "auth.db"):
+        sqlite3.connect(tmp_path / name).execute("CREATE TABLE t(x)").connection.commit()
+
+    report = retention.run_maintenance()
+    assert report["offbox"]["enabled"] is True
+    assert len(report["offbox"]["uploaded"]) == 2   # auth + memory snapshots
