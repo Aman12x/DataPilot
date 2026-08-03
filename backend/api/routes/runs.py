@@ -368,6 +368,10 @@ async def health(request: Request):
     except Exception as exc:
         checks["memory_db"] = f"error: {exc}"
 
+    # Checkpointer backend — surfaces the split-brain fallback (DATABASE_URL
+    # set but checkpoints on local SQLite) instead of hiding it in boot logs.
+    checks["checkpointer"] = getattr(request.app.state, "checkpoint_backend", "unknown")
+
     # Redis (optional)
     from ..run_manager import get_redis_client
     redis = get_redis_client()

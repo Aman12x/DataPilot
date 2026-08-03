@@ -62,3 +62,36 @@ def test_postgres_query_schema_and_readonly_guards():
     schema = db.inspect_schema()
     assert "TABLE: datapilot_ci_metrics" in schema
     assert "metric" in schema
+
+
+def test_postgres_checkpointer_roundtrips_dataframe_state():
+    """The real fix for split-brain storage: PostgresSaver + SafeCheckpointSerde
+    must round-trip a checkpoint whose channel values include a DataFrame —
+    the shape every gate interrupt persists."""
+    pytest.importorskip("langgraph.checkpoint.postgres")
+    cfg = _pg_config()
+    url = (
+        f"postgresql://{cfg['user']}:{cfg['password']}"
+        f"@{cfg['host']}:{cfg['port']}/{cfg['dbname']}"
+    )
+
+    import pandas as pd
+    from langgraph.checkpoint.base import empty_checkpoint
+
+    from backend.api.main import _make_postgres_checkpointer
+
+    saver, pool = _make_postgres_checkpointer(url)
+    try:
+        df = pd.DataFrame({"variant": ["control", "treatment"], "dau": [0.65, 0.64]})
+        checkpoint = empty_checkpoint()
+        checkpoint["channel_values"] = {"query_result": df, "task": "roundtrip"}
+        config = {"configurable": {"thread_id": "ci-roundtrip", "checkpoint_ns": ""}}
+
+        saved = saver.put(config, checkpoint, {"source": "test", "step": 1}, {})
+        got = saver.get_tuple(saved)
+        assert got is not None
+        restored = got.checkpoint["channel_values"]
+        assert restored["task"] == "roundtrip"
+        pd.testing.assert_frame_equal(restored["query_result"], df)
+    finally:
+        pool.close()

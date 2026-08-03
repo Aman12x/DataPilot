@@ -199,10 +199,6 @@ call. Everything else uses `FAST_MODEL`.
 Detail — why each is open, the intended fix, and how to verify — lives in
 `docs/future-work.md` (local, untracked). Keep the two in sync.
 
-- **Split-brain storage with `DATABASE_URL` set.**
-  `langgraph-checkpoint-postgres` is commented out in `backend/requirements.txt`,
-  so accounts and history move to Postgres while checkpoints silently stay on
-  local SQLite.
 - **Backups live on the same volume as the data.** They cover corruption and bad
   deletes, not disk loss.
 - **CSP sweep coverage stops short of three surfaces**: PackStudio's inner

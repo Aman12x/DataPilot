@@ -312,10 +312,17 @@ def run_maintenance() -> dict:
     paths = _paths()
     report: dict[str, object] = {}
 
-    try:
-        report["checkpoints"] = prune_checkpoints(paths["graph"])
-    except Exception:
-        logger.warning("checkpoint prune failed", exc_info=True)
+    if os.getenv("DATABASE_URL"):
+        # Checkpoints live in Postgres; graph.db (if present) is a stale
+        # leftover, not the live store. The UUIDv6-age prune and the
+        # VACUUM/wal_checkpoint logic below are SQLite-specific, so skip
+        # rather than report reclaimed bytes that mean nothing.
+        report["checkpoints"] = "skipped (postgres checkpointer)"
+    else:
+        try:
+            report["checkpoints"] = prune_checkpoints(paths["graph"])
+        except Exception:
+            logger.warning("checkpoint prune failed", exc_info=True)
     try:
         report["runs_deleted"] = prune_runs(paths["memory"])
     except Exception:
@@ -338,7 +345,9 @@ def run_maintenance() -> dict:
     # its own, so nothing ever went back to the filesystem.
     cp = report.get("checkpoints") or {}
     deleted_now = isinstance(cp, dict) and bool(cp.get("checkpoints"))
-    if deleted_now or free_bytes(paths["graph"]) > VACUUM_FREE_BYTES:
+    if not os.getenv("DATABASE_URL") and (
+        deleted_now or free_bytes(paths["graph"]) > VACUUM_FREE_BYTES
+    ):
         try:
             report["graph_bytes_reclaimed"] = vacuum(paths["graph"])
         except Exception:

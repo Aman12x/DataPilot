@@ -11,6 +11,7 @@ Redis (optional, REDIS_URL):
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import sys
@@ -82,13 +83,68 @@ def _make_sqlite_checkpointer():
     return SqliteSaver(conn, serde=SafeCheckpointSerde())
 
 
-async def _make_postgres_checkpointer(database_url: str):
-    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+def _make_postgres_checkpointer(database_url: str):
+    """Sync PostgresSaver over a thread-safe connection pool.
 
-    checkpointer = AsyncPostgresSaver.from_conn_string(database_url)
-    await checkpointer.setup()
-    logger.info("Using PostgreSQL checkpointer")
-    return checkpointer
+    Must be the *sync* saver: the graph runs synchronously in run_manager's
+    worker threads and routes call graph.get_state via to_thread, and
+    AsyncPostgresSaver rejects sync calls. (The previous wiring used the
+    async saver via from_conn_string, which is also an async context manager
+    in current releases — `.setup()` on its return value raised, so every
+    boot silently fell back to SQLite. That silent fallback is the
+    split-brain bug this replaces.)
+
+    Returns (checkpointer, pool); the caller owns closing the pool at
+    shutdown. Blocking — call via asyncio.to_thread.
+    """
+    from langgraph.checkpoint.postgres import PostgresSaver
+    from psycopg_pool import ConnectionPool
+
+    from agents.analyze.checkpoint_serde import SafeCheckpointSerde
+
+    # Sized past the graph executor so a full worker pool can't starve
+    # checkpoint I/O (32 graph workers + API get_state readers).
+    max_size = int(os.getenv("POSTGRES_POOL_MAX", "40"))
+    pool = ConnectionPool(
+        database_url,
+        min_size=1,
+        max_size=max_size,
+        kwargs={"autocommit": True, "prepare_threshold": 0},
+        open=True,
+    )
+    checkpointer = PostgresSaver(pool, serde=SafeCheckpointSerde())
+    checkpointer.setup()
+    logger.info("Using PostgreSQL checkpointer (pool max=%d, SafeCheckpointSerde)", max_size)
+    return checkpointer, pool
+
+
+def select_checkpointer() -> tuple[object, object | None, str]:
+    """Pick the checkpointer for this boot. Returns (saver, pool, backend).
+
+    backend is surfaced in /health so a split-brain fallback is visible to an
+    operator instead of hiding in one startup log line.
+    """
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        return _make_sqlite_checkpointer(), None, "sqlite"
+    try:
+        checkpointer, pool = _make_postgres_checkpointer(database_url)
+        return checkpointer, pool, "postgres"
+    except Exception as exc:
+        logger.error(
+            "SPLIT-BRAIN STORAGE: DATABASE_URL is set but the Postgres "
+            "checkpointer is unavailable (%s). Accounts and run history use "
+            "Postgres while run checkpoints fall back to LOCAL SQLITE — "
+            "in-flight runs will not survive volume loss or scale-out. "
+            "Install langgraph-checkpoint-postgres (see backend/requirements.txt) "
+            "or unset DATABASE_URL.",
+            exc,
+        )
+        return (
+            _make_sqlite_checkpointer(),
+            None,
+            "sqlite (FALLBACK — DATABASE_URL set but Postgres checkpointer unavailable)",
+        )
 
 
 @asynccontextmanager
@@ -110,15 +166,10 @@ async def lifespan(app: FastAPI):
         logger.info("REDIS_URL not set — using in-memory run queues (single-pod only)")
 
     # ── Checkpointer ─────────────────────────────────────────────────────────
-    database_url = os.getenv("DATABASE_URL")
-    if database_url:
-        try:
-            checkpointer = await _make_postgres_checkpointer(database_url)
-        except Exception as exc:
-            logger.warning("PostgreSQL checkpointer failed (%s), falling back to SQLite", exc)
-            checkpointer = _make_sqlite_checkpointer()
-    else:
-        checkpointer = _make_sqlite_checkpointer()
+    checkpointer, _checkpoint_pool, _checkpoint_backend = await asyncio.to_thread(
+        select_checkpointer
+    )
+    app.state.checkpoint_backend = _checkpoint_backend
 
     # ── Auth DB WAL mode + workspace tables ───────────────────────────────────
     try:
@@ -156,8 +207,6 @@ async def lifespan(app: FastAPI):
     # These are slow (~30s total) but not needed for the /health check.
     # Running them as a background task lets uvicorn accept requests immediately
     # so Railway's healthcheck passes while data generation continues.
-    import asyncio
-
     async def _background_init():
         try:
             import runpy
@@ -240,6 +289,11 @@ async def lifespan(app: FastAPI):
     )
     if redis_client:
         await redis_client.aclose()
+    if _checkpoint_pool is not None:
+        try:
+            await asyncio.to_thread(_checkpoint_pool.close)
+        except Exception as exc:
+            logger.warning("Could not close checkpoint pool: %s", exc)
     logger.info("DataPilot backend shut down")
 
 
