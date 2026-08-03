@@ -18,7 +18,12 @@ export default function QueryGate({ payload, onSubmit, submitting }: Props) {
   return (
     <div className="dp-card" style={{ maxWidth: 720, padding: gateCard.padding, margin: gateCard.margin }}>
       <h3 style={gateTitle}>Review the SQL Query</h3>
-      <p style={{ ...gateMessage, marginBottom: 14 }}>{payload.message}</p>
+      <p style={{ ...gateMessage, marginBottom: 6 }}>{payload.message}</p>
+      <p style={s.reassure}>
+        This is the exact read-only query that will run against your data. If you don't read
+        SQL, that's fine — approve it and you'll still get to review the results before
+        anything is final.
+      </p>
 
       {payload.sql_validation_warnings?.length > 0 && (
         <div style={s.warnings}>
@@ -56,6 +61,7 @@ export default function QueryGate({ payload, onSubmit, submitting }: Props) {
 }
 
 const s: Record<string, React.CSSProperties> = {
+  reassure: { color: "var(--dp-ink-muted)", fontSize: 12, lineHeight: 1.5, marginBottom: 14 },
   warnings: { background: "var(--dp-warning-soft)", border: "1px solid rgba(154,103,0,0.25)", borderRadius: 6, padding: "10px 14px", marginBottom: 14 },
   warning:  { color: "var(--dp-warning)", fontSize: 13, marginBottom: 2, display: "flex", alignItems: "baseline", gap: 6 },
   sqlLabel: { color: "var(--dp-ink-muted)", fontSize: 11, fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.08em", marginBottom: 6 },

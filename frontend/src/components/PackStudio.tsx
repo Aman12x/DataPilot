@@ -96,18 +96,61 @@ const TEMPLATES: { id: string; label: string; name: string; description: string;
 
 const EMPTY: MetricConfigForm = TEMPLATES[0].config;
 
-const FIELDS: { key: keyof MetricConfigForm; label: string; hint?: string }[] = [
-  { key: "primary_metric", label: "Primary metric", hint: "e.g. revenue" },
-  { key: "metric_source_col", label: "Source column", hint: "Raw DB column" },
-  { key: "metric_agg", label: "Aggregation", hint: "mean | sum | count" },
-  { key: "covariate", label: "CUPED covariate" },
-  { key: "metric_direction", label: "Direction" },
-  { key: "events_table", label: "Events table" },
-  { key: "experiment_table", label: "Experiment table" },
-  { key: "user_id_col", label: "User ID column" },
-  { key: "date_col", label: "Date column" },
-  { key: "variant_col", label: "Variant column" },
-  { key: "week_col", label: "Week column" },
+type FieldDef = { key: keyof MetricConfigForm; label: string; help: string; placeholder?: string };
+
+// Shown to everyone: the parts a non-technical owner actually decides.
+const ESSENTIAL_FIELDS: FieldDef[] = [
+  {
+    key: "primary_metric",
+    label: "Metric name",
+    help: "What you're measuring — this name appears in reports.",
+    placeholder: "revenue",
+  },
+];
+
+// Table/column plumbing. Templates fill these in; collapsed by default.
+const MAPPING_FIELDS: FieldDef[] = [
+  {
+    key: "metric_source_col",
+    label: "Value column",
+    help: "The database column holding the raw numbers.",
+    placeholder: "revenue_usd",
+  },
+  {
+    key: "covariate",
+    label: "Pre-experiment covariate (optional)",
+    help: "The same metric measured before the experiment. Cancels out noise (CUPED) — leave blank to skip.",
+  },
+  {
+    key: "events_table",
+    label: "Events table",
+    help: "Table with one row per event or transaction.",
+  },
+  {
+    key: "experiment_table",
+    label: "Experiment table",
+    help: "Table saying which user got which variant.",
+  },
+  {
+    key: "user_id_col",
+    label: "User ID column",
+    help: "Identifies the user in both tables.",
+  },
+  {
+    key: "date_col",
+    label: "Date column",
+    help: "When each event happened.",
+  },
+  {
+    key: "variant_col",
+    label: "Variant column",
+    help: "Group labels, e.g. control / treatment.",
+  },
+  {
+    key: "week_col",
+    label: "Week column",
+    help: "Experiment week number, used for weekly trends.",
+  },
 ];
 
 interface Props {
@@ -130,6 +173,7 @@ export default function PackStudio({ open, onClose, onChanged, canEdit }: Props)
   const [guardrails, setGuardrails] = useState(EMPTY.guardrail_metrics.join(", "));
   const [segments, setSegments] = useState(EMPTY.segment_cols.join(", "));
   const [editable, setEditable] = useState(canEdit !== false);
+  const [showMapping, setShowMapping] = useState(false);
 
   const load = () => {
     setLoading(true);
@@ -167,6 +211,7 @@ export default function PackStudio({ open, onClose, onChanged, canEdit }: Props)
     setForm({ ...tpl.config });
     setGuardrails(tpl.config.guardrail_metrics.join(", "));
     setSegments(tpl.config.segment_cols.join(", "));
+    setShowMapping(false);
   };
 
   const startEdit = async (packId: string) => {
@@ -179,6 +224,7 @@ export default function PackStudio({ open, onClose, onChanged, canEdit }: Props)
       setForm({ ...EMPTY, ...data.config });
       setGuardrails((data.config.guardrail_metrics || []).join(", "));
       setSegments((data.config.segment_cols || []).join(", "));
+      setShowMapping(true); // editing an existing pack usually means fixing the mapping
     } catch (err) {
       setError(extractApiError(err, "Could not load pack"));
     }
@@ -292,18 +338,21 @@ export default function PackStudio({ open, onClose, onChanged, canEdit }: Props)
               <p style={s.muted}>You are an analyst in this workspace, so packs are read-only. Ask an owner to certify definitions.</p>
             )}
             {editable && (
-              <div style={s.templates}>
-                {TEMPLATES.map((t) => (
-                  <button
-                    key={t.id}
-                    type="button"
-                    style={s.tplBtn}
-                    onClick={() => resetForm(t)}
-                    disabled={!!editingId}
-                  >
-                    {t.label}
-                  </button>
-                ))}
+              <div>
+                <span style={s.label}>Start from a template</span>
+                <div style={s.templates}>
+                  {TEMPLATES.map((t) => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      style={s.tplBtn}
+                      onClick={() => resetForm(t)}
+                      disabled={!!editingId}
+                    >
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
 
@@ -317,53 +366,101 @@ export default function PackStudio({ open, onClose, onChanged, canEdit }: Props)
             </label>
 
             <div style={s.grid}>
-              {FIELDS.map(({ key, label, hint }) => (
+              {ESSENTIAL_FIELDS.map(({ key, label, help, placeholder }) => (
                 <label key={key} style={s.field}>
                   <span style={s.label}>{label}</span>
-                  {key === "metric_direction" ? (
-                    <select
-                      style={s.input}
-                      value={form.metric_direction}
-                      disabled={!editable}
-                      onChange={(e) => setForm((f) => ({
-                        ...f,
-                        metric_direction: e.target.value as MetricConfigForm["metric_direction"],
-                      }))}
-                    >
-                      <option value="higher_is_better">higher_is_better</option>
-                      <option value="lower_is_better">lower_is_better</option>
-                    </select>
-                  ) : key === "metric_agg" ? (
-                    <select
-                      style={s.input}
-                      value={form.metric_agg}
-                      disabled={!editable}
-                      onChange={(e) => setForm((f) => ({ ...f, metric_agg: e.target.value }))}
-                    >
-                      <option value="mean">mean</option>
-                      <option value="sum">sum</option>
-                      <option value="count">count</option>
-                    </select>
-                  ) : (
+                  <input
+                    style={s.input}
+                    value={String(form[key] ?? "")}
+                    disabled={!editable}
+                    onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))}
+                    placeholder={placeholder}
+                  />
+                  <span style={s.help}>{help}</span>
+                </label>
+              ))}
+              <label style={s.field}>
+                <span style={s.label}>What does success look like?</span>
+                <select
+                  style={s.input}
+                  value={form.metric_direction}
+                  disabled={!editable}
+                  onChange={(e) => setForm((f) => ({
+                    ...f,
+                    metric_direction: e.target.value as MetricConfigForm["metric_direction"],
+                  }))}
+                >
+                  <option value="higher_is_better">Higher is better (revenue, retention…)</option>
+                  <option value="lower_is_better">Lower is better (churn, refunds…)</option>
+                </select>
+                <span style={s.help}>Tells the analysis which direction counts as a win.</span>
+              </label>
+              <label style={s.field}>
+                <span style={s.label}>How to combine values</span>
+                <select
+                  style={s.input}
+                  value={form.metric_agg}
+                  disabled={!editable}
+                  onChange={(e) => setForm((f) => ({ ...f, metric_agg: e.target.value }))}
+                >
+                  <option value="mean">Average per user (rates, yes/no flags)</option>
+                  <option value="sum">Total (amounts like revenue)</option>
+                  <option value="count">Count of events</option>
+                </select>
+                <span style={s.help}>How each user's rows roll up into one number.</span>
+              </label>
+              <label style={{ ...s.field, gridColumn: "1 / -1" }}>
+                <span style={s.label}>Guardrail metrics</span>
+                <input
+                  style={s.input}
+                  value={guardrails}
+                  disabled={!editable}
+                  onChange={(e) => setGuardrails(e.target.value)}
+                  placeholder="refund_rate, cart_abandonment_rate"
+                />
+                <span style={s.help}>Metrics that must not get worse while the primary metric improves. Separate with commas.</span>
+              </label>
+              <label style={{ ...s.field, gridColumn: "1 / -1" }}>
+                <span style={s.label}>Segment columns</span>
+                <input
+                  style={s.input}
+                  value={segments}
+                  disabled={!editable}
+                  onChange={(e) => setSegments(e.target.value)}
+                  placeholder="platform, country"
+                />
+                <span style={s.help}>Break results down by these, e.g. platform or country. Separate with commas.</span>
+              </label>
+            </div>
+
+            <button
+              type="button"
+              style={s.mappingToggle}
+              onClick={() => setShowMapping((v) => !v)}
+              aria-expanded={showMapping}
+            >
+              {showMapping ? "▾" : "▸"} Data mapping
+              <span style={s.mappingSub}>
+                {showMapping ? "" : " — table and column names, filled in by the template. Open only if yours differ."}
+              </span>
+            </button>
+            {showMapping && (
+              <div style={s.grid}>
+                {MAPPING_FIELDS.map(({ key, label, help, placeholder }) => (
+                  <label key={key} style={s.field}>
+                    <span style={s.label}>{label}</span>
                     <input
                       style={s.input}
                       value={String(form[key] ?? "")}
                       disabled={!editable}
                       onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))}
-                      placeholder={hint}
+                      placeholder={placeholder}
                     />
-                  )}
-                </label>
-              ))}
-              <label style={{ ...s.field, gridColumn: "1 / -1" }}>
-                <span style={s.label}>Guardrail metrics (comma-separated)</span>
-                <input style={s.input} value={guardrails} disabled={!editable} onChange={(e) => setGuardrails(e.target.value)} />
-              </label>
-              <label style={{ ...s.field, gridColumn: "1 / -1" }}>
-                <span style={s.label}>Segment columns (comma-separated)</span>
-                <input style={s.input} value={segments} disabled={!editable} onChange={(e) => setSegments(e.target.value)} />
-              </label>
-            </div>
+                    <span style={s.help}>{help}</span>
+                  </label>
+                ))}
+              </div>
+            )}
 
             {editable && (
               <>
@@ -384,7 +481,10 @@ export default function PackStudio({ open, onClose, onChanged, canEdit }: Props)
                     {saving ? "Saving…" : editingId ? "Save & certify" : "Create & certify"}
                   </button>
                 </div>
-                <p style={s.hint}>Certified packs skip the Metric Config Gate for everyone in the workspace.</p>
+                <p style={s.hint}>
+                  A draft is just saved for later. Certifying tells DataPilot the mapping is
+                  correct, so analyses skip the metric-mapping question for everyone in the workspace.
+                </p>
               </>
             )}
           </section>
@@ -419,6 +519,9 @@ const s: Record<string, React.CSSProperties> = {
   grid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 },
   field: { display: "flex", flexDirection: "column", gap: 4 },
   label: { color: "var(--dp-ink-secondary)", fontSize: 11, fontWeight: 600 },
+  help: { color: "var(--dp-ink-muted)", fontSize: 11, lineHeight: 1.4 },
+  mappingToggle: { background: "transparent", border: "none", color: "var(--dp-ink-secondary)", fontSize: 12, fontWeight: 600, textAlign: "left", cursor: "pointer", padding: "6px 0" },
+  mappingSub: { color: "var(--dp-ink-muted)", fontWeight: 400 },
   input: { background: "var(--dp-bg)", border: "1px solid var(--dp-line)", borderRadius: 8, color: "var(--dp-ink)", padding: "8px 10px", fontSize: 13 },
   actions: { display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8, flexWrap: "wrap" },
   hint: { color: "var(--dp-ink-muted)", fontSize: 11, margin: 0, textAlign: "right" },

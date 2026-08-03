@@ -56,7 +56,7 @@ export default function AnalysisGate({ payload, onSubmit, submitting }: Props) {
         <Stat label="Guardrails:"      value={guard == null ? null : guard ? "One or more secondary metrics breached" : "No guardrails breached"} tone={guard == null ? "neutral" : guard ? "warn" : "good"} />
         <Stat label="Sample power:"    value={mde == null ? null : mde ? "Adequately powered for observed effect" : "Underpowered, interpret with caution"} tone={mde == null ? "neutral" : mde ? "good" : "warn"} />
         <Stat label="Business impact:" value={payload.business_impact} tone="neutral" />
-        <Stat label="Variance reduction (CUPED):" value={payload.cuped_variance_reduction != null ? `${payload.cuped_variance_reduction.toFixed(1)}%` : null} tone="neutral" />
+        <Stat label="Statistical noise removed (CUPED):" value={payload.cuped_variance_reduction != null ? `${payload.cuped_variance_reduction.toFixed(1)}% — comparisons are sharper than raw data` : null} tone="neutral" />
         <Stat label="Biggest funnel drop:" value={payload.biggest_funnel_dropoff} tone={payload.biggest_funnel_dropoff ? "warn" : "neutral"} />
       </div>
 
@@ -65,7 +65,7 @@ export default function AnalysisGate({ payload, onSubmit, submitting }: Props) {
           <div style={s.breachedLabel}>Breached guardrails</div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" as const, marginTop: 6 }}>
             {payload.breached_metrics.map((m, i) => (
-              <span key={i} style={s.badge}>{m.metric} ({m.direction})</span>
+              <span key={i} style={s.badge}>{m.metric} ({m.direction.replace(/_/g, " ")})</span>
             ))}
           </div>
         </div>
@@ -81,8 +81,9 @@ export default function AnalysisGate({ payload, onSubmit, submitting }: Props) {
             style={{ accentColor: "var(--dp-danger)", width: 15, height: 15, flexShrink: 0 }}
           />
           <span style={{ color: "var(--dp-danger)", fontSize: 13, lineHeight: 1.4 }}>
-            I understand the statistical results are unreliable due to sample ratio mismatch
-            and wish to proceed anyway.
+            The experiment groups aren't the sizes they were supposed to be (a "sample ratio
+            mismatch"), which usually means something went wrong with the split — so these
+            results can't be trusted. I understand and wish to proceed anyway.
           </span>
         </label>
       )}
@@ -101,7 +102,7 @@ export default function AnalysisGate({ payload, onSubmit, submitting }: Props) {
           style={{ ...gateBtnApprove, opacity: canApprove ? 1 : 0.45 }}
           onClick={() => onSubmit({ approved: true, notes, ...(srmDetected ? { srm_acknowledged: srmAcked } : {}) })}
           disabled={submitting || !canApprove}
-          title={!canApprove ? "Acknowledge the SRM warning above to proceed" : undefined}
+          title={!canApprove ? "Tick the checkbox above to confirm you understand the group-size problem" : undefined}
         >
           {submitting ? "Submitting…" : "Approve & Continue"}
         </button>

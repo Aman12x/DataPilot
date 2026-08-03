@@ -241,6 +241,12 @@ export default function Login() {
       >
         {loading ? "Starting guest session…" : "Continue as Guest"}
       </button>
+      <p style={s.guestNote}>
+        Guest mode is a quick tour, not a workspace: sessions end after an hour,
+        analyses are limited to a few per day, and uploads are removed within
+        two days. Create a free account to keep your history and connect your
+        own data.
+      </p>
     </AuthCard>
   );
 }
@@ -256,6 +262,7 @@ const s: Record<string, React.CSSProperties> = {
   divider:    { display: "flex", alignItems: "center", gap: 12, margin: "18px 0 0" },
   dividerLine:{ flex: 1, height: 1, background: "var(--dp-line)" },
   guestBtn:   { width: "100%", marginTop: 10, padding: "10px 0", background: "transparent", color: "var(--dp-ink-secondary)", border: "1px solid var(--dp-line-strong)", borderRadius: 6, cursor: "pointer", fontSize: 13, fontWeight: 500 },
+  guestNote:  { color: "var(--dp-ink-muted)", fontSize: 11.5, lineHeight: 1.5, marginTop: 10, textAlign: "center" as const },
   pendingBox: { textAlign: "center" },
   pendingIcon:{ fontSize: 12, marginBottom: 12, color: "var(--dp-accent)", fontWeight: 600, textTransform: "uppercase" as const, letterSpacing: "0.08em" },
   pendingTitle:{ fontSize: 18, fontWeight: 600, color: "var(--dp-ink)", marginBottom: 8 },

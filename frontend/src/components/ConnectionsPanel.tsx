@@ -491,6 +491,9 @@ export default function ConnectionsPanel({ open, onClose, onChanged, canEdit }: 
                     <select style={s.input} value={form.sslmode} onChange={set("sslmode")}>
                       {SSL_MODES.map((m) => <option key={m} value={m}>{m}</option>)}
                     </select>
+                    <span style={{ color: "var(--dp-ink-muted)", fontSize: 11 }}>
+                      Not sure? Leave the default.
+                    </span>
                   </label>
                 </>
               )}

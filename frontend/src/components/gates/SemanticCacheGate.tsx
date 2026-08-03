@@ -18,7 +18,11 @@ export default function SemanticCacheGate({ payload, onSubmit, submitting }: Pro
     <div style={{ ...gateCard, maxWidth: 680 }}>
       <div style={s.cacheTag}>⚡ Similar result found</div>
       <h3 style={gateTitle}>Use a Cached Result?</h3>
-      <p style={{ ...gateMessage, marginBottom: 14 }}>{payload.message}</p>
+      <p style={{ ...gateMessage, marginBottom: 6 }}>{payload.message}</p>
+      <p style={s.explain}>
+        A very similar question was answered recently. Reusing that answer is instant;
+        a fresh analysis re-runs everything on current data.
+      </p>
 
       <div style={s.metaRow}>
         <span style={s.metaBadge}>{(payload.similarity * 100).toFixed(0)}% match</span>
@@ -52,6 +56,7 @@ export default function SemanticCacheGate({ payload, onSubmit, submitting }: Pro
 }
 
 const s: Record<string, React.CSSProperties> = {
+  explain:        { color: "var(--dp-ink-muted)", fontSize: 12, lineHeight: 1.5, marginBottom: 14 },
   cacheTag:       { fontSize: 11, fontWeight: 700, color: "var(--dp-warning)", background: "var(--dp-warning)11", border: "1px solid var(--dp-warning)33", borderRadius: 20, padding: "3px 10px", display: "inline-block", marginBottom: 10 },
   metaRow:        { display: "flex", gap: 10, alignItems: "center", marginBottom: 16 },
   metaBadge:      { background: "var(--dp-accent)22", color: "var(--dp-accent)", fontSize: 12, fontWeight: 700, padding: "4px 10px", borderRadius: 20, border: "1px solid var(--dp-accent)44" },

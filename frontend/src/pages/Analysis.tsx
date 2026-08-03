@@ -503,6 +503,9 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
                     <option key={m} value={m}>{m}</option>
                   ))}
                 </select>
+                <div style={{ fontSize: 11, color: "var(--dp-ink-muted)", marginTop: 4 }}>
+                  Not sure? Leave the default — change it only if your database admin says to.
+                </div>
               </div>
               <div style={s.pgField}>
                 <label style={s.pgLabel}>Save as (optional)</label>
@@ -557,7 +560,8 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
                   spellCheck={false}
                 />
                 <div style={{ fontSize: 11, color: "var(--dp-ink-muted)", marginTop: 4 }}>
-                  Paste a GCP service-account key (BigQuery Job User + Data Viewer). Prefer saving to the vault.
+                  Paste a Google Cloud service-account key (needs the BigQuery Job User and Data
+                  Viewer roles). Saving it as a connection stores it encrypted, so you only paste it once.
                 </div>
               </div>
               <div style={s.pgField}>
@@ -632,7 +636,7 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
                   value={metricPackId}
                   onChange={(e) => setMetricPackId(e.target.value)}
                 >
-                  <option value="">Infer from schema</option>
+                  <option value="">Detect automatically from the data</option>
                   {packs.map((p) => (
                     <option key={p.pack_id} value={p.pack_id}>
                       {p.name}{p.certified ? " (certified)" : ""}
@@ -640,12 +644,14 @@ function TaskInput({ mode, onSubmit, onBack, startError }: {
                   ))}
                 </select>
                 <p style={{ color: "var(--dp-ink-muted)", fontSize: 11, margin: "6px 0 0" }}>
-                  Certified packs skip the metric confirmation gate and constrain SQL to your definitions.
+                  A certified pack answers the "confirm how your data is defined" step for you,
+                  and keeps every analysis on your agreed definitions.
                 </p>
               </>
             ) : (
               <p style={{ color: "var(--dp-ink-muted)", fontSize: 12, margin: "4px 0 0" }}>
-                No packs yet. Define your revenue and DAU mapping once so the team does not re-confirm every run.
+                No packs yet. Define your key metrics once so the team isn't asked to re-confirm
+                column mappings on every run.
               </p>
             )}
           </div>
@@ -775,13 +781,13 @@ function PowerAnalysisSummary({ pa }: { pa: PowerAnalysisResult }) {
         <div style={pa_s.divider} />
         <div style={pa_s.stat}>
           <span style={pa_s.statNum}>{pa.mde_target_pct}%</span>
-          <span style={pa_s.statLabel}>target MDE</span>
+          <span style={pa_s.statLabel}>smallest detectable lift (MDE)</span>
         </div>
       </div>
 
       {pa.sensitivity && pa.sensitivity.length > 0 && (
         <div style={{ marginTop: 20 }}>
-          <div style={pa_s.tableLabel}>Sensitivity table</div>
+          <div style={pa_s.tableLabel}>Sensitivity table — how sample size changes with the lift you want to detect</div>
           <table style={pa_s.table}>
             <thead>
               <tr>
