@@ -129,14 +129,40 @@ class TestScoreFaithfulness:
         assert result["score"] == 1.0
         assert result["note"] == "no numbers in narrative"
 
-    def test_none_df_returns_perfect(self):
-        """No DataFrame provided → can't assess, give benefit of doubt."""
+    def test_none_df_is_unverifiable_not_perfect(self):
+        """No reference values → None, so 'could not verify' never reads as 'verified'."""
         result = score_faithfulness("BMI was 32.685.", None)
-        assert result["score"] == 1.0
+        assert result["score"] is None
+        assert "could not verify" in result["note"]
 
-    def test_empty_df_returns_perfect(self):
+    def test_empty_df_is_unverifiable_not_perfect(self):
         result = score_faithfulness("BMI was 32.685.", pd.DataFrame())
-        assert result["score"] == 1.0
+        assert result["score"] is None
+
+    def test_unverifiable_faithfulness_excluded_from_composite(self):
+        """With no reference data but ground-truth findings, the composite
+        renormalises over the metrics that could run instead of scoring
+        faithfulness 1.0."""
+        result = evaluate_run(
+            "How did revenue change?",
+            "Revenue was 42.5% and dropped sharply.",
+            df=None,
+            ground_truth_findings=["revenue", "dropped"],
+        )
+        assert result.faithfulness == -1.0
+        assert 0.0 <= result.score <= 1.0
+
+    def test_nothing_verifiable_scores_negative_not_one(self):
+        """No reference values, no relevancy model needed, no expected findings:
+        the composite must be the -1 sentinel, not a vacuous 1.0."""
+        import tools.eval_tools as et
+        orig = et.score_relevancy
+        et.score_relevancy = lambda *a, **k: -1.0
+        try:
+            result = evaluate_run("Question?", "Value was 12.34.", df=None)
+        finally:
+            et.score_relevancy = orig
+        assert result.score == -1.0
 
     def test_all_unsupported(self, df):
         """Every number in the narrative is made up."""
@@ -336,15 +362,17 @@ class TestEvaluateRun:
         )
         assert result.key_findings == 0.0
 
-    def test_no_df_defaults_faithfulness_to_1(self):
-        """When no DataFrame is provided, faithfulness defaults to 1.0."""
+    def test_no_df_marks_faithfulness_unverifiable(self):
+        """With no DataFrame there is nothing to verify against: faithfulness
+        is the -1 sentinel and its weight shifts to the other metrics."""
         result = evaluate_run(
             task="Revenue analysis",
             narrative="Revenue grew to $334,378.",
             df=None,
             ground_truth_findings=["revenue"],
         )
-        assert result.faithfulness == 1.0
+        assert result.faithfulness == -1.0
+        assert 0.0 <= result.score <= 1.0
 
     def test_empty_narrative_handled_gracefully(self, hr_df):
         result = evaluate_run(task="salary analysis", narrative="", df=hr_df)

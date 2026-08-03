@@ -525,7 +525,9 @@ def _compute_quality_score(state: AgentState) -> float:
         try:
             from tools.eval_tools import evaluate_run
             result = evaluate_run(task, narrative, df=df)
-            ragas_score = result.score if result.relevancy >= 0 else result.faithfulness
+            # score is -1 when no metric could actually verify anything —
+            # treat that as "no signal", not as a real quality number.
+            ragas_score = result.score if result.score >= 0 else None
         except Exception as exc:
             logger.debug("_compute_quality_score: eval_tools failed — %s", redact_exception(exc))
 

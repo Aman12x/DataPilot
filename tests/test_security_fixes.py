@@ -36,6 +36,30 @@ class TestSqlGuards:
         with pytest.raises(ValueError, match="Multi-statement"):
             validate_sql("SELECT 1; DROP TABLE events")
 
+    def test_semicolon_inside_comment_is_not_multi_statement(self):
+        """The LLM annotates SQL with `-- Assumption: …` comments; a semicolon
+        in the prose must not fail the multi-statement check."""
+        validate_sql(
+            '-- Assumption: "completed" means finished (completed = 1); counting users\n'
+            "SELECT step, COUNT(*) FROM funnel GROUP BY step"
+        )
+
+    def test_semicolon_inside_string_literal_is_not_multi_statement(self):
+        validate_sql("SELECT * FROM events WHERE user_segment = 'a;b'")
+
+    def test_mutation_keyword_inside_literal_or_comment_is_allowed(self):
+        validate_sql("SELECT 'DROP-off rate' AS label FROM events  -- delete nothing")
+
+    def test_comment_does_not_hide_a_real_second_statement(self):
+        with pytest.raises(ValueError, match="Multi-statement"):
+            validate_sql("SELECT 1 -- note\n; DROP TABLE events")
+
+    def test_double_dash_inside_literal_does_not_start_comment(self):
+        """A literal containing `--` must not comment out the rest of the
+        statement, or a trailing `; DROP …` would slip past the check."""
+        with pytest.raises(ValueError, match="Multi-statement"):
+            validate_sql("SELECT '--' AS c; DROP TABLE events")
+
     def test_appends_limit_when_missing(self, tmp_duckdb):
         db = DBConnection("duckdb", path=tmp_duckdb)
         df = db.query("SELECT user_id FROM events")

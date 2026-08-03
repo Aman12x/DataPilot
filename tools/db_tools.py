@@ -68,6 +68,51 @@ def _strip_leading_sql_comments(sql: str) -> str:
         return rest
 
 
+def _checkable_sql(sql: str) -> str:
+    """Comments removed and string/identifier literal bodies blanked.
+
+    For structural checks only (statement separators, mutation keywords) —
+    never for execution. The LLM annotates its SQL with `-- Assumption: …`
+    comments, and a semicolon inside one used to fail the multi-statement
+    check; likewise a literal like 'DROP-off rate' must not read as a
+    mutation. A scanner (not a regex) because `--` inside a string literal
+    does not start a comment.
+    """
+    out: list[str] = []
+    i, n = 0, len(sql)
+    while i < n:
+        ch = sql[i]
+        nxt = sql[i + 1] if i + 1 < n else ""
+        if ch == "-" and nxt == "-":                      # line comment
+            while i < n and sql[i] != "\n":
+                i += 1
+            continue
+        if ch == "/" and nxt == "*":                      # block comment
+            i += 2
+            while i + 1 < n and not (sql[i] == "*" and sql[i + 1] == "/"):
+                i += 1
+            i = min(i + 2, n)
+            continue
+        if ch in ("'", '"', "`"):                          # literal / quoted ident
+            quote = ch
+            out.append(quote)
+            i += 1
+            while i < n:
+                if sql[i] == quote and i + 1 < n and sql[i + 1] == quote:
+                    i += 2                                 # doubled-quote escape
+                    continue
+                if sql[i] == quote:
+                    break
+                i += 1
+            if i < n:
+                out.append(quote)
+                i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def validate_sql(sql: str) -> None:
     """
     Defence-in-depth checks before executing analyst/LLM SQL.
@@ -77,7 +122,8 @@ def validate_sql(sql: str) -> None:
     if not stripped:
         raise ValueError("Empty SQL statement")
 
-    if ";" in stripped.rstrip(";"):
+    checkable = _checkable_sql(stripped)
+    if ";" in checkable.rstrip("; \n\t"):
         raise ValueError("Multi-statement SQL is not permitted")
 
     first_sql = _strip_leading_sql_comments(stripped)
@@ -85,10 +131,10 @@ def validate_sql(sql: str) -> None:
     if not (upper.startswith("SELECT") or upper.startswith("WITH")):
         raise ValueError("Only SELECT/WITH queries are permitted")
 
-    if _MUTATION_RE.search(stripped):
+    if _MUTATION_RE.search(checkable):
         raise ValueError("Mutation or privileged SQL is not permitted")
 
-    if _FILE_READ_RE.search(stripped):
+    if _FILE_READ_RE.search(checkable):
         raise ValueError("File-read SQL functions are not permitted")
 
 

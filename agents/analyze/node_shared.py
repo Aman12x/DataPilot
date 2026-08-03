@@ -91,7 +91,10 @@ _DEFAULT_FUNNEL_STEPS = _csv("DEFAULT_FUNNEL_STEPS", "impression,click,install,d
 _SCHEMA_CACHE_PATH    = os.getenv("SCHEMA_CACHE_PATH", "memory/schema_cache.json")
 
 # LLM token limits — named constants so they're visible and changeable
-_MAX_TOKENS_SQL       = int(os.getenv("MAX_TOKENS_SQL",       "4096"))
+# 4096 truncated 5/7 A/B-mode queries mid-token in the SQL-generation eval
+# (adaptive thinking spends from the same budget; the canonical experiment
+# prompts think longest).
+_MAX_TOKENS_SQL       = int(os.getenv("MAX_TOKENS_SQL",       "8192"))
 # max_tokens also has to cover the thinking block on adaptive-thinking models
 # (Sonnet 4.6+ think by default and spend from the same budget). 2048 starved
 # the audit JSON once on claude-sonnet-5; 4096 starved the narrative twice in a

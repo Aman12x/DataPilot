@@ -216,8 +216,8 @@ Detail — why each is open, the intended fix, and how to verify — lives in
 - **No table retrieval before generation.** The whole schema context ships
   into the SQL prompt (20K-char truncation); becomes the binding constraint
   as multi-schema discovery widens.
-- **No per-stage eval, and the offline gate cannot see the LLM pipeline.**
-  The four `evals/` harnesses score the deterministic stats layer only;
-  intent routing, table choice, and SQL generation are ungated. Item 8 is
-  therefore a prerequisite for items 6 and 7, and `score_faithfulness`
-  fails open (1.0 when there is nothing to check against).
+- **Per-stage eval is partial.** `evals/sql_generation_eval.py` (LLM-live,
+  manual/nightly, not per-PR) now scores SQL generation and table choice per
+  stage — baseline 20/20 strict on claude-sonnet-5 — and `score_faithfulness`
+  no longer fails open. Still ungated: intent routing, audit catch rate, and
+  the production `eval_score` mislabelling completeness as quality.

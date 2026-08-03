@@ -48,10 +48,10 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class EvalResult:
-    faithfulness:  float        # 0-1
+    faithfulness:  float        # 0-1  (−1 if there was nothing to verify against)
     relevancy:     float        # 0-1  (−1 if model unavailable)
     key_findings:  float        # 0-1  (1.0 if no expected findings provided)
-    score:         float        # weighted composite
+    score:         float        # weighted composite (−1 if no metric could run)
     details:       dict = field(default_factory=dict)   # per-metric breakdown
 
 
@@ -166,8 +166,10 @@ def score_faithfulness(
     all_vals = df_vals + tool_vals
 
     if not all_vals:
-        return {"score": 1.0, "supported": 0, "total": 0,
-                "unsupported_numbers": [], "note": "no reference values available"}
+        # Nothing to check against. "Could not verify" must not score the same
+        # as "verified" — callers exclude None from composites.
+        return {"score": None, "supported": 0, "total": len(narrative_nums),
+                "unsupported_numbers": [], "note": "could not verify — no reference values"}
 
     supported = 0
     unsupported: list[float] = []
@@ -280,22 +282,28 @@ def evaluate_run(
     rel_score     = score_relevancy(task, narrative)
     kf_detail     = score_key_findings(narrative, ground_truth_findings or [])
 
-    faith_score = faith_detail["score"]
+    faith_score = faith_detail["score"]  # None when there was nothing to verify against
     kf_score    = kf_detail["score"]
 
-    # If relevancy model unavailable, redistribute its weight to faithfulness
-    if rel_score < 0:
-        w_faith = _WEIGHTS["faithfulness"] + _WEIGHTS["relevancy"]
-        composite = w_faith * faith_score + _WEIGHTS["key_findings"] * kf_score
+    # Composite over the metrics that are actually available, with weights
+    # renormalised. Unavailable ≠ perfect: a metric that could not run is
+    # excluded, not scored 1.0.
+    available: dict[str, float] = {"key_findings": kf_score}
+    if faith_score is not None:
+        available["faithfulness"] = faith_score
+    if rel_score >= 0:
+        available["relevancy"] = rel_score
+
+    if faith_score is None and rel_score < 0 and not ground_truth_findings:
+        # Nothing real was verified — key_findings is vacuously 1.0 with no
+        # expected findings, so a composite here would be fail-open again.
+        composite = -1.0
     else:
-        composite = (
-            _WEIGHTS["faithfulness"] * faith_score
-            + _WEIGHTS["relevancy"]   * rel_score
-            + _WEIGHTS["key_findings"] * kf_score
-        )
+        total_w = sum(_WEIGHTS[k] for k in available)
+        composite = sum(_WEIGHTS[k] * v for k, v in available.items()) / total_w
 
     return EvalResult(
-        faithfulness = faith_score,
+        faithfulness = faith_score if faith_score is not None else -1.0,
         relevancy    = rel_score,
         key_findings = kf_score,
         score        = round(composite, 4),

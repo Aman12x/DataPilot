@@ -19,6 +19,7 @@ make eval-full     # DAU eval including LLM narrative (needs ANTHROPIC_API_KEY)
 | `generalisability_eval.py` | ≥80% | No | Clinical trial + ecommerce A/B on real sample CSVs |
 | `transactions_eval.py` | ≥80% | No | 15 golden Q&A answers on `customer_transactions_10k.csv` + faithfulness |
 | `fixture_eval.py` | ≥80% | No | Keyword + faithfulness scoring on `tests/fixtures/` CSVs |
+| `sql_generation_eval.py` | ≥75% strict | **Yes** | 20 golden questions through the real `generate_sql` node, scored per stage (generated → safe → tables → executes → answer), incl. a decoy-table DB for table selection. **Not in the per-PR gate** — LLM live; run manually or nightly. Baseline 2026-08-03 on claude-sonnet-5: 100% strict. |
 
 ## Regression gate
 
