@@ -8,6 +8,16 @@
 import { useEffect, useState } from "react";
 import client, { type WorkspaceSummary } from "../api/client";
 import { type SavedConnection } from "../types/analysis";
+import { extractApiError } from "../utils/error";
+
+type VerifiedQuery = {
+  vq_id: string;
+  source: "gate" | "contributed";
+  name: string;
+  task: string;
+  sql: string;
+  connection_id: string;
+};
 import Spinner from "./Spinner";
 import { IconAlert, IconCheck, IconDot } from "./icons";
 
@@ -112,6 +122,43 @@ export default function ConnectionsPanel({ open, onClose, onChanged, canEdit }: 
       .then((r) => setConnections(r.data.connections || []))
       .catch(() => setMsg({ kind: "error", text: "Could not load connections." }))
       .finally(() => setLoading(false));
+    client.get<{ verified_queries: VerifiedQuery[] }>("/verified-queries")
+      .then((r) => setVqs(r.data.verified_queries || []))
+      .catch(() => setVqs([]));
+  };
+
+  const [vqs, setVqs] = useState<VerifiedQuery[]>([]);
+  const [vqForm, setVqForm] = useState({ name: "", task: "", sql: "" });
+  const [vqOpen, setVqOpen] = useState(false);
+  const [vqBusy, setVqBusy] = useState(false);
+
+  const addVq = async () => {
+    if (!vqForm.task.trim() || !vqForm.sql.trim()) {
+      setMsg({ kind: "error", text: "A canonical query needs both the question and the SQL." });
+      return;
+    }
+    setVqBusy(true);
+    try {
+      await client.post("/verified-queries", vqForm);
+      setVqForm({ name: "", task: "", sql: "" });
+      setVqOpen(false);
+      setMsg({ kind: "ok", text: "Canonical query saved — future analyses will learn from it." });
+      load();
+    } catch (err) {
+      setMsg({ kind: "error", text: extractApiError(err, "Could not save the query.") });
+    } finally {
+      setVqBusy(false);
+    }
+  };
+
+  const deleteVq = async (vq: VerifiedQuery) => {
+    if (!confirm(`Remove "${vq.name || vq.task}" from verified queries?`)) return;
+    try {
+      await client.delete(`/verified-queries/${vq.vq_id}`);
+      load();
+    } catch (err) {
+      setMsg({ kind: "error", text: extractApiError(err, "Could not remove the query.") });
+    }
   };
 
   useEffect(() => {
@@ -403,6 +450,76 @@ export default function ConnectionsPanel({ open, onClose, onChanged, canEdit }: 
                 You are an analyst in this workspace, so connections are read-only. Ask an owner to make changes.
               </p>
             )}
+
+            <div style={{ borderTop: "1px solid var(--dp-line)", marginTop: 18, paddingTop: 14 }}>
+              <div style={s.sectionHead}>
+                <span style={s.sectionTitle}>Canonical queries</span>
+                {editable && !vqOpen && (
+                  <button className="dp-btn dp-btn-ghost" style={{ fontSize: 12 }} onClick={() => setVqOpen(true)}>
+                    + Add
+                  </button>
+                )}
+              </div>
+              <p style={{ ...s.muted, margin: "4px 0 10px" }}>
+                Teach DataPilot how your team writes queries. Approved analyses are learned
+                automatically; add a few hand-picked exemplars here — future SQL follows
+                their tables, joins, and naming.
+              </p>
+              {vqs.length === 0 && !vqOpen && (
+                <p style={s.muted}>Nothing saved yet. Complete an analysis, or add an exemplar.</p>
+              )}
+              {vqs.map((v) => (
+                <div key={v.vq_id} style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "6px 0", borderBottom: "1px solid var(--dp-line)" }}>
+                  <span style={{ color: "var(--dp-ink)", fontSize: 13, fontWeight: 600, flexShrink: 0 }}>
+                    {v.name || v.task.slice(0, 48)}
+                  </span>
+                  <span style={{ ...s.muted, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={v.task}>
+                    {v.task}
+                  </span>
+                  <span style={{ ...s.muted, flexShrink: 0 }}>
+                    {v.source === "contributed" ? "exemplar" : "from a run"}
+                  </span>
+                  {editable && (
+                    <button
+                      className="dp-btn dp-btn-link"
+                      style={{ color: "var(--dp-danger)", fontSize: 12, padding: 0 }}
+                      onClick={() => deleteVq(v)}
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+              ))}
+              {vqOpen && (
+                <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
+                  <label style={s.field}>
+                    <span style={s.label}>Name</span>
+                    <input style={s.input} value={vqForm.name} placeholder="Weekly revenue, the official way"
+                           onChange={(e) => setVqForm((f) => ({ ...f, name: e.target.value }))} />
+                  </label>
+                  <label style={s.field}>
+                    <span style={s.label}>The question it answers</span>
+                    <input style={s.input} value={vqForm.task} placeholder="What is weekly revenue by product line?"
+                           onChange={(e) => setVqForm((f) => ({ ...f, task: e.target.value }))} />
+                  </label>
+                  <label style={s.field}>
+                    <span style={s.label}>The SQL your team considers correct</span>
+                    <textarea
+                      style={{ ...s.input, fontFamily: "ui-monospace, monospace", fontSize: 12, minHeight: 90, resize: "vertical" }}
+                      value={vqForm.sql}
+                      spellCheck={false}
+                      onChange={(e) => setVqForm((f) => ({ ...f, sql: e.target.value }))}
+                    />
+                  </label>
+                  <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                    <button className="dp-btn dp-btn-ghost" onClick={() => setVqOpen(false)} disabled={vqBusy}>Cancel</button>
+                    <button className="dp-btn dp-btn-primary" onClick={addVq} disabled={vqBusy}>
+                      {vqBusy ? "Saving…" : "Save exemplar"}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           </>
         ) : (
           <div>

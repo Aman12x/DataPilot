@@ -723,3 +723,85 @@ async def connection_drift(
         "schema_snapshot_at": snap.get("schema_snapshot_at"),
         "drift_warnings": warnings,
     }
+
+
+# ── Verified queries (item 6: "teach it how we write queries") ────────────────
+
+class VerifiedQueryCreate(BaseModel):
+    task: str = Field(min_length=3, max_length=2000)
+    sql: str = Field(min_length=5, max_length=20000)
+    name: str = Field(default="", max_length=120)
+    connection_id: str = ""
+
+
+@router.get("/verified-queries")
+async def list_verified_queries_endpoint(
+    connection_id: str | None = None,
+    current_user: dict = Depends(get_current_user),
+    workspace_id: str | None = Depends(resolve_workspace_id),
+):
+    from memory.verified_queries import list_verified_queries
+
+    rows = await asyncio.to_thread(
+        list_verified_queries,
+        current_user["user_id"],
+        workspace_id or "",
+        connection_id,
+    )
+    return {"verified_queries": rows}
+
+
+@router.post("/verified-queries", status_code=status.HTTP_201_CREATED)
+async def create_verified_query(
+    body: VerifiedQueryCreate,
+    current_user: dict = Depends(get_current_user),
+    workspace_id: str | None = Depends(resolve_workspace_id),
+):
+    user_id = current_user["user_id"]
+    if user_id.startswith("guest-"):
+        # Guest identities are disposable; their exemplars would be orphans.
+        raise HTTPException(status_code=403, detail="Sign up to save verified queries.")
+    _require_owner(user_id, workspace_id)
+
+    from tools.db_tools import validate_sql
+    try:
+        validate_sql(body.sql)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Rejected SQL: {exc}") from exc
+
+    from memory.verified_queries import add_verified_query
+    try:
+        vq_id = await asyncio.to_thread(
+            add_verified_query,
+            body.task,
+            body.sql,
+            source="contributed",
+            user_id=user_id,
+            workspace_id=workspace_id or "",
+            name=body.name,
+            connection_id=body.connection_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    logger.info("verified_query.created user=%s id=%s", user_id, vq_id)
+    return {"vq_id": vq_id}
+
+
+@router.delete("/verified-queries/{vq_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_verified_query_endpoint(
+    vq_id: str,
+    current_user: dict = Depends(get_current_user),
+    workspace_id: str | None = Depends(resolve_workspace_id),
+):
+    _require_owner(current_user["user_id"], workspace_id)
+    from memory.verified_queries import delete_verified_query
+
+    removed = await asyncio.to_thread(
+        delete_verified_query,
+        vq_id,
+        current_user["user_id"],
+        workspace_id or "",
+    )
+    if not removed:
+        raise HTTPException(status_code=404, detail="Verified query not found")

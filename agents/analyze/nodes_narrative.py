@@ -657,6 +657,35 @@ def log_run_node(state: AgentState) -> dict:
                 sorted(required_cols - result_cols),
             )
 
+    # ── Verified-query repository (item 6, automatic intake) ─────────────────
+    # The semantic cache above only stores A/B-shaped extracts; the repository
+    # keeps every human-approved query, both modes. A completed run means the
+    # analyst approved this SQL at the query gate (post any edits) and then
+    # approved a narrative built on its results — a verified pair. Guests are
+    # skipped: their identities are disposable, so their rows would be orphans.
+    user_id_log = state.get("user_id") or ""
+    if (
+        state.get("generated_sql")
+        and state.get("query_approved")
+        and (state.get("final_narrative") or state.get("narrative_draft") or "").strip()
+        and user_id_log
+        and not user_id_log.startswith("guest-")
+    ):
+        try:
+            from agents.analyze.semantic_layer import schema_hash as _schema_hash
+            from memory.verified_queries import add_verified_query
+            add_verified_query(
+                task,
+                state["generated_sql"],
+                source="gate",
+                user_id=user_id_log,
+                workspace_id=state.get("workspace_id") or "",
+                connection_id=state.get("connection_id") or "",
+                schema_hash=_schema_hash(state.get("schema_context") or ""),
+            )
+        except Exception as exc:
+            logger.warning("log_run: verified-query store failed: %s", redact_exception(exc))
+
     flush()
 
     return {"run_id": run_id}

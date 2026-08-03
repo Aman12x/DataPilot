@@ -134,6 +134,14 @@ def retrieve_sql_examples(
     """
     path = path or _db_path()
     init_db(path)
+    # The cache columns this query reads are added by a migration that
+    # otherwise only runs on cache check/store. On a fresh database, relying
+    # on node order to have migrated first is fragile — run it here too.
+    try:
+        from memory.semantic_cache import _ensure_cache_columns
+        _ensure_cache_columns(path)
+    except Exception:
+        return []
 
     try:
         from memory.semantic_cache import cosine_similarity, embed

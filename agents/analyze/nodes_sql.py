@@ -32,7 +32,32 @@ def generate_sql(state: AgentState) -> dict:
         metric_pack_id=state.get("metric_pack_id") or None,
         connection_id=state.get("connection_id") or None,
     )
-    sql_examples   = _filter_few_shot_by_schema(sql_examples, current_tables)
+
+    # Verified-query repository first: contributed exemplars and gate-approved
+    # pairs outrank incidental cache rows. Dedupe on the SQL text so the same
+    # query never appears twice in the prompt.
+    try:
+        from agents.analyze.semantic_layer import schema_hash as _cur_schema_hash
+        from memory.verified_queries import retrieve_verified
+        verified = retrieve_verified(
+            task,
+            user_id=state.get("user_id") or "",
+            workspace_id=state.get("workspace_id") or "",
+            connection_id=state.get("connection_id") or "",
+            schema_hash=_cur_schema_hash(schema_context) if schema_context else "",
+        )
+    except Exception as exc:
+        logger.debug("generate_sql: verified-query retrieval failed: %s", redact_exception(exc))
+        verified = []
+
+    seen_sql: set[str] = set()
+    merged: list[dict] = []
+    for ex in verified + sql_examples:
+        key = " ".join((ex.get("sql") or "").lower().split())
+        if key and key not in seen_sql:
+            seen_sql.add(key)
+            merged.append(ex)
+    sql_examples   = _filter_few_shot_by_schema(merged, current_tables)[:3]
     few_shot_block = _build_few_shot_block(sql_examples)
 
     safe_task = wrap_untrusted_content(task, label="analyst_task")
@@ -44,6 +69,7 @@ def generate_sql(state: AgentState) -> dict:
             schema_context=safe_schema,
             db_backend=db_backend,
             metric_context=_metric_context(mc),
+            few_shot_block=few_shot_block,
         )
     else:
         task_prompt = SQL_GENERATION_PROMPT.format(

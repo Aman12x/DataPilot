@@ -536,6 +536,13 @@ Schema:
 # Parameterised: {task}, {schema_context}, {db_backend}, {metric_context}
 
 SQL_GENERATION_GENERAL_PROMPT = """\
+## Past verified queries (few-shot reference)
+
+These queries were approved by a human against this data. Prefer their table
+choices, join keys, and naming style when they apply to the task.
+
+{few_shot_block}
+
 ## Schema
 
 {schema_context}
