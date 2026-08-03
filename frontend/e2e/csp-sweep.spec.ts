@@ -383,3 +383,84 @@ for (const [modal, marker] of MODALS) {
     await expectNoViolations(page, violations, `${modal} modal`);
   });
 }
+
+// ── The three surfaces the sweep used to stop short of ───────────────────────
+// PackStudio's inner flow, AnnotationStudio with a live connection, and
+// MembersPanel. Same discipline as everywhere else: stub the API, assert on
+// the component's own copy so the screen provably rendered, then check for
+// violations.
+
+test("no CSP violations in PackStudio's template → form → save flow", async ({ page }) => {
+  const violations = await watchCsp(page);
+  const pack = {
+    pack_id: "p-1", name: "DAU", description: "", certified: true,
+    connection_id: null, version: 1,
+    config: {
+      primary_metric: "dau_rate", metric_source_col: "dau_flag", metric_agg: "mean",
+      covariate: "pre_exp_dau", metric_direction: "higher_is_better",
+      events_table: "events", experiment_table: "experiment", user_id_col: "user_id",
+      date_col: "date", variant_col: "variant", week_col: "week",
+      guardrail_metrics: ["notif_optout"], segment_cols: ["platform"],
+    },
+  };
+  // Path-keyed stub serves GET and POST alike; the merged body satisfies both.
+  await stubApi(page, { routes: { "/metric-packs": { metric_packs: [pack], ...pack } } });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Metrics", exact: true }).click();
+  await expect(page.getByText(/Define your metrics once/i).first()).toBeVisible({ timeout: 15_000 });
+
+  await page.getByRole("button", { name: "DAU / engagement" }).click();
+  await page.getByRole("button", { name: /Data mapping/ }).click();
+  await expect(page.getByText("Value column").first()).toBeVisible();
+  await page.getByRole("button", { name: /Create & certify/ }).click();
+  // Saved-pack list re-renders from the stubbed GET — the flow completed.
+  await expect(page.getByText("Certified").first()).toBeVisible({ timeout: 15_000 });
+  await expectNoViolations(page, violations, "PackStudio inner flow");
+});
+
+test("no CSP violations in AnnotationStudio with a live connection", async ({ page }) => {
+  const violations = await watchCsp(page);
+  await stubApi(page, {
+    routes: {
+      "/connections/conn-ok/annotations": {
+        connection_id: "conn-ok",
+        annotations: { events: { revenue_usd: "Gross revenue in USD" } },
+        synonyms: { WAU: "weekly_active_users" },
+        updated_at: "2026-08-02T00:00:00Z",
+      },
+    },
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Schema", exact: true }).click();
+  await expect(page.getByText(/Teach DataPilot your column meanings/i).first()).toBeVisible({ timeout: 15_000 });
+  // Populated state, not the empty state: the saved annotation and synonym
+  // rows rendered. React-controlled inputs carry values as properties, not
+  // attributes, so read them rather than using a CSS value selector.
+  const inputValues = () =>
+    page.locator("input").evaluateAll((els) => els.map((el) => (el as HTMLInputElement).value));
+  await expect.poll(inputValues, { timeout: 15_000 }).toContain("Gross revenue in USD");
+  await expect.poll(inputValues).toContain("weekly_active_users");
+  await expectNoViolations(page, violations, "AnnotationStudio live connection");
+});
+
+test("no CSP violations in MembersPanel", async ({ page }) => {
+  const violations = await watchCsp(page);
+  await stubApi(page, {
+    routes: {
+      "/workspaces": {
+        workspaces: [{ workspace_id: "ws-1", name: "Acme", role: "owner" }],
+      },
+      "/workspaces/ws-1/members": {
+        members: [
+          { user_id: "u-1", username: "ana", email: "ana@acme.test", role: "owner", created_at: "2026-08-01" },
+          { user_id: "u-2", username: "bo", email: "bo@acme.test", role: "analyst", created_at: "2026-08-02" },
+        ],
+      },
+    },
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Team" }).click();
+  await expect(page.getByText("ana@acme.test")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("bo@acme.test")).toBeVisible();
+  await expectNoViolations(page, violations, "MembersPanel");
+});
