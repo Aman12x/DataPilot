@@ -44,7 +44,7 @@ from agents.analyze.prompts import (
 from agents.state import AgentState
 from config.analysis_config import MetricConfig, load_metric_config
 from agents import spend
-from agents.log_safety import redact_exception
+from agents.log_safety import redact, redact_exception
 from agents.llm_response import response_text
 from agents.analyze.prompt_safety import wrap_untrusted_content
 from agents.tracer import flush, observe, trace_generation
@@ -778,6 +778,134 @@ def _known_schema_names(schema_context: str) -> tuple[set[str], set[str]]:
             if col:
                 known_columns.add(col)
     return known_tables, known_columns
+
+
+# ── Table selection (pre-generation retrieval, future-work item 7) ────────────
+# On wide schemas the whole context used to ship into the SQL prompt (20K-char
+# truncation); a curated scope dilutes into noise. A cheap LLM ranking call
+# picks relevant tables from one-line summaries and only their column blocks
+# reach the prompt. Narrow schemas skip the extra call entirely.
+
+_TABLE_SELECT_MIN_TABLES = int(os.getenv("TABLE_SELECT_MIN_TABLES", "8"))
+_TABLE_SELECT_MIN_CHARS  = int(os.getenv("TABLE_SELECT_MIN_CHARS", "12000"))
+_MAX_TOKENS_TABLE_SELECT = int(os.getenv("MAX_TOKENS_TABLE_SELECT", "4096"))
+
+
+def _schema_table_blocks(schema_context: str) -> dict[str, str]:
+    """Split schema_context into ordered {table_name: full block} chunks.
+
+    Non-table preamble (e.g. a DIALECT header) is preserved under the ""
+    key so a filtered context keeps it.
+    """
+    blocks: dict[str, list[str]] = {"": []}
+    current = ""
+    for line in schema_context.splitlines():
+        s = line.strip()
+        if s.startswith("TABLE:"):
+            raw = s.split(":", 1)[1].strip()
+            current = raw.split("--")[0].strip().lower()
+            blocks.setdefault(current, [])
+        blocks.setdefault(current, []).append(line)
+    return {k: "\n".join(v).strip("\n") for k, v in blocks.items() if v}
+
+
+def _table_summaries(blocks: dict[str, str]) -> str:
+    """One line per table: name, row note, and the first few column names."""
+    lines = []
+    for name, block in blocks.items():
+        if not name:
+            continue
+        first = block.splitlines()[0]
+        row_note = first.split("--", 1)[1].strip() if "--" in first else ""
+        cols = []
+        for line in block.splitlines()[1:]:
+            s = line.strip()
+            if s and not s.startswith("--"):
+                cols.append(s.split()[0])
+            if len(cols) >= 8:
+                break
+        summary = f"- {name}"
+        if row_note:
+            summary += f" ({row_note})"
+        if cols:
+            summary += f": {', '.join(cols)}"
+        lines.append(summary)
+    return "\n".join(lines)
+
+
+def _filter_schema_context(schema_context: str, keep: set[str]) -> str:
+    """Rebuild schema_context with only the kept tables' blocks (order kept)."""
+    blocks = _schema_table_blocks(schema_context)
+    parts = []
+    if blocks.get(""):
+        parts.append(blocks[""])
+    parts.extend(block for name, block in blocks.items()
+                 if name and name in keep)
+    return "\n\n".join(parts)
+
+
+def _select_relevant_tables(
+    task: str,
+    schema_context: str,
+    mc: "MetricConfig",
+    mode: str,
+) -> tuple[str, list[str]]:
+    """Return (schema context for the SQL prompt, selected table names).
+
+    Fails safe: any error, empty selection, or truncated response returns the
+    full context unchanged — a wrong prune is worse than a wide prompt.
+    """
+    blocks = _schema_table_blocks(schema_context)
+    table_names = [n for n in blocks if n]
+    if (
+        len(table_names) < _TABLE_SELECT_MIN_TABLES
+        and len(schema_context) < _TABLE_SELECT_MIN_CHARS
+    ):
+        return schema_context, table_names
+
+    from agents.analyze.prompt_safety import wrap_untrusted_content
+    from agents.analyze.prompts import TABLE_SELECTION_PROMPT
+
+    prompt = TABLE_SELECTION_PROMPT.format(
+        task=wrap_untrusted_content(task, label="analyst_task"),
+        table_summaries=wrap_untrusted_content(_table_summaries(blocks), label="table_summaries"),
+    )
+
+    try:
+        with trace_generation("select_tables", _fast_model(), prompt,
+                              max_tokens=_MAX_TOKENS_TABLE_SELECT) as gen:
+            response = _anthropic_client().messages.create(
+                model=_fast_model(),
+                max_tokens=_MAX_TOKENS_TABLE_SELECT,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            gen.update(response)
+        if getattr(response, "stop_reason", None) == "max_tokens":
+            logger.warning("select_tables: truncated at max_tokens=%d — using full schema",
+                           _MAX_TOKENS_TABLE_SELECT)
+            return schema_context, table_names
+        raw = response_text(response).strip()
+        if raw.startswith("```"):
+            raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
+        picked = {str(t).strip().lower() for t in json.loads(raw) if str(t).strip()}
+    except Exception as exc:  # noqa: BLE001 — selection is an optimisation, never a gate
+        logger.warning("select_tables: failed (%s) — using full schema",
+                       redact_exception(exc))
+        return schema_context, table_names
+
+    keep = {t for t in picked if t in blocks}
+    # Safety union: the canonical A/B tables must survive selection — the
+    # experiment SQL template references them unconditionally.
+    if mode != "general":
+        for t in (mc.events_table, mc.experiment_table):
+            if t and t.lower() in blocks:
+                keep.add(t.lower())
+    if not keep:
+        return schema_context, table_names
+
+    logger.info("select_tables: %d/%d tables kept %s",
+                len(keep), len(table_names), redact(sorted(keep)))
+    return _filter_schema_context(schema_context, keep), sorted(keep)
 
 
 def _columns_for_table(schema_context: str, table_name: str) -> set[str]:

@@ -210,9 +210,6 @@ Detail — why each is open, the intended fix, and how to verify — lives in
 - **Connections cover one dataset/schema (except Postgres).** BigQuery and
   MySQL see only the dataset/schema saved on the connection; the planned fix
   is a per-connection scope picker, not unbounded discovery.
-- **No table retrieval before generation.** The whole schema context ships
-  into the SQL prompt (20K-char truncation); becomes the binding constraint
-  as multi-schema discovery widens.
 - **Per-stage eval is partial.** `evals/sql_generation_eval.py` (LLM-live,
   manual/nightly, not per-PR) now scores SQL generation and table choice per
   stage — baseline 20/20 strict on claude-sonnet-5 — and `score_faithfulness`

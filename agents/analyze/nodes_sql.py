@@ -21,10 +21,17 @@ def generate_sql(state: AgentState) -> dict:
     mc             = state.get("metric_config") or load_metric_config()
     mode           = state.get("analysis_mode", "ab_test")
 
+    # ── Table selection (pre-generation retrieval) ───────────────────────────
+    # Wide schemas dilute the prompt: pick relevant tables first and ship only
+    # their column blocks. Narrow schemas pass through untouched, and any
+    # selection failure falls back to the full context.
+    schema_context, _selected = _select_relevant_tables(task, schema_context, mc, mode)
+
     # ── Few-shot retrieval — schema-filtered ─────────────────────────────────
     # Only inject examples whose SQL references tables present in the current
-    # schema.  Prevents demo-DB examples (events, experiment, metrics_daily)
-    # from misleading the LLM when the user uploads a different dataset.
+    # (post-selection) schema. Prevents demo-DB examples from misleading the
+    # LLM when the user uploads a different dataset, and drops exemplars whose
+    # tables the selector pruned.
     current_tables = _known_schema_names(schema_context)[0]
     sql_examples   = retrieve_sql_examples(
         task,

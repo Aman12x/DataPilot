@@ -535,6 +535,23 @@ Schema:
 # Used when analysis_mode == "general". No experiment template is forced.
 # Parameterised: {task}, {schema_context}, {db_backend}, {metric_context}
 
+# Parameterised: {task}, {table_summaries}
+TABLE_SELECTION_PROMPT = """\
+You are selecting which database tables are relevant to an analyst's question, \
+so that only their full schemas are loaded. Be inclusive rather than minimal: \
+include every table that might hold the metric, the entities, their group \
+assignments, or useful join keys. Excluding a needed table breaks the analysis; \
+including a borderline one merely costs a little context.
+
+{table_summaries}
+
+{task}
+
+Respond with ONLY a JSON array of table names from the list above, \
+e.g. ["events", "experiment"]. No prose, no code fence.
+"""
+
+
 SQL_GENERATION_GENERAL_PROMPT = """\
 ## Past verified queries (few-shot reference)
 
