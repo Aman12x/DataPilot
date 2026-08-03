@@ -35,7 +35,8 @@ def _limits() -> tuple[float, float, float]:
     return (
         float(os.getenv("LLM_DAILY_BUDGET_USD", "50")),
         float(os.getenv("LLM_USER_DAILY_BUDGET_USD", "5")),
-        float(os.getenv("LLM_GUEST_DAILY_BUDGET_USD", "0.50")),
+        # ~3 demo runs at Sonnet 5 prices (a clean run is ~$0.25–0.30).
+        float(os.getenv("LLM_GUEST_DAILY_BUDGET_USD", "1.00")),
     )
 
 

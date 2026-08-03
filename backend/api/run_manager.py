@@ -201,12 +201,18 @@ async def get_cached_error(run_id: str) -> str | None:
 
 # ── Rate limiting ─────────────────────────────────────────────────────────────
 
-async def check_rate_limit(user_id: str) -> None:
+async def check_rate_limit(scope: str) -> None:
+    """Cap run creation per budget scope, not per user_id.
+
+    POST /auth/guest mints a fresh guest-{uuid4} on demand, so a user_id-keyed
+    limit resets for free — the same hole budget.py closes for spend. Callers
+    pass budget.scope_for(user_id, ip): "ip:…" for guests, "user:…" otherwise.
+    """
     from fastapi import HTTPException, status as st
 
     if _redis:
         now    = time.time()
-        key    = f"rate:{user_id}"
+        key    = f"rate:{scope}"
         window = now - _WINDOW_SECS
         pipe   = _redis.pipeline()
         pipe.zremrangebyscore(key, "-inf", window)
@@ -222,7 +228,7 @@ async def check_rate_limit(user_id: str) -> None:
             )
     else:
         now = time.monotonic()
-        dq  = _local_rate.setdefault(user_id, deque())
+        dq  = _local_rate.setdefault(scope, deque())
         while dq and dq[0] < now - _WINDOW_SECS:
             dq.popleft()
         if len(dq) >= _MAX_RUNS:

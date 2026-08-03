@@ -396,12 +396,14 @@ async def create_run(
     workspace_id: str | None = Depends(resolve_workspace_id),
 ):
     t0 = time.perf_counter()
-    await check_rate_limit(current_user["user_id"])
     user_id = current_user["user_id"]
 
     ip = client_ip(request)
-    await check_budget(current_user["user_id"], ip)
-    budget_scope = scope_for(current_user["user_id"], ip)
+    budget_scope = scope_for(user_id, ip)
+    # Rate limit and budget share the scope: keying either on user_id would let
+    # a guest reset it by minting a fresh identity via POST /auth/guest.
+    await check_rate_limit(budget_scope)
+    await check_budget(user_id, ip)
 
     task = _sanitise_task(req.task)
 

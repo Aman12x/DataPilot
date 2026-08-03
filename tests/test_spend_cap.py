@@ -217,6 +217,43 @@ def test_new_guest_identity_cannot_reset_a_spent_budget(monkeypatch):
     asyncio.run(scenario())
 
 
+def test_new_guest_identity_cannot_reset_the_run_rate_limit(monkeypatch):
+    from backend.api import run_manager
+
+    monkeypatch.setattr(run_manager, "_MAX_RUNS", 2)
+    run_manager._local_rate.clear()
+
+    async def scenario():
+        ip = "198.51.100.9"
+        await run_manager.check_rate_limit(budget.scope_for("guest-aaaa", ip))
+        await run_manager.check_rate_limit(budget.scope_for("guest-aaaa", ip))
+        # A brand-new guest id from the same IP shares the bucket.
+        with pytest.raises(Exception) as exc:
+            await run_manager.check_rate_limit(budget.scope_for("guest-zzzz", ip))
+        assert exc.value.status_code == 429
+        # A different IP is unaffected.
+        await run_manager.check_rate_limit(budget.scope_for("guest-zzzz", "198.51.100.10"))
+
+    asyncio.run(scenario())
+    run_manager._local_rate.clear()
+
+
+def test_registered_users_do_not_share_a_rate_bucket_by_ip(monkeypatch):
+    from backend.api import run_manager
+
+    monkeypatch.setattr(run_manager, "_MAX_RUNS", 1)
+    run_manager._local_rate.clear()
+
+    async def scenario():
+        ip = "198.51.100.9"
+        await run_manager.check_rate_limit(budget.scope_for("user-a", ip))
+        # A different registered user behind the same NAT is not blocked.
+        await run_manager.check_rate_limit(budget.scope_for("user-b", ip))
+
+    asyncio.run(scenario())
+    run_manager._local_rate.clear()
+
+
 def test_global_cap_blocks_everyone_with_503(monkeypatch):
     monkeypatch.setenv("LLM_DAILY_BUDGET_USD", "10.00")
     monkeypatch.setenv("LLM_USER_DAILY_BUDGET_USD", "1000")
