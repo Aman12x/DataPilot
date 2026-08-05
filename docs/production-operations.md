@@ -102,11 +102,20 @@ Each pass:
    never collected mid-flight. Deletes from `writes` too.
 2. Trims run history past `RUN_RETENTION_DAYS` (180) and clears spent/expired
    auth tokens.
-3. VACUUMs `graph.db` when this pass deleted something **or** the freelist
+3. Deletes smoke-test accounts older than `TEST_ACCOUNT_RETENTION_HOURS` (48).
+   The Prod Smoke workflow registers three accounts on the deployed app per run
+   and nothing else removes them. This is the only prune that touches `users`,
+   so a candidate must match **all three** of: a username prefix in
+   `TEST_ACCOUNT_PREFIXES`, an email under `TEST_ACCOUNT_EMAIL_SUFFIX`
+   (`@example.com`, reserved by RFC 2606 and undeliverable, so no real signup
+   can own one), and the age bound. Every table keyed to the user goes with it,
+   across both `auth.db` and the memory database, so nothing is orphaned. Set
+   `TEST_ACCOUNT_PREFIXES=` empty to disable.
+4. VACUUMs `graph.db` when this pass deleted something **or** the freelist
    exceeds `VACUUM_FREE_BYTES` — the second condition cleans up after a pass
    that deleted without reclaiming.
-4. Snapshots `auth.db` and `datapilot_memory.db`, keeping `BACKUP_KEEP` (7).
-5. Logs a size breakdown (`sizes_mb`) so growth is visible before the disk fills.
+5. Snapshots `auth.db` and `datapilot_memory.db`, keeping `BACKUP_KEEP` (7).
+6. Logs a size breakdown (`sizes_mb`) so growth is visible before the disk fills.
 
 ### Two things that bit us
 

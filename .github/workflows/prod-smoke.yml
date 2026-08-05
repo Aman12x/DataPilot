@@ -6,10 +6,12 @@ name: Prod Smoke
 # copy change in the plain-language UX pass silently broke the signup selector:
 # the spec only failed when someone ran it by hand, weeks later.
 #
-# NOTE: each run registers three accounts on production (e2eprobe*, e2elogin*,
-# cspcheck*). There is no account-deletion path in auth/store.py and the
-# retention pass never prunes users, so these accumulate permanently -- roughly
-# a thousand a year at this cadence. Add a cleanup before raising the frequency.
+# Each run registers three accounts on production (e2eprobe*, e2elogin*,
+# cspcheck*). The retention pass now deletes them once they are older than
+# TEST_ACCOUNT_RETENTION_HOURS (48), along with every row keyed to them --
+# see prune_test_accounts in backend/api/retention.py. That prune is the only
+# thing keeping this workflow from adding users to production forever, so if
+# you disable it (TEST_ACCOUNT_PREFIXES=), reconsider this schedule too.
 
 on:
   schedule:

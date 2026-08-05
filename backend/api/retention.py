@@ -55,6 +55,45 @@ BACKUP_KEEP = int(os.getenv("BACKUP_KEEP", "7"))
 VACUUM_FREE_BYTES = int(os.getenv("VACUUM_FREE_BYTES", str(32 * 1024 * 1024)))
 RETENTION_INTERVAL_SEC = float(os.getenv("RETENTION_INTERVAL_SEC", str(24 * 3600)))
 
+# The Prod Smoke workflow registers three accounts against the deployed app on
+# every run and nothing else ever removes them. Deleting rows out of the users
+# table is the one prune here that could destroy something irreplaceable, so a
+# candidate must satisfy *all three* conditions below, not any of them:
+#
+#   1. the username starts with a known probe prefix,
+#   2. the email is under a reserved domain — example.com is reserved by
+#      RFC 2606 and can never receive mail, so no real signup can own one,
+#   3. it is older than the window, which keeps an in-flight run's accounts.
+#
+# Any single condition would be unsafe on its own: a real user may pick a
+# colliding username, and a developer may register a throwaway example.com
+# address by hand.
+# e2eprobe/e2elogin/cspcheck are what prod-auth.spec.ts registers; `probe`
+# covers the ad-hoc accounts a hand-run diagnostic leaves behind.
+TEST_ACCOUNT_PREFIXES = tuple(
+    p.strip()
+    for p in os.getenv(
+        "TEST_ACCOUNT_PREFIXES", "e2eprobe,e2elogin,cspcheck,probe"
+    ).split(",")
+    if p.strip()
+)
+TEST_ACCOUNT_EMAIL_SUFFIX = os.getenv("TEST_ACCOUNT_EMAIL_SUFFIX", "@example.com")
+TEST_ACCOUNT_RETENTION_HOURS = float(os.getenv("TEST_ACCOUNT_RETENTION_HOURS", "48"))
+
+# Every table outside `users` that keys rows to a user, so a prune cannot leave
+# orphans behind. Split by database: the first group lives in auth.db (which is
+# also where workspace_store and org_store put their tables), the second in the
+# memory database.
+_TEST_ACCOUNT_AUTH_TABLES = (
+    "password_reset_tokens",
+    "email_verification_tokens",
+    "db_connections",
+    "metric_packs",
+    "schema_annotations",
+    "workspace_members",
+)
+_TEST_ACCOUNT_MEMORY_TABLES = ("runs", "verified_queries")
+
 
 def _connect(path: str) -> sqlite3.Connection:
     con = sqlite3.connect(path, timeout=30)
@@ -291,6 +330,94 @@ def prune_guest_uploads(
     return result
 
 
+def find_test_accounts(
+    db_path: str, older_than_hours: float = TEST_ACCOUNT_RETENTION_HOURS
+) -> list[tuple[str, str]]:
+    """Smoke-test accounts eligible for deletion, as (user_id, username).
+
+    The prefix and domain are matched in Python rather than with SQL LIKE. The
+    prefixes come from an environment variable, and `_` and `%` are LIKE
+    wildcards — a prefix containing either would silently widen the match, and
+    the thing being widened is a DELETE against the users table.
+    """
+    if not os.path.exists(db_path) or not TEST_ACCOUNT_PREFIXES:
+        return []
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(hours=older_than_hours)
+    ).isoformat()
+    con = _connect(db_path)
+    try:
+        rows = con.execute(
+            "SELECT user_id, username, email FROM users WHERE created_at < ?",
+            (cutoff,),
+        ).fetchall()
+    except sqlite3.OperationalError as exc:
+        logger.warning("find_test_accounts: users unavailable (%s)", exc)
+        return []
+    finally:
+        con.close()
+
+    suffix = TEST_ACCOUNT_EMAIL_SUFFIX.lower()
+    return [
+        (user_id, username)
+        for user_id, username, email in rows
+        if (email or "").lower().endswith(suffix)
+        and (username or "").startswith(TEST_ACCOUNT_PREFIXES)
+    ]
+
+
+def _delete_user_rows(db_path: str, user_ids: list[str], tables) -> dict[str, int]:
+    """Delete every row keyed to these users from `tables`, reporting counts."""
+    if not os.path.exists(db_path) or not user_ids:
+        return {}
+    placeholders = ",".join("?" * len(user_ids))
+    removed: dict[str, int] = {}
+    con = _connect(db_path)
+    try:
+        for table in tables:
+            try:
+                cur = con.execute(
+                    f"DELETE FROM {table} WHERE user_id IN ({placeholders})",
+                    user_ids,
+                )
+                if cur.rowcount:
+                    removed[table] = cur.rowcount
+            except sqlite3.OperationalError as exc:
+                # Warning, not a silent skip: prune_auth_tokens once shipped a
+                # prune that never ran because a missing column was swallowed.
+                logger.warning("prune_test_accounts: %s skipped (%s)", table, exc)
+        con.commit()
+    finally:
+        con.close()
+    return removed
+
+
+def prune_test_accounts(
+    auth_path: str,
+    memory_path: str,
+    older_than_hours: float = TEST_ACCOUNT_RETENTION_HOURS,
+) -> dict:
+    """Delete accounts the Prod Smoke workflow left on the deployed app.
+
+    Without this the workflow adds three permanent users per run. `users` is
+    deleted alongside every table that keys rows to a user, so a pruned account
+    cannot leave orphaned connections, packs, memberships or run history.
+    """
+    accounts = find_test_accounts(auth_path, older_than_hours)
+    if not accounts:
+        return {"accounts": 0}
+    user_ids = [uid for uid, _ in accounts]
+    rows = {
+        **_delete_user_rows(auth_path, user_ids, (*_TEST_ACCOUNT_AUTH_TABLES, "users")),
+        **_delete_user_rows(memory_path, user_ids, _TEST_ACCOUNT_MEMORY_TABLES),
+    }
+    # Count only — the usernames are synthetic, but this log is an INFO record
+    # and INFO becomes a Sentry breadcrumb, so it is not the place to start
+    # shipping identifiers.
+    logger.info("Pruned %d smoke-test account(s)", len(user_ids))
+    return {"accounts": len(user_ids), "rows": rows}
+
+
 def _paths() -> dict[str, str]:
     return {
         "graph": os.getenv("GRAPH_DB_PATH", "memory/graph.db"),
@@ -405,6 +532,10 @@ def run_maintenance() -> dict:
         report["tokens"] = prune_auth_tokens(paths["auth"])
     except Exception:
         logger.warning("token prune failed", exc_info=True)
+    try:
+        report["test_accounts"] = prune_test_accounts(paths["auth"], paths["memory"])
+    except Exception:
+        logger.warning("test account prune failed", exc_info=True)
     try:
         report["guest_uploads"] = prune_guest_uploads(
             os.getenv("UPLOAD_DIR", "tmp_uploads")

@@ -177,9 +177,15 @@ collects it, points it at `127.0.0.1`, and fails on a cookie that was never set.
 scripts that `script-src 'self'` would block, so it can never test the policy.
 Because CI never runs `prod-*`, a UI copy change can break those selectors
 unnoticed; the `Prod Smoke` workflow (daily, plus `workflow_dispatch`) is the
-only thing that exercises them. **It registers three accounts on production per
-run** and nothing prunes them — `auth/store.py` has no delete and retention only
-touches checkpoints and runs — so add cleanup before making it more frequent.
+only thing that exercises them. It registers three accounts on production per
+run; `retention.prune_test_accounts` deletes them after 48 h.
+
+**The test-account prune is the only one that deletes from `users`.** A
+candidate must match a username prefix, an `@example.com` address *and* the age
+bound — all three. Any one alone is unsafe: a real user can pick a colliding
+username, and a developer can register a throwaway `example.com` address by
+hand. The prefixes are matched with `startswith`, never SQL `LIKE`, because they
+come from an env var and `_`/`%` are wildcards that would widen a `DELETE`.
 
 **A CSP test without a deliberate violation proves nothing.** A detector that
 never fires and a policy that never blocks look the same from the outside.

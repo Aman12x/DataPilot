@@ -569,3 +569,129 @@ def test_maintenance_pass_includes_offbox_report(monkeypatch, tmp_path):
     report = retention.run_maintenance()
     assert report["offbox"]["enabled"] is True
     assert len(report["offbox"]["uploaded"]) == 2   # auth + memory snapshots
+
+
+# ── Smoke-test account prune ─────────────────────────────────────────────────
+#
+# The Prod Smoke workflow registers three accounts on the deployed app per run
+# and nothing else removes them. This is the only prune that deletes from
+# `users`, so the tests below exist mostly to prove the guard *refuses* — a
+# matcher that never declines is indistinguishable from `DELETE FROM users`.
+
+def _accounts_db(path, rows):
+    """rows: [(user_id, username, email, created_at)]"""
+    con = sqlite3.connect(path)
+    con.execute(
+        "CREATE TABLE users (user_id TEXT PRIMARY KEY, username TEXT, email TEXT, created_at TEXT)"
+    )
+    con.execute("CREATE TABLE email_verification_tokens (token TEXT, user_id TEXT)")
+    con.execute("CREATE TABLE db_connections (connection_id TEXT, user_id TEXT)")
+    con.executemany("INSERT INTO users VALUES (?,?,?,?)", rows)
+    con.commit(); con.close()
+
+
+def _old(hours=72):
+    return (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+
+
+def test_prune_test_accounts_removes_stale_probe_accounts(tmp_path):
+    auth = str(tmp_path / "auth.db")
+    mem = str(tmp_path / "memory.db")
+    _accounts_db(auth, [("u1", "e2eprobe123", "e2eprobe123@example.com", _old())])
+    con = sqlite3.connect(auth)
+    con.execute("INSERT INTO email_verification_tokens VALUES ('tok', 'u1')")
+    con.commit(); con.close()
+    con = sqlite3.connect(mem)
+    con.execute("CREATE TABLE runs (run_id TEXT, user_id TEXT)")
+    con.execute("CREATE TABLE verified_queries (vq_id TEXT, user_id TEXT)")
+    con.execute("INSERT INTO runs VALUES ('r1', 'u1')")
+    con.commit(); con.close()
+
+    report = retention.prune_test_accounts(auth, mem)
+    assert report["accounts"] == 1
+    assert report["rows"]["users"] == 1
+    # The cascade matters: a deleted user must not leave rows keyed to it.
+    assert report["rows"]["email_verification_tokens"] == 1
+    assert report["rows"]["runs"] == 1
+
+    con = sqlite3.connect(auth)
+    assert con.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
+    assert con.execute("SELECT COUNT(*) FROM email_verification_tokens").fetchone()[0] == 0
+    con.close()
+
+
+def test_prune_test_accounts_needs_all_three_conditions(tmp_path):
+    """Each condition alone must block deletion.
+
+    A real user can pick a colliding username, and a developer can register a
+    throwaway example.com address by hand; only the conjunction is safe.
+    """
+    auth = str(tmp_path / "auth.db")
+    mem = str(tmp_path / "memory.db")
+    _accounts_db(auth, [
+        # Right prefix and age, but a real, deliverable email domain.
+        ("real1", "e2eprobe999", "someone@gmail.com", _old()),
+        # Right domain and age, but not a probe username.
+        ("real2", "alice", "alice@example.com", _old()),
+        # Right prefix and domain, but created inside the window: this is what
+        # keeps a currently-running smoke test from deleting its own account.
+        ("real3", "e2eprobe777", "e2eprobe777@example.com",
+         (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()),
+    ])
+
+    report = retention.prune_test_accounts(auth, mem)
+    assert report == {"accounts": 0}
+
+    con = sqlite3.connect(auth)
+    assert con.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 3
+    con.close()
+
+
+def test_prune_test_accounts_prefix_is_not_a_like_pattern(tmp_path, monkeypatch):
+    """`_` is a LIKE wildcard; matched in Python it must stay a literal.
+
+    With SQL LIKE, a prefix of "e2e_" would also match "e2eXprobe" and any other
+    single character, widening a DELETE against users.
+    """
+    monkeypatch.setattr(retention, "TEST_ACCOUNT_PREFIXES", ("e2e_",))
+    auth = str(tmp_path / "auth.db")
+    mem = str(tmp_path / "memory.db")
+    _accounts_db(auth, [
+        ("lit", "e2e_probe", "e2e_probe@example.com", _old()),
+        ("wild", "e2eXprobe", "e2eXprobe@example.com", _old()),
+    ])
+
+    report = retention.prune_test_accounts(auth, mem)
+    assert report["accounts"] == 1
+
+    con = sqlite3.connect(auth)
+    left = [r[0] for r in con.execute("SELECT user_id FROM users").fetchall()]
+    con.close()
+    assert left == ["wild"]
+
+
+def test_prune_test_accounts_tolerates_missing_tables(tmp_path):
+    """A deployment without workspace/memory tables must still prune the user."""
+    auth = str(tmp_path / "auth.db")
+    con = sqlite3.connect(auth)
+    con.execute(
+        "CREATE TABLE users (user_id TEXT PRIMARY KEY, username TEXT, email TEXT, created_at TEXT)"
+    )
+    con.execute("INSERT INTO users VALUES ('u1','cspcheck1','cspcheck1@example.com',?)", (_old(),))
+    con.commit(); con.close()
+
+    report = retention.prune_test_accounts(auth, str(tmp_path / "absent.db"))
+    assert report["accounts"] == 1
+    assert report["rows"]["users"] == 1
+
+
+def test_run_maintenance_reports_test_account_prune(tmp_path, monkeypatch):
+    auth = str(tmp_path / "auth.db")
+    _accounts_db(auth, [("u1", "e2elogin5", "e2elogin5@example.com", _old())])
+    monkeypatch.setenv("AUTH_DB_PATH", auth)
+    monkeypatch.setenv("MEMORY_DB_PATH", str(tmp_path / "memory.db"))
+    monkeypatch.setenv("GRAPH_DB_PATH", str(tmp_path / "graph.db"))
+    monkeypatch.setenv("BACKUP_DIR", str(tmp_path / "backups"))
+
+    report = retention.run_maintenance()
+    assert report["test_accounts"]["accounts"] == 1
