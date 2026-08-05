@@ -139,9 +139,25 @@ Snapshots use `VACUUM INTO`, which produces a consistent copy of a live WAL
 database without blocking writers and with no `-wal` sidecar to go missing.
 Copying the file instead can capture a torn page.
 
-**They live on the same volume as the data.** That covers corruption, a bad
-migration, and accidental deletion — **not** losing the disk. Off-box copies
-need external storage and are not implemented.
+**Local snapshots live on the same volume as the data.** That covers corruption,
+a bad migration, and accidental deletion — **not** losing the disk.
+
+**Off-box copies close that gap, once configured.** Set `BACKUP_S3_BUCKET` and
+each pass uploads its fresh snapshots to S3-compatible storage
+(`BACKUP_S3_ENDPOINT` for R2/B2/MinIO, credentials and region through the other
+`BACKUP_S3_*` variables), then prunes remote copies to the same `BACKUP_KEEP`
+count, per database stem. Encryption is bucket-side via `BACKUP_S3_SSE` —
+deliberately not the app's Fernet key, which lives on the box being backed up.
+Every failure is recorded in the report and logged at warning: an off-box
+hiccup must never fail the maintenance pass.
+
+**It is inert until those variables are set, and they are not set on the
+production service today** (checked against Railway; with no bucket,
+`upload_backups_offbox` returns `{"enabled": False}` and the pass skips it). So
+the disk-loss gap above is still open in practice. Two operator steps close it:
+provision a bucket and set the variables, then do one restore drill — download
+a snapshot, point `AUTH_DB_PATH` at it locally, log in. Until that drill has
+been run, treat the off-box copies as untested rather than as a recovery plan.
 
 ---
 
