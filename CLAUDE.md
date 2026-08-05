@@ -204,3 +204,12 @@ Detail — why each is open, the intended fix, and how to verify — lives in
   stage — baseline 20/20 strict on claude-sonnet-5 — and `score_faithfulness`
   no longer fails open. Still ungated: intent routing, audit catch rate, and
   the production `eval_score` mislabelling completeness as quality.
+- **One deprecation left in our own code**, not failing a build (CI runs pytest
+  with `--disable-warnings`, so this list grows silently):
+  `HTTP_413_REQUEST_ENTITY_TOO_LARGE` in `routes/upload.py`. **Do not rename it
+  yet** — the pinned `fastapi==0.115.0` resolves starlette 0.38.6, which lacks
+  the replacement `HTTP_413_CONTENT_TOO_LARGE`, so the rename is an
+  `AttributeError` at import in CI. It rides along with a FastAPI bump. The
+  warning is only visible because **the local venv is ahead of the pins**
+  (`fastapi 0.135.1`) — check the version CI actually resolves before acting on
+  any deprecation.

@@ -80,7 +80,7 @@ def _encode(obj: Any) -> Any:
             "v": json.loads(obj.to_json(orient="split", date_format="iso")),
         }
     if isinstance(obj, BaseModel):
-        fields = {name: getattr(obj, name) for name in obj.model_fields}
+        fields = {name: getattr(obj, name) for name in type(obj).model_fields}
         return {
             "__t": "pydantic",
             "m": obj.__class__.__name__,
