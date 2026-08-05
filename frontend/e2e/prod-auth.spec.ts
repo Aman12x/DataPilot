@@ -88,7 +88,13 @@ test("signup through the UI reaches the app", async ({ page }) => {
   if (await confirm.count()) await confirm.fill(creds.password);
 
   await page.screenshot({ path: "e2e-out/02-signup-filled.png", fullPage: true });
-  await page.getByRole("button", { name: /sign ?up|create account/i }).last().click();
+  // Target the form's submit button structurally, not by label. The register
+  // *tab* is also a button and reads "Create Account", while the submit reads
+  // "Create your account" -- which /create account/i does not match. So a
+  // name-based .last() selected the tab, and the tab's onClick resets
+  // passwordConfirm and submits nothing: the run failed 30s later at "Sign out",
+  // with no request ever sent. Labels here have already changed once.
+  await page.locator('form button[type="submit"]').click();
 
   // Wait on the post-auth shell, not a fixed sleep: a timeout-based wait made
   // this suite report success while the browser was still sitting on /login.
@@ -117,7 +123,10 @@ test("login through the UI with a freshly created account", async ({ page, reque
   await page.goto("/login", { waitUntil: "networkidle" });
   await page.getByLabel("Username or email", { exact: true }).fill(email);
   await page.getByLabel("Password", { exact: true }).fill(password);
-  await page.getByRole("button", { name: /sign in|log ?in/i }).last().click();
+  // Same structural selector as the signup test: /sign in/i matches both the
+  // "Sign In" tab and the "Sign in to DataPilot" submit, so .last() was correct
+  // only by DOM ordering.
+  await page.locator('form button[type="submit"]').click();
 
   const signedIn = page.getByRole("button", { name: /sign out/i });
   await expect(signedIn, "login did not reach the authenticated app").toBeVisible({
@@ -156,7 +165,7 @@ test("no CSP violations across the authenticated app", async ({ page, request })
   await page.goto("/login", { waitUntil: "networkidle" });
   await page.getByLabel("Username or email", { exact: true }).fill(email);
   await page.getByLabel("Password", { exact: true }).fill(password);
-  await page.getByRole("button", { name: /sign in|log ?in/i }).last().click();
+  await page.locator('form button[type="submit"]').click();
   await expect(page.getByRole("button", { name: /sign out/i })).toBeVisible({ timeout: 30_000 });
 
   for (const route of ["/", "/history", "/"]) {
