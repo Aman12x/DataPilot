@@ -39,6 +39,12 @@ jobs:
       - name: Check Python dependency consistency
         run: python -m pip check
 
+      # data/dau_experiment.db is gitignored, and the fixture-integrity tests in
+      # tests/test_sql_generation_eval.py open it read-only. Skipping them when it
+      # is absent would let the eval's tables drift unnoticed, so build it here.
+      - name: Generate DAU dataset
+        run: python data/generate_data.py
+
       - name: Run tests
         env:
           SECRET_KEY: test-secret-key-that-is-long-enough-for-hs256

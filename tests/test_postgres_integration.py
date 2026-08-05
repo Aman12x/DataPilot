@@ -85,9 +85,16 @@ def test_postgres_checkpointer_roundtrips_dataframe_state():
         df = pd.DataFrame({"variant": ["control", "treatment"], "dau": [0.65, 0.64]})
         checkpoint = empty_checkpoint()
         checkpoint["channel_values"] = {"query_result": df, "task": "roundtrip"}
+        # A non-primitive channel value is stored out-of-line in checkpoint_blobs,
+        # and both halves of that round-trip are keyed on the channel version:
+        # `put` writes a blob only for channels in `new_versions`, and the read
+        # joins blobs on `checkpoint->'channel_versions'`. Set both, to the same
+        # versions, or the DataFrame is dropped on write and absent on read.
+        versions = {"query_result": "1", "task": "1"}
+        checkpoint["channel_versions"] = versions
         config = {"configurable": {"thread_id": "ci-roundtrip", "checkpoint_ns": ""}}
 
-        saved = saver.put(config, checkpoint, {"source": "test", "step": 1}, {})
+        saved = saver.put(config, checkpoint, {"source": "test", "step": 1}, versions)
         got = saver.get_tuple(saved)
         assert got is not None
         restored = got.checkpoint["channel_values"]
