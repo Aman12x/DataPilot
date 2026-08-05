@@ -50,7 +50,11 @@ jobs:
       # confusing UI timeouts.
       - name: Check the API is up
         run: |
-          curl -fsS --max-time 30 https://datapilot.singhaman.dev/health | tee /dev/stderr | grep -q '"status": "ok"'
+          # Tolerate either JSON spacing: a literal '"status": "ok"' would turn a
+          # compact serialisation into a false outage. Verified to still fire on
+          # a degraded status, a non-JSON body, and an unreachable host.
+          curl -fsS --max-time 30 https://datapilot.singhaman.dev/health \
+            | tee /dev/stderr | grep -qE '"status":[[:space:]]*"ok"'
 
       - name: Run prod specs against the deployed app
         working-directory: frontend
