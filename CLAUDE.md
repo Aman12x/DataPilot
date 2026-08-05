@@ -175,6 +175,11 @@ collects it, points it at `127.0.0.1`, and fails on a cookie that was never set.
 `csp-*` needs the production build and its generated CSP header
 (`playwright.csp.config.mjs`) — the dev server sends no CSP and injects inline
 scripts that `script-src 'self'` would block, so it can never test the policy.
+Because CI never runs `prod-*`, a UI copy change can break those selectors
+unnoticed; the `Prod Smoke` workflow (daily, plus `workflow_dispatch`) is the
+only thing that exercises them. **It registers three accounts on production per
+run** and nothing prunes them — `auth/store.py` has no delete and retention only
+touches checkpoints and runs — so add cleanup before making it more frequent.
 
 **A CSP test without a deliberate violation proves nothing.** A detector that
 never fires and a policy that never blocks look the same from the outside.

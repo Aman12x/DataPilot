@@ -1,0 +1,70 @@
+name: Prod Smoke
+
+# Drives the DEPLOYED app, not a local stack. The main CI workflow deliberately
+# excludes e2e/prod-* (its default config starts localhost and those specs would
+# be pointed at 127.0.0.1), so nothing else ever runs them. That gap is why a
+# copy change in the plain-language UX pass silently broke the signup selector:
+# the spec only failed when someone ran it by hand, weeks later.
+#
+# NOTE: each run registers three accounts on production (e2eprobe*, e2elogin*,
+# cspcheck*). There is no account-deletion path in auth/store.py and the
+# retention pass never prunes users, so these accumulate permanently -- roughly
+# a thousand a year at this cadence. Add a cleanup before raising the frequency.
+
+on:
+  schedule:
+    - cron: "0 7 * * *"   # 07:00 UTC daily, an hour after Eval Nightly
+  workflow_dispatch:
+    inputs:
+      app_url:
+        description: "App URL to test (blank = the deployed default)"
+        required: false
+        default: ""
+
+jobs:
+  prod-specs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install Playwright browsers
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      # Checked separately so "the deploy is down" and "a selector broke" are
+      # distinguishable at a glance. Without this every outage reads as four
+      # confusing UI timeouts.
+      - name: Check the API is up
+        run: |
+          curl -fsS --max-time 30 https://datapilot.singhaman.dev/health | tee /dev/stderr | grep -q '"status": "ok"'
+
+      - name: Run prod specs against the deployed app
+        working-directory: frontend
+        env:
+          PROD_APP_URL: ${{ inputs.app_url }}
+        run: npx playwright test --config=playwright.prod.config.mjs
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prod-smoke-report
+          path: |
+            frontend/playwright-report/
+            frontend/test-results/
+            frontend/e2e-out/
+          retention-days: 14
