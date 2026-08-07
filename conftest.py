@@ -25,3 +25,40 @@ def _clear_auth_rate():
         except Exception:
             pass
     yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_run_manager_globals():
+    """Clear run_manager's process-wide run state *before* every test.
+
+    run_manager keeps admission counters and run registries at module level, so
+    they outlive the test that created them. If a test leaves `_active_invokes`
+    incremented — a run whose `_release_slot` never fired because its event loop
+    closed with the invoke task still pending — the counter stays leaked for the
+    rest of the session. Once it reaches `_MAX_CONCURRENT`, `_invoke` rejects the
+    next run and publishes {"ok": False, "error": "Server is busy..."} as the
+    stream's first event instead of a step event, and whichever test reads that
+    first event fails a long way from the cause.
+
+    test_run_lifecycle.py has its own reset fixture, but it is teardown-only and
+    file-local, so it protects that file's later tests and nothing else. This
+    resets on setup, which is the direction contamination actually travels, and
+    covers every file.
+
+    Hardening, not a known-bug fix: no test is currently known to leak the
+    counter, and this does not change the outcome of any test today.
+
+    The shared graph executor is deliberately left alone — recreating a
+    ThreadPoolExecutor per test is expensive, and the files that need a fresh one
+    already shut it down themselves.
+    """
+    import sys
+
+    mod = sys.modules.get("backend.api.run_manager") or sys.modules.get("api.run_manager")
+    if mod is not None:
+        mod._active_invokes = 0
+        mod._active_by_scope.clear()
+        mod._queues.clear()
+        mod._cancel_events.clear()
+        mod._active_tasks.clear()
+    yield
