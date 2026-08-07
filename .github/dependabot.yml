@@ -1,26 +1,64 @@
 version: 2
+
+# Grouping rule of thumb: group things that MUST move together (co-dependent
+# peers), and split things that must be reviewed apart (majors, or a 124-package
+# requirements file). A catch-all `patterns: ["*"]` group does the opposite of
+# both — see the pip block below.
+
 updates:
+  # Root requirements.txt is a single `-r backend/requirements.txt` line, so
+  # this one entry already resolves every backend pin; Dependabot edits
+  # backend/requirements.txt directly. A second `directory: "/backend"` entry
+  # used to sit here covering the same file — removed as a duplicate.
+  #
+  # The previous `python-production` group matched "*", which collapsed all
+  # ~124 pins into one PR per week. Nine of those opened (#16, #20, #21, #22,
+  # #26, #32, #36, #37, #38) and every one was closed unmerged — an 80-package
+  # diff is not reviewable, and a single incompatible pin (numpy 2.5.1, which
+  # needs Python >=3.12 while CI and backend/Dockerfile are both on 3.11) fails
+  # install and takes the other 74 updates down with it. The ungrouped
+  # per-package PRs that preceded it merged 5 for 5 (#6, #7, #9, #10, #11).
+  #
+  # Patch and minor are grouped separately so routine bumps stay a small,
+  # mergeable diff. Majors are left ungrouped so each arrives on its own and
+  # can fail — or be closed — in isolation.
   - package-ecosystem: pip
     directory: "/"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
     groups:
-      python-production:
-        patterns:
-          - "*"
+      python-patch:
+        update-types:
+          - patch
+      python-minor:
+        update-types:
+          - minor
 
-  - package-ecosystem: pip
-    directory: "/backend"
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
-
+  # The two npm groups below exist because both failure modes actually shipped:
+  #
+  #   vite      — #12 bumped vite 6 -> 8 alone. @vitejs/plugin-react peers an
+  #               explicit vite range, so npm ci died on ERESOLVE before build.
+  #   react     — #8 bumped react-dom and @types/react-dom to 19 while leaving
+  #               react and @types/react at 18, which cannot resolve at all.
+  #
+  # Both are unmergeable as split PRs no matter how often they are regenerated.
   - package-ecosystem: npm
     directory: "/frontend"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      vite:
+        patterns:
+          - "vite"
+          - "@vitejs/*"
+      react:
+        patterns:
+          - "react"
+          - "react-dom"
+          - "@types/react"
+          - "@types/react-dom"
 
   - package-ecosystem: github-actions
     directory: "/"
