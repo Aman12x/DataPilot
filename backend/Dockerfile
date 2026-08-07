@@ -19,8 +19,13 @@ RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTr
 # Copy the entire project (agents/, tools/, memory/, auth/, etc.)
 COPY . /app
 
-# Create persistent volume mount point for SQLite files
-RUN mkdir -p /app/memory
+# The persistent volume mounts at /app/db, NOT here — see railway.toml.
+# `memory/` is a Python package (store.py, semantic_cache.py, retriever.py) that
+# the COPY above already provides; mounting a volume over it shadows the package
+# and the backend dies at startup with
+#   ImportError: cannot import name 'retriever' from 'memory' (unknown location)
+# Railway creates /app/db itself when the volume is attached, so there is
+# nothing to mkdir here.
 
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
