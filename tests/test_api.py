@@ -688,6 +688,56 @@ class TestResumeRuns:
         assert r.status_code == 200
         assert r.json() == {"status": "ok"}
 
+    def test_resume_rejected_while_the_previous_answer_is_running(self, client, fake_mode):
+        """A second answer to the same gate must not start a second invoke.
+
+        `resume_run` spawns a graph invoke unconditionally, so a duplicate used
+        to run two invokes against one thread_id: concurrent checkpoint writes,
+        double billing, and — because `_invoke` does
+        `_cancel_events[run_id] = cancel` — the second overwrites the first's
+        cancel flag, stranding the first worker on an Event nothing can reach.
+
+        Duplicates are easy to produce from the UI, which re-presents a gate
+        whenever the stream replays one.
+
+        Note the module tree: this file imports `api.*`, so it must mark the
+        in-flight flag on that module object. Patching `backend.api.run_manager`
+        here would touch a different object and silently prove nothing.
+        """
+        import threading
+
+        from api import run_manager
+
+        fake_mode["mode"] = "gate"
+        access, _, _ = _login(client, "ResumeDup")
+        hdrs = {"Authorization": f"Bearer {access}"}
+        run_id = client.post("/runs", json={"task": "analyse"}, headers=hdrs).json()["run_id"]
+
+        events = _sse_events(client, _stream_url(client, run_id, access))
+        assert any(e.get("type") == "gate" for e in events)
+
+        # Stand in for "the first answer is still being processed".
+        run_manager._cancel_events[run_id] = threading.Event()
+        try:
+            r = client.post(
+                f"/runs/{run_id}/resume",
+                json={"gate": "intent", "value": {"approved": True}},
+                headers=hdrs,
+            )
+        finally:
+            run_manager._cancel_events.pop(run_id, None)
+
+        assert r.status_code == 409, r.text
+
+        # Still answerable once the first invoke finishes — the guard must gate
+        # on work in flight, not permanently burn the gate.
+        r2 = client.post(
+            f"/runs/{run_id}/resume",
+            json={"gate": "intent", "value": {"approved": True}},
+            headers=hdrs,
+        )
+        assert r2.status_code == 200, r2.text
+
     def test_resume_wrong_owner(self, client, fake_mode):
         """POST /runs/{id}/resume by a different user returns 403."""
         fake_mode["mode"] = "gate"
