@@ -117,7 +117,7 @@ typing_extensions==4.15.0
 tzdata==2025.3
 urllib3==2.6.3
 uuid_utils==0.14.1
-wrapt==1.17.3
+wrapt==2.3.0
 xxhash==3.6.0
 zipp==3.23.0
 zstandard==0.25.0
