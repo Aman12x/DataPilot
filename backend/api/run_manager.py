@@ -189,6 +189,33 @@ def cleanup_run(run_id: str, *, drop_owner: bool = True) -> None:
         _run_owners.pop(run_id, None)
 
 
+def is_invoke_in_flight(run_id: str) -> bool:
+    """True while a graph invoke for this run is running.
+
+    `_cancel_events[run_id]` is written when `_invoke` admits the run and popped
+    on every exit path — the normal one and `_reap_abandoned`'s done-callback for
+    the timeout path — so its presence tracks an in-flight invoke exactly.
+
+    The SSE stream needs this to know whether a pending interrupt it reads from
+    the checkpoint is real or stale. `resume_run` only *schedules* the invoke, so
+    the resume POST answers before the graph has consumed the interrupt: a stream
+    that reconnects in that window reads the gate the user just answered and
+    replays it. See the stream route for what that costs.
+    """
+    return run_id in _cancel_events
+
+
+def has_run_stream(run_id: str) -> bool:
+    """True while this run still has somewhere to publish events.
+
+    In Redis mode the stream outlives the run (it carries a TTL and is
+    replayable), so this is always True. In memory mode the queue is popped by
+    `cleanup_run`, and once it is gone `read_result` returns None immediately
+    rather than blocking — a caller that loops on None will spin.
+    """
+    return True if _redis else run_id in _queues
+
+
 def _cache_error(run_id: str, msg: str) -> None:
     """Write to _run_errors, evicting oldest entry when cap is reached."""
     _run_errors[run_id] = msg
@@ -380,6 +407,20 @@ async def get_gate_deadline(run_id: str) -> int | None:
         deadline_raw = await _redis.get(f"run:gate_deadline:{run_id}")
         return int(deadline_raw) if deadline_raw is not None else None
     return _gate_deadlines.get(run_id)
+
+
+async def clear_gate_deadline(run_id: str) -> None:
+    """Drop the deadline once its gate has been answered.
+
+    The deadline is written when a gate is emitted and was never cleared, so it
+    stayed live after a successful resume: the expiry check in the resume route
+    could only ever reject a *late* answer, never a second one. Clearing it makes
+    the window close when the gate is actually answered.
+    """
+    if _redis:
+        await _redis.delete(f"run:gate_deadline:{run_id}")
+    else:
+        _gate_deadlines.pop(run_id, None)
 
 
 def _spawn_invoke(graph: Any, arg: Any, run_id: str) -> asyncio.Task:

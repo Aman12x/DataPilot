@@ -44,9 +44,12 @@ from ..run_manager import (
     check_rate_limit,
     check_resume_rate_limit,
     cleanup_run,
+    clear_gate_deadline,
     get_cached_error,
     get_gate_deadline,
     get_owner,
+    has_run_stream,
+    is_invoke_in_flight,
     read_result,
     resume_run,
     set_gate_deadline,
@@ -254,6 +257,42 @@ async def _check_parent_ownership(graph: Any, parent_run_id: str, user_id: str) 
         raise HTTPException(status_code=400, detail="Invalid parent_run_id")
     # Follow-ups allowed for workspace teammates (read + branch)
     await _check_run_access(graph, parent_run_id, user_id, mutate=False)
+
+
+def _done_payload(run_id: str, values: dict) -> dict | None:
+    """Shape the terminal `done` event from a run's final state values.
+
+    Returns None when the state holds no analysis output, which lets a caller
+    replaying a finished run tell "completed" from "never produced anything"
+    rather than announcing an empty result as success.
+    """
+    narrative = values.get("final_narrative") or values.get("narrative_draft", "")
+    if not narrative and not values.get("recommendation"):
+        return None
+
+    return {
+        "type": "done",
+        "state": {
+            "narrative_draft":  narrative,
+            "recommendation":   values.get("recommendation", ""),
+            "run_id":           run_id,
+            "charts":           values.get("charts", []),
+            "trust_indicators": values.get("trust_indicators", {}),
+            "analysis_mode":    values.get("analysis_mode", ""),
+            "deck_data":        values.get("deck_data") or {},
+        },
+    }
+
+
+async def _build_done_event(graph: Any, run_id: str, fallback: dict) -> dict | None:
+    """Read the final checkpoint and shape a `done` event, or None if empty."""
+    config = {"configurable": {"thread_id": run_id}}
+    try:
+        final_state = await asyncio.to_thread(graph.get_state, config)
+        values = final_state.values if hasattr(final_state, "values") else {}
+    except Exception:
+        values = fallback or {}
+    return _done_payload(run_id, values)
 
 
 def _snap_to_interrupt_payload(graph: Any, run_id: str) -> dict | None:
@@ -586,11 +625,26 @@ async def stream_run(
             # state, replay it immediately without blocking on the queue.
             # This handles the case where the graph hit an interrupt before the
             # SSE client connected (e.g. intent gate fires during fast startup).
-            interrupt_payload = await asyncio.to_thread(
-                _snap_to_interrupt_payload,
-                graph,
-                run_id,
-            )
+            #
+            # Only when nothing is running for this run. `resume_run` schedules
+            # the invoke and returns, so the resume POST answers before the graph
+            # has consumed the interrupt — and the frontend reconnects the moment
+            # that POST returns. Reading the checkpoint inside that window sees
+            # the gate the user just answered.
+            #
+            # For an intermediate gate that is invisible: the graph reaches the
+            # *next* interrupt before the read, so the stale value happens to be
+            # the next gate and the pipeline appears to advance. The final gate
+            # has no next interrupt, so the stale read returns the same gate
+            # forever and the run can never finish — the UI sits on GateBar
+            # ("Start over") and never reaches FinishedView.
+            interrupt_payload = None
+            if not is_invoke_in_flight(run_id):
+                interrupt_payload = await asyncio.to_thread(
+                    _snap_to_interrupt_payload,
+                    graph,
+                    run_id,
+                )
             if interrupt_payload is not None:
                 gate    = interrupt_payload.get("gate", "unknown")
                 expires = int(time.time()) + _GATE_TIMEOUT_SECS
@@ -610,6 +664,25 @@ async def stream_run(
             item = await read_result(run_id, effective_last_id)
 
             if item is None:
+                # Nothing running and no stream left to publish to means the run
+                # is over and its terminal event went to an earlier connection —
+                # the one the frontend tore down to reconnect. Without this the
+                # loop never ends: `read_result` returns None *immediately* once
+                # `cleanup_run` has popped the queue (rather than blocking 30s),
+                # so this spins, and every iteration burns a graph-executor
+                # thread on `_snap_to_interrupt_payload`. Replaying the terminal
+                # state makes a reconnect after completion self-heal.
+                if not is_invoke_in_flight(run_id) and not has_run_stream(run_id):
+                    done_event = await _build_done_event(graph, run_id, {})
+                    if done_event is not None:
+                        logger.info("run.done (replay) run=%s", run_id)
+                        yield {"data": json.dumps(done_event, cls=_JsonEncoder)}
+                        return
+                    yield {"data": json.dumps({
+                        "type": "error",
+                        "message": "This analysis is no longer available. Please start a new one.",
+                    })}
+                    return
                 yield {"comment": "keepalive"}
                 continue
 
@@ -665,20 +738,23 @@ async def stream_run(
 
             cleanup_run(run_id)
             logger.info("run.done run=%s user=%s", run_id, current_user["user_id"])
-            yield {
-                "data": json.dumps({
-                    "type":  "done",
-                    "state": {
-                        "narrative_draft":  state_values.get("final_narrative") or state_values.get("narrative_draft", ""),
-                        "recommendation":   state_values.get("recommendation", ""),
-                        "run_id":           run_id,
-                        "charts":           state_values.get("charts", []),
-                        "trust_indicators": state_values.get("trust_indicators", {}),
-                        "analysis_mode":    state_values.get("analysis_mode", ""),
-                        "deck_data":        state_values.get("deck_data") or {},
-                    },
-                }, cls=_JsonEncoder)
+            # An empty payload still ships here: this path *observed* the run
+            # finish, so an empty result is a real (if disappointing) outcome.
+            # Only the replay path treats None as "nothing to report", because
+            # there it cannot tell an empty run from a missing one.
+            done_event = _done_payload(run_id, state_values) or {
+                "type": "done",
+                "state": {
+                    "narrative_draft":  "",
+                    "recommendation":   "",
+                    "run_id":           run_id,
+                    "charts":           [],
+                    "trust_indicators": {},
+                    "analysis_mode":    "",
+                    "deck_data":        {},
+                },
             }
+            yield {"data": json.dumps(done_event, cls=_JsonEncoder)}
             return
 
     return EventSourceResponse(event_generator())
@@ -709,7 +785,35 @@ async def resume_run_endpoint(
             detail="Gate expired — please start a new analysis",
         )
 
+    # Only resume a run that is actually waiting at a gate.
+    #
+    # Without this the endpoint accepted any resume at any time: `resume_run`
+    # spawns a graph invoke unconditionally, so a duplicate answer started a
+    # second invoke on the same thread_id. Two invokes write checkpoints to one
+    # thread, both bill, and `_cancel_events[run_id] = cancel` in `_invoke` means
+    # the second overwrites the first's cancel flag — the first worker keeps
+    # polling an Event nothing can reach any more, so neither shutdown nor the
+    # timeout path can stop it. It holds an admission slot until the process dies.
+    #
+    # Duplicates are easy to produce: the UI re-presents a gate whenever the
+    # stream replays one, and answering it again is the obvious thing to do.
+    if is_invoke_in_flight(run_id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This answer is already being processed.",
+        )
+
+    pending = await asyncio.to_thread(_snap_to_interrupt_payload, graph, run_id)
+    if pending is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This step has already been answered.",
+        )
+
     logger.info("run.resume run=%s gate=%s user=%s", run_id, req.gate, current_user["user_id"])
+    # Clear before spawning: the gate is answered the moment we accept it, and a
+    # stale deadline would keep the expiry check from ever rejecting a repeat.
+    await clear_gate_deadline(run_id)
     await resume_run(graph, run_id, _sanitise_resume_value(req.value))
     return {"status": "ok"}
 
