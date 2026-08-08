@@ -5,9 +5,18 @@ name: Dependabot auto-merge
 # still open a PR, because those are the ones that have actually broken things
 # here — react 18 -> 19 and wrapt 1 -> 2 both needed a human.
 #
-# Nothing merges without passing CI. `--auto` queues the merge and GitHub holds
-# it until every required check succeeds, so a red bump stays open and visible
-# rather than landing quietly.
+# Nothing merges without passing CI — and getting that right needs more than
+# `gh pr merge --auto`.
+#
+# `--auto` waits for *required* checks. `main` has no branch protection, so it
+# has no required checks, so there was nothing to wait for: the first PR this
+# workflow saw (#63, python-minor, 49 updates) merged while test-backend and
+# integration-services were failing, and broke the production image build with
+#   tokenizers==0.23.1 vs transformers 5.14.1 requiring tokenizers<=0.23.0
+#
+# So wait for the checks explicitly instead. `gh pr checks --watch --fail-fast`
+# blocks until every check finishes and exits non-zero if any of them fails,
+# which does not depend on branch protection being configured.
 
 on: pull_request
 
@@ -27,9 +36,36 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Queue patch and minor updates behind CI
+      - name: Wait for CI, then merge patch and minor updates
         if: steps.meta.outputs.update-type != 'version-update:semver-major'
-        run: gh pr merge --squash --auto "$PR_URL"
+        timeout-minutes: 45
+        # Polled rather than `gh pr checks --watch`: this job is itself one of
+        # the PR's checks, so watching them all would mean waiting on itself and
+        # timing out every time. Everything except this job has to conclude, and
+        # any failure exits non-zero so the merge never runs.
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 80); do
+            checks=$(gh pr checks "$PR_URL" --json name,bucket 2>/dev/null || echo '[]')
+            others=$(jq '[.[] | select(.name != "auto-merge")]' <<<"$checks")
+
+            if [ "$(jq 'length' <<<"$others")" -eq 0 ]; then sleep 30; continue; fi
+
+            failed=$(jq -r '[.[] | select(.bucket == "fail")] | map(.name) | join(", ")' <<<"$others")
+            if [ -n "$failed" ]; then
+              echo "::error::CI failed on this bump ($failed) — leaving it open."
+              exit 1
+            fi
+
+            if [ "$(jq '[.[] | select(.bucket == "pending")] | length' <<<"$others")" -eq 0 ]; then
+              echo "all checks concluded green"
+              gh pr merge --squash --delete-branch "$PR_URL"
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "::error::timed out waiting for CI; leaving the PR open."
+          exit 1
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
