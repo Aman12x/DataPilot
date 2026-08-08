@@ -521,15 +521,21 @@ def _publish_sync(run_id: str, payload: dict, loop: asyncio.AbstractEventLoop) -
     `loop` must be passed in: asyncio.get_event_loop() raises in a non-main
     thread that has no loop of its own, which previously made every Redis-mode
     step event fail silently and stripped the whole chain-of-thought stream.
+
+    This blocks until the payload is actually on the stream, and that is the
+    point. The in-memory path used to be fire-and-forget
+    (`loop.call_soon_threadsafe(q.put_nowait, payload)`), which let the worker
+    thread return — and `_invoke` publish the run's final {"ok": True} — while
+    the step event was still only *scheduled*. A reader could then see the run
+    finish before the last step of the chain-of-thought stream, or miss that
+    step entirely.
+
+    Redis mode already blocked here. The two backends now behave the same, which
+    also means `_publish_result` is the single place that knows the difference.
     """
-    if _redis:
-        asyncio.run_coroutine_threadsafe(
-            _publish_result(run_id, payload), loop
-        ).result(timeout=2)
-        return
-    q = _queues.get(run_id)
-    if q is not None:
-        loop.call_soon_threadsafe(q.put_nowait, payload)
+    asyncio.run_coroutine_threadsafe(
+        _publish_result(run_id, payload), loop
+    ).result(timeout=2)
 
 
 async def _bill_run(run_id: str, run_meter: spend.Meter) -> None:

@@ -168,14 +168,16 @@ def test_step_events_stream_from_worker_thread_to_reader():
         await run_manager.start_run(_SteppingGraph(), "run-e2e", {}, "user-1")
 
         step = await asyncio.wait_for(run_manager.read_result("run-e2e"), timeout=5)
-        # Name the event we actually got. This assertion failed once in CI with a
-        # bare `KeyError: 'type'`, which identifies nothing: every non-step event
-        # on this stream is an {"ok": ...} dict with no "type" key, so the error
-        # is identical whether the run was rejected ("Server is busy"), raised
-        # ("Analysis failed"), timed out, or simply had its final result overtake
-        # the step event. That failure has not reproduced -- 1400+ local runs,
-        # including under 2x CPU oversubscription -- so the next occurrence needs
-        # to say which of those four it was.
+        # Name the event we actually got. Every non-step event on this stream is
+        # an {"ok": ...} dict with no "type" key, so asserting the key directly
+        # raises a bare KeyError that cannot distinguish a rejected run from a
+        # failed one from an out-of-order one. Keeping the message is what
+        # identified the real cause: it reported
+        #     expected a step event first, got {'ok': True, 'snap': {'done': True}}
+        # which ruled out rejection and failure (the run clearly succeeded) and
+        # pointed at the fire-and-forget step publish fixed in _publish_sync.
+        # test_step_publish_is_synchronous_... now pins that ordering directly;
+        # this assertion stays as the end-to-end backstop.
         assert "type" in step, f"expected a step event first, got {step!r}"
         assert step["type"] == "step"
         assert step["node"] == "execute_query"
@@ -200,6 +202,50 @@ def test_worker_thread_publish_reaches_the_queue():
         await asyncio.to_thread(worker)
         result = await asyncio.wait_for(run_manager.read_result("run-pub"), timeout=5)
         assert result["label"] == "from-thread"
+
+    asyncio.run(scenario())
+
+
+def test_step_publish_is_synchronous_so_the_final_result_cannot_overtake_it(monkeypatch):
+    """_publish_sync must not return until the payload is really on the stream.
+
+    The in-memory path used to be fire-and-forget
+    (`loop.call_soon_threadsafe(q.put_nowait, payload)`), so the worker thread
+    returned while the step event was still only *scheduled* as a loop callback.
+    _invoke then published the run's final {"ok": True} and a reader could see
+    the run finish before its last chain-of-thought step. CI caught exactly that:
+
+        expected a step event first, got {'ok': True, 'snap': {'done': True}}
+
+    Checking the queue depth as _publish_sync returns is not enough: an idle
+    loop drains a call_soon_threadsafe callback so promptly that the old code
+    passed that check most of the time. Instead make the publish observably
+    slow, so "did _publish_sync wait for it?" has one answer and no race.
+    Fire-and-forget never reaches _publish_result at all on this path, so the
+    flag stays clear and this fails deterministically.
+    """
+    published = threading.Event()
+    real_publish = run_manager._publish_result
+
+    async def slow_publish(run_id, payload):
+        await asyncio.sleep(0.2)
+        await real_publish(run_id, payload)
+        published.set()
+
+    monkeypatch.setattr(run_manager, "_publish_result", slow_publish)
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        run_manager._queues["run-sync"] = asyncio.Queue()
+
+        def worker():
+            run_manager._publish_sync("run-sync", {"type": "step", "label": "x"}, loop)
+            return published.is_set()
+
+        assert await asyncio.to_thread(worker), (
+            "_publish_sync returned before the step reached the stream; "
+            "the run's final result can overtake it"
+        )
 
     asyncio.run(scenario())
 
