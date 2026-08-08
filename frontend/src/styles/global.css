@@ -766,6 +766,17 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .md em    { color: var(--dp-ink-secondary); font-style: italic; }
 .md code  { background: var(--dp-surface-2); color: var(--dp-ink); padding: 1px 5px; border-radius: 3px; font-size: 0.85em; font-family: var(--dp-mono); }
 
+/* Audit corrections arrive as blockquotes. They used to render as body text
+   with a literal ">" in front, which read as part of the analysis rather than
+   as a note about it. */
+.md-quote { margin: 0.8em 0; padding: 0.5em 0 0.5em 0.9em; border-left: 3px solid var(--dp-line);
+            color: var(--dp-ink-secondary); font-size: 0.92em; line-height: 1.6; }
+.md-quote strong { color: var(--dp-ink); }
+
+/* Second-level bullets. Nested source items were flattened into the parent
+   list, so sub-points read as peers of the findings they qualify. */
+.md-li-nested { margin-left: 1.1em; list-style-type: circle; }
+
 /* ── Mobile ──────────────────────────────────────────────────────────────── */
 
 @media (max-width: 900px) {

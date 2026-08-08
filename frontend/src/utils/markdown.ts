@@ -9,6 +9,79 @@ export function normalizeTypography(text: string): string {
     .replace(/[\u2014\u2013]/g, "-");
 }
 
+export interface Block {
+  type: "h1" | "h2" | "h3" | "p" | "li" | "quote";
+  text: string;
+  /** Indent level for `li`; 0 unless the source bullet was nested. */
+  depth?: number;
+}
+
+// `<!-- details -->` is a layout marker for the UI's show-more split. Nothing
+// consumed it, so it rendered into the narrative as literal text.
+const HTML_COMMENT_RE = /<!--[\s\S]*?-->/g;
+
+// A marker only opens a bullet when whitespace follows it, which is what keeps
+// `**Bold**` from being read as a `*` list item.
+const BULLET_RE = /^(\s*)[-*•]\s+(.*)$/;
+
+// The narrative writes its section headers as a whole line of bold rather than
+// with `##`, so a bold-only line is a heading.
+const BOLD_HEADING_RE = /^\*\*(.+?)\*\*:?\s*$/;
+
+const BLOCKQUOTE_RE = /^\s*>\s?(.*)$/;
+
+// A marker with nothing after it, or a `---` rule.
+const MARKER_ONLY_RE = /^[-*•_]+$/;
+
+const EMOJI_LEAD_RE = /^[✅⚠️🔴🟡🟢❌✔️]️?\s?/u;
+
+/**
+ * Split narrative markdown into renderable blocks.
+ *
+ * Lives here rather than in the component so it can be exercised without a DOM.
+ */
+export function parseBlocks(markdown: string): Block[] {
+  const lines = normalizeTypography(markdown.replace(HTML_COMMENT_RE, "")).split("\n");
+  const blocks: Block[] = [];
+
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (MARKER_ONLY_RE.test(trimmed)) continue;
+
+    const bullet = BULLET_RE.exec(line);
+    // "- **Key Findings**" is a heading the model happened to bullet.
+    const headingText =
+      BOLD_HEADING_RE.exec(trimmed)?.[1] ??
+      (bullet ? BOLD_HEADING_RE.exec(bullet[2].trim())?.[1] : undefined);
+
+    if (headingText) {
+      blocks.push({ type: "h3", text: headingText });
+    } else if (line.startsWith("### ")) {
+      blocks.push({ type: "h3", text: line.slice(4) });
+    } else if (line.startsWith("## ")) {
+      blocks.push({ type: "h2", text: line.slice(3) });
+    } else if (line.startsWith("# ")) {
+      blocks.push({ type: "h1", text: line.slice(2) });
+    } else if (bullet) {
+      blocks.push({
+        type: "li",
+        text: bullet[2].trim(),
+        depth: bullet[1].length >= 2 ? 1 : 0,
+      });
+    } else if (BLOCKQUOTE_RE.test(line)) {
+      blocks.push({ type: "quote", text: BLOCKQUOTE_RE.exec(line)![1].trim() });
+    } else if (EMOJI_LEAD_RE.test(line)) {
+      // The UI carries no emoji glyphs, so drop the lead and treat it as an item.
+      blocks.push({ type: "li", text: line.replace(EMOJI_LEAD_RE, ""), depth: 0 });
+    } else {
+      blocks.push({ type: "p", text: line });
+    }
+  }
+  return blocks;
+}
+
 /** Strip markdown formatting to plain text (for clipboard copy). */
 export function stripMarkdown(md: string): string {
   return md
