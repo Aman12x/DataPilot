@@ -24,9 +24,9 @@ updates:
   # The previous `python-production` group matched "*", which collapsed all
   # ~124 pins into one PR per week. Nine of those opened (#16, #20, #21, #22,
   # #26, #32, #36, #37, #38) and every one was closed unmerged — an 80-package
-  # diff is not reviewable, and a single incompatible pin (numpy 2.5.1, which
-  # needs Python >=3.12 while CI and backend/Dockerfile are both on 3.11) fails
-  # install and takes the other 74 updates down with it. The ungrouped
+  # diff is not reviewable, and a single incompatible pin (numpy 2.5.1, needing
+  # Python >=3.12 while CI and backend/Dockerfile were both on 3.11 at the time)
+  # fails install and takes the other 74 updates down with it. The ungrouped
   # per-package PRs that preceded it merged 5 for 5 (#6, #7, #9, #10, #11).
   #
   # Patch and minor are grouped separately so routine bumps stay a small,
