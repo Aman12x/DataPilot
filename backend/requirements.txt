@@ -17,7 +17,7 @@ redis>=5.0
 psycopg2-binary>=2.9
 pymysql>=1.1.0
 google-cloud-bigquery>=3.25.0
-db-dtypes>=1.2.0
+db-dtypes>=1.7.1
 # Optional — set DATABASE_URL to activate:
 langgraph-checkpoint-postgres==3.1.1
 
