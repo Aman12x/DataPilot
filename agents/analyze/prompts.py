@@ -254,7 +254,7 @@ Then output this exact line:
    uncontrolled external factors, and any data quality gaps.
 
 Formatting rules:
-- No em dashes (-- or -). Use a period or restructure the sentence instead.
+- No em dashes (—) or double hyphens (--). Use a comma, a period, or restructure. Ordinary hyphens in compound words (7-day, opt-out) are fine.
 - No SQL, no code blocks, no column names in backticks anywhere in the report.
 - Do not invent numbers. Every number must appear in the tool results or draft.
 - Bold the actual numbers and segment names, not adjectives.
@@ -478,7 +478,7 @@ Then output this exact line:
    CUPED variance reduction could reduce required N by up to 30%.
 
 Formatting rules:
-- No em dashes (-- or -). Use a period or restructure the sentence instead.
+- No em dashes (—) or double hyphens (--). Use a comma, a period, or restructure. Ordinary hyphens in compound words (7-day, opt-out) are fine.
 - No SQL, no code blocks, no column names in backtick formatting.
 - Do not invent numbers. Every number must appear in the power analysis results above.
 - Bold the actual numbers. Do not bold adjectives.
@@ -722,7 +722,7 @@ Then output this exact line:
    One sentence each.
 
 Formatting rules:
-- No em dashes (-- or -). Use a period or restructure the sentence instead.
+- No em dashes (—) or double hyphens (--). Use a comma, a period, or restructure. Ordinary hyphens in compound words (7-day, opt-out) are fine.
 - Never headline a subgroup finding without stating the parent segment value in \
   the same sentence. Format: "[Subgroup] ([parent segment]: [parent value]) \
   generated [subgroup value]."
