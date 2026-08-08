@@ -28,6 +28,21 @@ Makefile picks the venv automatically when it is present; the raw commands are
 `./venv/bin/python -m pytest tests/ -q -m "not integration"` and the same with
 `and not slow`.
 
+**Adding or upgrading a Python dependency: edit `backend/requirements.in`, then**
+
+```bash
+uv pip compile backend/requirements.in -o backend/requirements.txt \
+    --python-version 3.13 --universal
+```
+
+`requirements.txt` is generated — a hand edit is lost on the next compile, and
+`tests/test_requirements_integrity.py` fails if the two drift. Only *direct*
+dependencies belong in the `.in`; everything else is derived. Pinning a
+transitive package by hand is what caused `pydantic_core` vs `pydantic`,
+`wrapt` vs `langfuse`, and `tokenizers` vs `transformers` — the last of which
+merged and broke the production image build. The resolver picks compatible sets;
+Dependabot bumping one pin in isolation cannot.
+
 - `-m integration` needs live Redis and Postgres containers; CI runs them, and
   `make test-all` runs everything if you have them up.
 - `-m slow` downloads the MiniLM model or calls the LLM. Only

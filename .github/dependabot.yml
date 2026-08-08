@@ -32,6 +32,14 @@ updates:
   # Patch and minor are grouped separately so routine bumps stay a small,
   # mergeable diff. Majors are left ungrouped so each arrives on its own and
   # can fail — or be closed — in isolation.
+  #
+  # backend/requirements.txt is now compiled from backend/requirements.in, and
+  # Dependabot detects that pairing: it edits the .in and recompiles the .txt,
+  # so a bump moves a direct dependency and the resolver re-derives everything
+  # under it. That is what stops the failure this file kept producing — a
+  # transitive pin bumped out of range of the parent that constrains it, which
+  # broke three PRs in a day and one production build (tokenizers==0.23.1
+  # against transformers requiring <=0.23.0).
   - package-ecosystem: pip
     directory: "/"
     schedule:
