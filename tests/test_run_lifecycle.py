@@ -168,6 +168,15 @@ def test_step_events_stream_from_worker_thread_to_reader():
         await run_manager.start_run(_SteppingGraph(), "run-e2e", {}, "user-1")
 
         step = await asyncio.wait_for(run_manager.read_result("run-e2e"), timeout=5)
+        # Name the event we actually got. This assertion failed once in CI with a
+        # bare `KeyError: 'type'`, which identifies nothing: every non-step event
+        # on this stream is an {"ok": ...} dict with no "type" key, so the error
+        # is identical whether the run was rejected ("Server is busy"), raised
+        # ("Analysis failed"), timed out, or simply had its final result overtake
+        # the step event. That failure has not reproduced -- 1400+ local runs,
+        # including under 2x CPU oversubscription -- so the next occurrence needs
+        # to say which of those four it was.
+        assert "type" in step, f"expected a step event first, got {step!r}"
         assert step["type"] == "step"
         assert step["node"] == "execute_query"
         assert step["detail"] == "3 rows returned"
