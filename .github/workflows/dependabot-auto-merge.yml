@@ -1,0 +1,42 @@
+name: Dependabot auto-merge
+
+# Solo repo: reviewing your own dependency bumps is ceremony. Patch and minor
+# updates merge themselves once CI is green and never reach the PR list. Majors
+# still open a PR, because those are the ones that have actually broken things
+# here — react 18 -> 19 and wrapt 1 -> 2 both needed a human.
+#
+# Nothing merges without passing CI. `--auto` queues the merge and GitHub holds
+# it until every required check succeeds, so a red bump stays open and visible
+# rather than landing quietly.
+
+on: pull_request
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    # Dependabot-authored PRs only. Anything else is a human's work.
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Read the update metadata
+        id: meta
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Queue patch and minor updates behind CI
+        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        run: gh pr merge --squash --auto "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Leave majors for review
+        if: steps.meta.outputs.update-type == 'version-update:semver-major'
+        run: |
+          echo "::notice::${{ steps.meta.outputs.dependency-names }} is a major \
+          update (${{ steps.meta.outputs.previous-version }} -> \
+          ${{ steps.meta.outputs.new-version }}); leaving it open for review."

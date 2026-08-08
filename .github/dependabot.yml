@@ -4,6 +4,16 @@ version: 2
 # peers), and split things that must be reviewed apart (majors, or a 124-package
 # requirements file). A catch-all `patterns: ["*"]` group does the opposite of
 # both — see the pip block below.
+#
+# Volume is tuned for a single maintainer. Monthly rather than weekly, and a cap
+# of 3 open PRs per ecosystem: the first run under the fixed grouping opened 13
+# PRs at once, which is a review queue nobody clears. Patch and minor updates
+# also merge themselves once CI is green (.github/workflows/dependabot-auto-merge.yml),
+# so in practice only majors and failures should ever need attention here.
+#
+# Monthly does mean a security patch can sit for up to a month. `npm audit
+# --audit-level=high` and gitleaks run on every push, so a high-severity issue
+# still turns CI red — that is the backstop, not the schedule.
 
 updates:
   # Root requirements.txt is a single `-r backend/requirements.txt` line, so
@@ -25,8 +35,8 @@ updates:
   - package-ecosystem: pip
     directory: "/"
     schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
+      interval: monthly
+    open-pull-requests-limit: 3
     groups:
       python-patch:
         update-types:
@@ -46,8 +56,8 @@ updates:
   - package-ecosystem: npm
     directory: "/frontend"
     schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
+      interval: monthly
+    open-pull-requests-limit: 3
     groups:
       vite:
         patterns:
@@ -63,5 +73,5 @@ updates:
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
-      interval: weekly
+      interval: monthly
     open-pull-requests-limit: 3
