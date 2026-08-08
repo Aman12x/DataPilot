@@ -10,14 +10,30 @@ production runbook and the reasoning behind the operational subsystems, see
 ## Running things
 
 ```bash
-./venv/bin/python -m pytest tests/ -m "not integration and not slow" -q
+make test-fast   # ~1.5 min — inner loop
+make test        # ~5 min  — exactly what CI runs. Use this before pushing.
 ```
 
-**Use `./venv/bin/python`, not the system Python** — the system interpreter is
-missing `duckdb` and `jose`, and 12 test files fail to collect without them.
+**`make test-fast` passing does not mean CI passes.** It deselects `slow`, and
+CI does not — `ci.yml` runs `-m "not integration"`, so 11 tests
+(`test_eval_tools.py`, `test_semantic_cache_isolation.py`,
+`test_sql_generation_eval.py`) run *only* in CI under the fast command. That gap
+is where a local-green/CI-red divergence hides, and it is the whole reason
+`make test` exists as a separate target. `make test` is the same command string
+as `ci.yml`, so the two cannot drift silently.
 
-- `-m integration` needs live Redis and Postgres containers; CI runs them.
-- `-m slow` downloads the MiniLM model or calls the LLM.
+**Use `./venv/bin/python`, not the system Python** — the system interpreter is
+missing `duckdb` and `jose`, and 12 test files fail to collect without them. The
+Makefile picks the venv automatically when it is present; the raw commands are
+`./venv/bin/python -m pytest tests/ -q -m "not integration"` and the same with
+`and not slow`.
+
+- `-m integration` needs live Redis and Postgres containers; CI runs them, and
+  `make test-all` runs everything if you have them up.
+- `-m slow` downloads the MiniLM model or calls the LLM. Only
+  `test_sql_generation_eval.py` needs `ANTHROPIC_API_KEY` and it skips itself
+  without one — the other 10 just want the model, which is why they are runnable
+  locally and worth running before you push.
 - Frontend E2E: `cd frontend && npx playwright test`.
 - Against the deployed app: `npx playwright test --config=playwright.prod.config.mjs`.
 

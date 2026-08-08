@@ -1,9 +1,13 @@
 # DataPilot — convenience targets
-# Uses python3 by default; override with PYTHON=python make eval
+# Prefers ./venv/bin/python when present; override with PYTHON=python make eval
+#
+# The venv is not a style preference. The system interpreter is missing duckdb
+# and jose, so 12 test files fail to collect under it and data/generate_data.py
+# cannot run at all.
 
-PYTHON ?= python3
+PYTHON ?= $(shell [ -x ./venv/bin/python ] && echo ./venv/bin/python || echo python3)
 
-.PHONY: eval eval-all eval-full eval-baseline test data clean e2e
+.PHONY: eval eval-all eval-full eval-baseline test test-fast test-all data clean e2e
 
 ## Run all fast offline evals (no API key)
 eval:
@@ -26,9 +30,18 @@ eval-full:
 	$(PYTHON) data/generate_data.py
 	$(PYTHON) evals/analyze_eval.py
 
-## Run the full unit test suite
+## Run exactly what CI runs (ci.yml test-backend). ~5 min. Use before pushing.
 test:
-	$(PYTHON) -m pytest tests/ -v
+	$(PYTHON) -m pytest tests/ -q -m "not integration" --tb=short --disable-warnings
+
+## Fast inner-loop subset. ~1.5 min. Skips the 11 slow tests that CI DOES run,
+## so a green run here does not mean CI is green — see `make test`.
+test-fast:
+	$(PYTHON) -m pytest tests/ -q -m "not integration and not slow" --tb=short
+
+## Everything, including integration tests (needs live Redis + Postgres)
+test-all:
+	$(PYTHON) -m pytest tests/ -q
 
 ## Run Playwright E2E (requires backend deps + frontend npm ci)
 e2e:
