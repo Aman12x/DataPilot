@@ -83,8 +83,13 @@ pluggy==1.6.0
 prophet==1.3.0
 protobuf==6.33.6
 pyarrow==25.0.0
+# pydantic_core is deliberately NOT pinned here. pydantic pins it exactly
+# (2.12.5 -> pydantic-core==2.41.5), so resolution stays fully deterministic
+# without a second pin — and with one, Dependabot bumps the two independently
+# and produces a set that cannot install. That is what sank PR #53: it moved
+# pydantic to 2.13.4, which requires pydantic-core==2.46.4, while pinning
+# pydantic_core==2.47.0. Fifty good updates lost to one line.
 pydantic==2.12.5
-pydantic_core==2.41.5
 Pygments==2.19.2
 pyparsing==3.3.2
 pytest==9.0.2
