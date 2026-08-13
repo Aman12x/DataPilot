@@ -96,13 +96,16 @@ class TestRouting:
         state = _lookup_state(query_type="exploratory")
         assert _route_after_generate_narrative(state) == "narrative_gate"
 
-    def test_audit_revision_loop_survives_for_non_lookups(self):
+    def test_audit_block_no_longer_regenerates(self):
+        """Patch-only: audit findings are fixed in place inside the node; a
+        blocked audit goes to the gate as a warning, never back around the
+        88s narrative+audit loop."""
         state = _lookup_state(
             query_type="exploratory",
             audit_blocked=True,
             narrative_revision_count=1,
         )
-        assert _route_after_generate_narrative(state) == "generate_narrative"
+        assert _route_after_generate_narrative(state) == "narrative_gate"
 
 
 class TestDeterministicNarrative:

@@ -194,26 +194,21 @@ def _route_after_generate_charts(state: AgentState) -> str:
     return "analysis_gate"
 
 
-_MAX_AUTO_REVISIONS = int(os.getenv("MAX_AUTO_REVISIONS", "2"))
-
-
 def _route_after_generate_narrative(state: AgentState) -> str:
     """
     After generate_narrative:
       - Fast lookup → log_run directly; the narrative is a deterministic
         rendering of the query result, so there is nothing for an analyst to
         approve and nothing the audit loop could have flagged
-      - Audit found critical issues AND under auto-revision cap → self-correct
-        (conversation_history already contains the correction instructions)
-      - Otherwise → show narrative_gate to the analyst
+      - Otherwise → narrative_gate. Audit findings are patched in place inside
+        generate_narrative (quote → corrected_sentence, no extra LLM call);
+        anything unpatchable rides to the gate as a warning for the analyst.
+        The old audit_blocked self-loop regenerated the FULL narrative plus a
+        second full audit per retry — a measured 88s and ~$0.15 per loop — to
+        fix what is almost always one wrong number in one sentence.
     """
     if is_fast_lookup(state):
         return "log_run"
-    if (
-        state.get("audit_blocked")
-        and (state.get("narrative_revision_count") or 0) < _MAX_AUTO_REVISIONS
-    ):
-        return "generate_narrative"
     return "narrative_gate"
 
 
@@ -398,9 +393,8 @@ def build_graph(checkpointer=None) -> StateGraph:
         "generate_narrative",
         _route_after_generate_narrative,
         {
-            "narrative_gate":     "narrative_gate",
-            "generate_narrative": "generate_narrative",
-            "log_run":            "log_run",
+            "narrative_gate": "narrative_gate",
+            "log_run":        "log_run",
         },
     )
 

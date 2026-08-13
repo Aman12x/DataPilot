@@ -115,7 +115,8 @@ class AgentState(TypedDict, total=False):
     narrative_draft: str                # PM-ready markdown writeup
     recommendation: str                 # one-sentence action recommendation
     audit_result:  NarrativeAuditResult # LLM audit result
-    audit_blocked: bool                 # True if critical findings exist
+    audit_blocked: bool                 # True if UNPATCHABLE critical findings exist
+    audit_unpatched: list               # critical findings the in-place patcher could not fix
 
     # ── HITL gate 3: narrative sign-off ───────────────────────────────────────
     narrative_approved: bool

@@ -125,6 +125,37 @@ def _render_lookup_answer(df: pd.DataFrame) -> str:
     return "\n".join(lines)
 
 
+def _apply_audit_patches(narrative: str, findings: list) -> tuple[str, list, list]:
+    """Surgically apply audit findings: replace each finding's quote with its
+    corrected_sentence, in place, no LLM call.
+
+    Returns (patched_narrative, patched, unpatched). A finding is patchable
+    when it carries both a quote and a corrected_sentence and the quote is
+    found in the narrative (exact first, then whitespace-tolerant — the
+    auditor sometimes collapses line breaks when quoting).
+    """
+    patched: list = []
+    unpatched: list = []
+    for f in findings:
+        quote = (f.quote or "").strip()
+        fix   = (f.corrected_sentence or "").strip()
+        if not quote or not fix:
+            unpatched.append(f)
+            continue
+        if quote in narrative:
+            narrative = narrative.replace(quote, fix, 1)
+            patched.append(f)
+            continue
+        loose = r"\s+".join(re.escape(w) for w in quote.split())
+        new_narrative, n = re.subn(loose, lambda m: fix, narrative, count=1)
+        if n:
+            narrative = new_narrative
+            patched.append(f)
+        else:
+            unpatched.append(f)
+    return narrative, patched, unpatched
+
+
 def generate_narrative(state: AgentState) -> dict:
     mc     = state.get("metric_config") or load_metric_config()
     metric = state.get("metric") or mc.primary_metric
@@ -147,6 +178,7 @@ def generate_narrative(state: AgentState) -> dict:
             "narrative_approved": True,
             "audit_result":       None,
             "audit_blocked":      False,
+            "audit_unpatched":    [],
         }
 
     analyst_notes = state.get("analyst_notes") or ""
@@ -284,6 +316,7 @@ def generate_narrative(state: AgentState) -> dict:
 
     audit_result:  Any = None
     audit_blocked: bool = False
+    unpatched_critical: list = []
     try:
         audit_prompt = NARRATIVE_AUDIT_PROMPT.format(
             narrative=polished_narrative,
@@ -325,7 +358,25 @@ def generate_narrative(state: AgentState) -> dict:
                     issues = "; ".join(f.issue for f in moderate)
                     polished_narrative += f"\n\n> **Auto-corrected:** {issues}"
         else:
-            audit_blocked = True
+            # Patch-only: apply the auditor's own quote → corrected_sentence
+            # fixes in place. No regeneration — the old loop re-ran the full
+            # narrative AND a second full audit (a measured 88s / ~$0.15) to
+            # fix what is typically one wrong number in one sentence.
+            polished_narrative, patched, unpatched = _apply_audit_patches(
+                polished_narrative, critical
+            )
+            if patched:
+                issues = "; ".join(f.issue for f in patched)
+                polished_narrative += f"\n\n> **Auto-patched (audit):** {issues}"
+            # Unpatchable findings ride to the gate: audit_blocked makes
+            # narrative_gate lead with the ⚠️ critical-findings message so
+            # the analyst decides — approve anyway, or revise with notes.
+            audit_blocked = bool(unpatched)
+            unpatched_critical = unpatched
+            logger.info(
+                "generate_narrative: audit criticals — %d patched in place, %d for the gate",
+                len(patched), len(unpatched),
+            )
     except Exception as exc:
         logger.warning("generate_narrative: audit failed — %s", redact_exception(exc))
 
@@ -334,30 +385,19 @@ def generate_narrative(state: AgentState) -> dict:
     # well-formed instead of accumulating whatever the previous pass left.
     new_history = prior_turns + [{"role": "assistant", "content": polished_narrative}]
 
-    # When audit finds critical issues, append a precise correction request so
-    # the next auto-retry sees exactly what to fix. The LLM picks this up from
-    # conversation_history on the next generate_narrative call.
-    if audit_blocked and audit_result is not None:
-        critical = [f for f in audit_result.findings if f.severity == "critical"]
-        fix_lines = []
-        for f in critical:
-            line = f"- [{f.severity}] {f.issue}"
-            if f.corrected_sentence:
-                line += f" → should be: {f.corrected_sentence}"
-            fix_lines.append(line)
+    # Unpatchable critical findings go into the conversation history so that
+    # IF the analyst declines at the gate and requests a revision, that pass
+    # sees exactly what the audit flagged. There is no auto-retry any more —
+    # patchable findings were already fixed in place above.
+    if unpatched_critical:
+        fix_lines = [f"- [{f.severity}] {f.issue}" for f in unpatched_critical]
         correction_msg = (
-            "The narrative above contains critical accuracy errors that must be fixed "
-            "before it can be published. Please rewrite the narrative correcting ONLY "
-            "these specific issues (keep all other content unchanged):\n\n"
+            "The narrative above contains critical accuracy issues the audit "
+            "could not patch automatically. If revising, correct ONLY these "
+            "specific issues (keep all other content unchanged):\n\n"
             + "\n".join(fix_lines)
         )
         new_history.append({"role": "user", "content": correction_msg})
-        logger.info(
-            "generate_narrative: appended %d critical audit corrections to history "
-            "(revision_count=%d)",
-            len(critical),
-            (state.get("narrative_revision_count") or 0) + 1,
-        )
 
     return {
         "narrative_draft":           polished_narrative,
@@ -365,6 +405,7 @@ def generate_narrative(state: AgentState) -> dict:
         "conversation_history":      new_history,
         "audit_result":              audit_result,
         "audit_blocked":             audit_blocked,
+        "audit_unpatched":           unpatched_critical,
         "narrative_revision_count":  (state.get("narrative_revision_count") or 0) + 1,
         "cache_read_tokens":         (state.get("cache_read_tokens") or 0) + cost_info.get("cache_read_tokens", 0),
         "cache_write_tokens":        (state.get("cache_write_tokens") or 0) + cost_info.get("cache_write_tokens", 0),
@@ -485,13 +526,13 @@ def _generate_deck(state: "AgentState", final_narrative: str) -> dict:
 @observe(name="narrative_gate")
 def narrative_gate(state: AgentState) -> dict:
     # narrative_gate is a pure HITL review step — no auto-blocking here.
-    # Auto-corrections happen in generate_narrative (via audit_blocked loop).
-    # Surfacing violations to the analyst is done via the payload message.
-    audit_result = state.get("audit_result")
-    audit_findings: list[str] = []
-    if audit_result and hasattr(audit_result, "findings"):
-        critical = [f for f in (audit_result.findings or []) if f.severity == "critical"]
-        audit_findings = [f'{f.issue} (quote: "{f.quote}")' for f in critical]
+    # Patchable audit findings were already fixed in place inside
+    # generate_narrative; only the UNPATCHABLE criticals warrant the warning
+    # banner (showing already-fixed ones would cry wolf on every run).
+    audit_findings: list[str] = [
+        f'{f.issue} (quote: "{f.quote}")'
+        for f in (state.get("audit_unpatched") or [])
+    ]
 
     payload: dict = {
         "gate":             "narrative",
