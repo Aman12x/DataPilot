@@ -1,7 +1,7 @@
 """
 agents/analyze/nodes_metric.py — Metric Config HITL gate.
 
-After infer_metric_config, pause so the analyst can approve or edit the
+After resolve_task_intent (which infers config for uploads), pause so the analyst can approve or edit the
 metric mapping before SQL generation.  Certified metric packs skip this gate
 unless schema drift was detected (force_metric_gate).
 """

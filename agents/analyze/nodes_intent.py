@@ -108,7 +108,7 @@ def _apply_intent_to_config(
     overriding mc.  If validation fails, returns original mc unchanged.
     Only touches primary_metric, metric_direction, covariate, and
     guardrail_metrics — segment_cols, funnel_steps, and table names are
-    owned by infer_metric_config.
+    owned by the schema-only inference (_llm_infer_config).
     """
     defaults = load_metric_config()
     primary = result.get("primary_metric", "")
@@ -169,6 +169,52 @@ def _apply_intent_to_config(
         return mc
 
 
+# ── Schema-only config inference (runs concurrently with intent) ─────────────
+
+def _llm_infer_config(schema_context: str) -> "MetricConfig":
+    """
+    LLM infers a MetricConfig from the schema alone — no task input, so it is
+    independent of intent resolution and safe to run concurrently with it.
+
+    Falls back to defaults on any failure; every inferred name is cross-checked
+    against the live schema so a hallucinated column cannot propagate to
+    _canonical_experiment_sql().
+    """
+    defaults = load_metric_config()
+    if not schema_context:
+        return defaults
+
+    prompt = SCHEMA_CONFIG_INFERENCE_PROMPT.format(
+        schema_context=wrap_untrusted_content(schema_context, label="database_schema"),
+    )
+
+    try:
+        with trace_generation("infer_metric_config", _fast_model(), prompt) as gen:
+            response = _anthropic_client().messages.create(
+                model=_fast_model(),
+                max_tokens=512,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            gen.update(response)
+    except Exception as exc:
+        logger.warning("_llm_infer_config: LLM call failed (%s), using defaults.", redact_exception(exc))
+        return defaults
+
+    try:
+        raw = response_text(response).strip()
+        if raw.startswith("```"):
+            raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
+        inferred = MetricConfig(**json.loads(raw))
+    except Exception as exc:
+        logger.warning("_llm_infer_config: response parsing failed (%s), using defaults.", redact_exception(exc))
+        return defaults
+
+    inferred, issues = _sanitise_metric_config(inferred, schema_context, load_metric_config())
+    for w in issues:
+        logger.warning("_llm_infer_config: schema mismatch — %s", redact(w))
+    return inferred
+
+
 # ── Node 3b: resolve_task_intent ──────────────────────────────────────────────
 
 @observe(name="resolve_task_intent")
@@ -179,14 +225,38 @@ def resolve_task_intent(state: AgentState) -> dict:
 
     Implements Rule 6: ask before assuming on ambiguous tasks.
 
-    Positioned after load_schema (schema_context is available) and before
-    infer_metric_config (metric_config can still be overridden).
+    For uploads this node also infers a MetricConfig from the schema — the two
+    LLM calls have independent inputs (task+schema vs schema alone), so they
+    run concurrently instead of as two sequential graph nodes. Intent's
+    task-informed resolution is then applied ON TOP of the schema-inferred
+    base. The old two-node ordering did the opposite: infer_metric_config ran
+    second and overwrote intent's metric resolution wholesale on every upload.
     """
     task           = state.get("task", "")
     schema_context = state.get("schema_context", "")
     mc             = state.get("metric_config") or load_metric_config()
 
-    result = _llm_resolve_intent(task, schema_context, mc)
+    # Schema-only inference is needed when the data's real shape is unknown —
+    # an uploaded file. A saved metric pack means the config is already
+    # certified; anything else with a config in state keeps it. This mirrors
+    # the retired infer_metric_config node's skip conditions, evaluated
+    # against pre-intent state (that node ran after intent had always set
+    # metric_config, so its live path reduced to exactly this).
+    run_infer = bool(state.get("duckdb_path")) and not state.get("metric_pack_id")
+
+    if run_infer:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="intent") as pool:
+            intent_future = pool.submit(_llm_resolve_intent, task, schema_context, mc)
+            infer_future  = pool.submit(_llm_infer_config, schema_context)
+            result      = intent_future.result()
+            inferred_mc = infer_future.result()
+        # Intent resolves against the schema-inferred base, not demo defaults —
+        # the base has the upload's real table names and guardrail metrics.
+        mc = inferred_mc
+
+    else:
+        result = _llm_resolve_intent(task, schema_context, mc)
 
     clarification = ""
     # Guard: if the LLM claims ambiguity because a column "doesn't exist" but it
@@ -262,74 +332,3 @@ def resolve_task_intent(state: AgentState) -> dict:
         "query_type":           query_type,
     }
 
-# ── Node 21: infer_metric_config_node ─────────────────────────────────────────
-# Called once when connecting a new external DB that has no config file.
-# No-op if metric_config is already present in state (DuckDB demo / pre-loaded config).
-
-@observe(name="infer_metric_config")
-def infer_metric_config_node(state: AgentState) -> dict:
-    """
-    LLM infers MetricConfig from schema. Result stored in state for UI form pre-fill.
-    Only runs when metric_config is not already set in state.
-    """
-    # Skip if a saved/certified metric pack was injected at run start.
-    if state.get("metric_pack_id") and state.get("metric_config"):
-        return {}
-
-    # Skip if config is already set — UNLESS this is an uploaded file.
-    # Uploads have a unique schema that differs from the DAU demo defaults that
-    # load_schema/resolve_task_intent fall back to; inference must always run
-    # so guardrail_metrics, segment_cols, table names etc. match the real data.
-    if state.get("metric_config") and not state.get("duckdb_path"):
-        return {}
-
-    schema_context = state.get("schema_context", "")
-    if not schema_context:
-        mc = load_metric_config()
-        return {"metric_config": mc, "metric": mc.primary_metric, "covariate": mc.covariate}
-
-    prompt = SCHEMA_CONFIG_INFERENCE_PROMPT.format(
-        schema_context=wrap_untrusted_content(schema_context, label="database_schema"),
-    )
-
-    defaults = load_metric_config()
-
-    try:
-        with trace_generation("infer_metric_config", _fast_model(), prompt) as gen:
-            response = _anthropic_client().messages.create(
-                model=_fast_model(),
-                max_tokens=512,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            gen.update(response)
-    except Exception as exc:
-        logger.warning("infer_metric_config: LLM call failed (%s), using defaults.", redact_exception(exc))
-        return {
-            "metric_config": defaults,
-            "metric": defaults.primary_metric,
-            "covariate": defaults.covariate,
-        }
-
-    try:
-        raw = response_text(response).strip()
-        # Strip markdown fences if present
-        if raw.startswith("```"):
-            raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
-        inferred = MetricConfig(**json.loads(raw))
-    except Exception as exc:
-        logger.warning("infer_metric_config: LLM response parsing failed (%s), using defaults.", redact_exception(exc))
-        inferred = defaults
-
-    # ── Cross-check every inferred column/table name against the live schema ──
-    # If the LLM hallucinated a column name, _sanitise_metric_config replaces it
-    # with the default and logs a warning.  This prevents bad names from
-    # propagating to _canonical_experiment_sql() and generating broken SQL.
-    inferred, issues = _sanitise_metric_config(inferred, schema_context, defaults)
-    for w in issues:
-        logger.warning("infer_metric_config: schema mismatch — %s", redact(w))
-
-    return {
-        "metric_config": inferred,
-        "metric":         inferred.primary_metric,
-        "covariate":      inferred.covariate,
-    }

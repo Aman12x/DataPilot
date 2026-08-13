@@ -8,9 +8,9 @@ Graph flow:
          │                                              └─ declined ─► inject_history
          └─ miss / soft hit ─────────────────────────► inject_history
               └─► load_schema
-                   └─► resolve_task_intent  (HITL 0 — conditional, only if ambiguous)
-                        └─► infer_metric_config
-                             └─► generate_sql
+                   └─► resolve_task_intent  (HITL 0 — conditional, only if ambiguous;
+                        │                     also infers config for uploads, concurrently)
+                        └─► generate_sql
                         └─► query_gate  (HITL 1)
                              └─► execute_query
                                   └─► decompose_metric
@@ -63,7 +63,6 @@ from agents.analyze.nodes import (
     generate_charts_node,
     generate_narrative,
     generate_sql,
-    infer_metric_config_node,
     metric_config_gate,
     inject_history,
     load_auxiliary_data,
@@ -130,9 +129,10 @@ def _route_after_cache_gate(state: AgentState) -> str:
     return "inject_history"
 
 
-def _route_after_infer_metric_config(state: AgentState) -> str:
+def _route_after_resolve_intent(state: AgentState) -> str:
     """
-    After infer_metric_config:
+    After resolve_task_intent (which also infers config for uploads, the two
+    LLM calls running concurrently inside the node):
       - power_analysis mode → skip metric gate + SQL, go to run_power_analysis
       - everything else     → metric_config_gate (confirm mapping before SQL)
     """
@@ -264,7 +264,6 @@ def build_graph(checkpointer=None) -> StateGraph:
     builder.add_node("inject_history",        inject_history)
     builder.add_node("load_schema",           load_schema)
     builder.add_node("resolve_task_intent",   resolve_task_intent)
-    builder.add_node("infer_metric_config",   infer_metric_config_node)
     builder.add_node("metric_config_gate",    metric_config_gate)
     builder.add_node("generate_sql",          generate_sql)
     builder.add_node("query_gate",           query_gate)
@@ -316,10 +315,9 @@ def build_graph(checkpointer=None) -> StateGraph:
     # Main pipeline — linear through query execution
     builder.add_edge("inject_history",       "load_schema")
     builder.add_edge("load_schema",          "resolve_task_intent")
-    builder.add_edge("resolve_task_intent",  "infer_metric_config")
     builder.add_conditional_edges(
-        "infer_metric_config",
-        _route_after_infer_metric_config,
+        "resolve_task_intent",
+        _route_after_resolve_intent,
         {
             "metric_config_gate": "metric_config_gate",
             "run_power_analysis": "run_power_analysis",

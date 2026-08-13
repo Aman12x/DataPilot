@@ -294,7 +294,6 @@ _NODE_LABELS: dict[str, str | None] = {
     "inject_history":       "Loading analyst history",
     "load_schema":          "Reading database schema",
     "resolve_task_intent":  "Interpreting task",
-    "infer_metric_config":  "Detecting metrics",
     "generate_sql":         "Writing SQL query",
     "execute_query":        "Executing query",
     "load_auxiliary_data":  "Loading auxiliary data",
