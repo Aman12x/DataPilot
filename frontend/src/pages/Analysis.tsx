@@ -856,7 +856,32 @@ function FinishedView({ state, runId, steps, onNewAnalysis, onFollowUp }: {
   const [followUp,     setFollowUp]    = useState("");
   const [submitting,   setSubmitting]  = useState(false);
 
-  const deck = state.deck_data as DeckData | undefined;
+  // Deck generation moved off the approval path: the done event usually
+  // arrives without deck_data, and we fetch it lazily so the report renders
+  // immediately instead of waiting ~7s at the narrative gate.
+  const [fetchedDeck, setFetchedDeck] = useState<DeckData | undefined>(undefined);
+  const eventDeck = state.deck_data as DeckData | undefined;
+  useEffect(() => {
+    if (eventDeck && eventDeck.headline) return;   // already generated (old runs)
+    let cancelled = false;
+    client
+      .post(`/runs/${runId}/deck`)
+      .then((res) => {
+        const d = res.data?.deck_data as DeckData | undefined;
+        if (!cancelled && d && d.headline && d.hero_metric) {
+          // The report is already on screen — don't yank it away when the
+          // deck lands. Keep the report visible; the "Back to summary"
+          // button appears and the user opts into the deck view.
+          setShowFullReport(true);
+          setFetchedDeck(d);
+        }
+      })
+      .catch(() => { /* no deck — the full report is already on screen */ });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runId]);
+
+  const deck = eventDeck && eventDeck.headline ? eventDeck : fetchedDeck;
   const hasDeck = deck && deck.headline && deck.hero_metric;
 
   const isPowerAnalysis = state.analysis_mode === "power_analysis";

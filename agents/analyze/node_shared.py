@@ -99,7 +99,12 @@ _MAX_TOKENS_SQL       = int(os.getenv("MAX_TOKENS_SQL",       "8192"))
 # the audit JSON once on claude-sonnet-5; 4096 starved the narrative twice in a
 # row on the deployed app (empty draft at the gate, ~$0.10 spent on thinking).
 _MAX_TOKENS_NARRATIVE = int(os.getenv("MAX_TOKENS_NARRATIVE", "8192"))
-_MAX_TOKENS_AUDIT     = int(os.getenv("MAX_TOKENS_AUDIT",     "8192"))
+# The audit runs at effort "low" (its call site sets output_config), so its
+# adaptive-thinking spend is small and 4096 comfortably covers the verdict
+# JSON + corrected_narrative. Capping max_tokens WITHOUT the effort floor is
+# what starved outputs before — on claude-sonnet-5, thinking is on by default
+# and spends from this same budget.
+_MAX_TOKENS_AUDIT     = int(os.getenv("MAX_TOKENS_AUDIT",     "4096"))
 _MAX_TOKENS_DECK      = int(os.getenv("MAX_TOKENS_DECK",      "4096"))
 
 # Max LLM-based SQL correction retries in execute_query (0 = disabled)

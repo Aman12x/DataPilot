@@ -327,6 +327,12 @@ def generate_narrative(state: AgentState) -> dict:
             audit_resp = _anthropic_client().messages.create(
                 model=_fast_model(),
                 max_tokens=_MAX_TOKENS_AUDIT,
+                # The audit is a mechanical arithmetic/consistency check on a
+                # short document. At default effort the model burned most of
+                # its 8192 budget thinking (~60-70s measured); "low" keeps
+                # adaptive thinking on but spends a fraction of that, which is
+                # also what makes the tighter max_tokens safe.
+                output_config={"effort": "low"},
                 messages=[{"role": "user", "content": audit_prompt}],
             )
             audit_cost = audit_gen.update(audit_resp)
@@ -560,11 +566,14 @@ def narrative_gate(state: AgentState) -> dict:
     if approved:
         audit_log  = _build_audit_log(state)
         final      = state.get("narrative_draft", "") + "\n\n" + audit_log
-        deck_data  = _generate_deck(state, final)
+        # Deck generation (an LLM call, ~7s measured) no longer runs here —
+        # it sat between the analyst clicking approve and the run finishing.
+        # The frontend fetches it lazily via POST /runs/{run_id}/deck after
+        # the done event; the report renders immediately.
         return {
             "narrative_approved": True,
             "final_narrative":    final,
-            "deck_data":          deck_data,
+            "deck_data":          {},
             "analyst_notes":      analyst_notes,
             "analyst_override":   override,
         }

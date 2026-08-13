@@ -874,6 +874,60 @@ async def get_run_detail(
     }
 
 
+@router.post("/runs/{run_id}/deck")
+async def generate_run_deck(
+    run_id: str,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """Generate (or return the cached) stakeholder deck for a finished run.
+
+    Deck generation is an LLM call (~7s measured). It used to run inside
+    narrative_gate's approval branch — between the analyst clicking approve
+    and the run finishing — so every approval paid for it even when nobody
+    opened the deck view. The frontend now calls this after the done event:
+    the report renders immediately and the deck fills in when ready.
+    """
+    graph = _get_graph(request)
+    await _check_run_access(graph, run_id, current_user["user_id"], mutate=False)
+    ip = client_ip(request)
+    await check_budget(current_user["user_id"], ip)
+
+    config = {"configurable": {"thread_id": run_id}}
+    try:
+        state  = await asyncio.to_thread(graph.get_state, config)
+        values = state.values if hasattr(state, "values") else {}
+    except Exception:
+        raise HTTPException(status_code=404, detail="Run state not found")
+
+    existing = values.get("deck_data") or {}
+    if existing:
+        return {"deck_data": existing}
+
+    narrative = (values.get("final_narrative") or "").strip()
+    if not narrative:
+        raise HTTPException(status_code=409, detail="Run has no approved narrative yet")
+
+    from agents.analyze.node_shared import is_fast_lookup
+    from agents.analyze.nodes_narrative import _generate_deck
+
+    # A fast lookup's answer is the query result verbatim — nothing to deck.
+    if is_fast_lookup(values):
+        return {"deck_data": {}}
+
+    deck = await asyncio.to_thread(_generate_deck, values, narrative)
+    if deck:
+        try:
+            # Persist so later views (history, re-opens) get it for free.
+            await asyncio.to_thread(
+                graph.update_state, config, {"deck_data": deck}, as_node="narrative_gate"
+            )
+        except Exception as exc:
+            logger.warning("deck persist failed for run %s (%s) — serving uncached",
+                           run_id, type(exc).__name__)
+    return {"deck_data": deck}
+
+
 @router.get("/runs/{run_id}/pdf-token")
 async def pdf_token(
     run_id: str,

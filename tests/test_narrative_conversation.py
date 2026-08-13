@@ -219,14 +219,16 @@ def test_revision_loop_does_not_accumulate_assistant_turns(monkeypatch):
 
 
 def test_audit_call_budgets_for_a_thinking_block(monkeypatch):
-    """The audit's max_tokens must cover thinking + JSON on adaptive-thinking
-    models — 2048 starved the JSON once on claude-sonnet-5 (JSONDecodeError,
-    silently skipped audit). Pin the configurable budget and that the call
-    actually uses it."""
+    """On adaptive-thinking models, thinking spends from the audit's max_tokens
+    — 2048 once starved the JSON on claude-sonnet-5 (JSONDecodeError, silently
+    skipped audit). The defense is now two-part and BOTH halves must hold:
+    effort "low" caps the thinking spend, which is what makes the 4096 budget
+    sufficient. Capping max_tokens without the effort floor re-creates the
+    starvation; raising effort without raising the budget does too."""
     import agents.analyze.node_shared as shared
     import agents.analyze.nodes_narrative as nn
 
-    assert shared._MAX_TOKENS_AUDIT >= 8192
+    assert shared._MAX_TOKENS_AUDIT >= 4096
 
     calls: list[dict] = []
 
@@ -249,3 +251,24 @@ def test_audit_call_budgets_for_a_thinking_block(monkeypatch):
     })
     audit_call = calls[1]
     assert audit_call["max_tokens"] == shared._MAX_TOKENS_AUDIT
+    assert audit_call["output_config"] == {"effort": "low"}
+
+
+def test_narrative_gate_approval_does_not_generate_deck(monkeypatch):
+    """Deck generation (an LLM call, ~7s measured) moved off the approval path
+    to POST /runs/{run_id}/deck — approving a narrative must not pay for it."""
+    import agents.analyze.nodes_narrative as nn
+
+    monkeypatch.setattr(nn, "interrupt", lambda payload: {"approved": True})
+
+    def _boom(*a, **k):
+        raise AssertionError("narrative_gate generated a deck on the approval path")
+    monkeypatch.setattr(nn, "_generate_deck", _boom)
+
+    out = nn.narrative_gate({
+        "narrative_draft": "The metric moved.",
+        "analysis_mode":   "general",
+    })
+    assert out["narrative_approved"] is True
+    assert out["deck_data"] == {}
+    assert out["final_narrative"].startswith("The metric moved.")
