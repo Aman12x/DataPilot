@@ -689,8 +689,8 @@ async def stream_run(
             if "_stream_id" in item:
                 effective_last_id = item["_stream_id"]
 
-            # Forward Chain-of-Thought step events directly
-            if item.get("type") == "step":
+            # Forward Chain-of-Thought steps and narrative-draft deltas directly
+            if item.get("type") in ("step", "narrative_start", "narrative_delta"):
                 yield {"data": json.dumps(item)}
                 continue
 

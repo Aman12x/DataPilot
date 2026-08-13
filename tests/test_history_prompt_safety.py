@@ -160,6 +160,19 @@ def test_analyst_notes_are_not_duplicated_unwrapped_into_the_prompt(monkeypatch)
                 ),
             )
 
+        def stream(self, **kwargs):
+            # The draft call streams now — minimal stand-in for the SDK pair.
+            response = self.create(**kwargs)
+
+            class _S:
+                def __enter__(self):     return self
+                def __exit__(self, *a):  return False
+                text_stream = iter(())
+                def get_final_message(self):  # noqa: D401
+                    return response
+
+            return _S()
+
     monkeypatch.setattr(narrative_tools, "format_narrative", fake_format_narrative)
     monkeypatch.setattr(nodes_narrative, "_anthropic_client", lambda: SimpleNamespace(messages=_FakeMessages()))
 

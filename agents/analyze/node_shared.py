@@ -137,8 +137,57 @@ class _MeteredMessages:
         spend.record(kwargs.get("model", ""), response)
         return response
 
+    def stream(self, *args: Any, **kwargs: Any) -> "_MeteredStreamManager":
+        # Without this, __getattr__ would hand back the raw SDK stream and the
+        # call would silently bypass metering — the exact hole the wrapper
+        # exists to close.
+        return _MeteredStreamManager(self._inner.stream(*args, **kwargs),
+                                     kwargs.get("model", ""))
+
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
+
+
+class _MeteredStreamManager:
+    """Context manager pairing the SDK's MessageStreamManager with metering."""
+
+    __slots__ = ("_mgr", "_model")
+
+    def __init__(self, mgr: Any, model: str) -> None:
+        self._mgr = mgr
+        self._model = model
+
+    def __enter__(self) -> "_MeteredMessageStream":
+        return _MeteredMessageStream(self._mgr.__enter__(), self._model)
+
+    def __exit__(self, *exc: Any) -> Any:
+        return self._mgr.__exit__(*exc)
+
+
+class _MeteredMessageStream:
+    """Proxy over MessageStream that records spend once, at the final message."""
+
+    def __init__(self, inner: Any, model: str) -> None:
+        self._inner = inner
+        self._model = model
+        self._recorded = False
+
+    @property
+    def text_stream(self) -> Any:
+        return self._inner.text_stream
+
+    def get_final_message(self) -> Any:
+        message = self._inner.get_final_message()
+        if not self._recorded:
+            self._recorded = True
+            spend.record(self._model, message)
+        return message
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    def __iter__(self) -> Any:
+        return iter(self._inner)
 
 
 class _MeteredClient:

@@ -78,6 +78,10 @@ export function useSSE(runId: string | null, reconnectTrigger: number = 0) {
   const [done,  setDone]  = useState<DoneEvent | null>(null);
   const [error, setError] = useState<string>("");
   const [steps, setSteps] = useState<StepEvent[]>([]);
+  // Live narrative draft, streamed token-batch by token-batch while
+  // generate_narrative runs. narrative_start resets it so an audit-declined
+  // revision replaces the stale draft instead of appending to it.
+  const [narrativeDraft, setNarrativeDraft] = useState<string>("");
   const gateReceivedRef = useRef(false);
 
   useEffect(() => {
@@ -85,6 +89,7 @@ export function useSSE(runId: string | null, reconnectTrigger: number = 0) {
     setDone(null);
     setError("");
     setSteps([]);
+    setNarrativeDraft("");
   }, [runId]);
 
   useEffect(() => {
@@ -117,6 +122,12 @@ export function useSSE(runId: string | null, reconnectTrigger: number = 0) {
           if (m.type === "step") {
             setSteps(prev => [...prev, m as unknown as StepEvent]);
           }
+          if (m.type === "narrative_start") {
+            setNarrativeDraft("");
+          }
+          if (m.type === "narrative_delta" && typeof m.text === "string") {
+            setNarrativeDraft(prev => prev + m.text);
+          }
           if (m.type === "gate") {
             gateReceivedRef.current = true;
             setGate(m as unknown as GateEvent);
@@ -147,5 +158,5 @@ export function useSSE(runId: string | null, reconnectTrigger: number = 0) {
     };
   }, [runId, reconnectTrigger]);
 
-  return { gate, done, error, steps, setGate, setDone, setError };
+  return { gate, done, error, steps, narrativeDraft, setGate, setDone, setError };
 }

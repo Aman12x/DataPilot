@@ -1057,7 +1057,7 @@ function ActiveRun({
   const [submitting,       setSubmitting]       = useState(false);
   const [submitError,      setSubmitError]      = useState("");
 
-  const { gate, done, error, steps, setGate } = useSSE(exchange.runId, reconnectTrigger);
+  const { gate, done, error, steps, narrativeDraft, setGate } = useSSE(exchange.runId, reconnectTrigger);
 
   useTokenRefresh(() => setReconnectTrigger(n => n + 1));
 
@@ -1128,9 +1128,15 @@ function ActiveRun({
   if (gate?.gate === "narrative")
     return renderGate(<NarrativeGate payload={payload as Parameters<typeof NarrativeGate>[0]["payload"]} onSubmit={resume} submitting={submitting} />);
 
+  // The narrative draft streams in while generate_narrative runs — the
+  // longest LLM call of the pipeline. Showing it live turns a ~60s silent
+  // wait into watching the report being written. It disappears when the
+  // narrative gate takes over (the gate shows the finished draft).
+  const showLiveDraft = !!narrativeDraft && !gate && !done;
+
   return (
     <div style={s.center}>
-      <div style={{ width: "100%", maxWidth: 420 }} className="fade-in">
+      <div style={{ width: "100%", maxWidth: showLiveDraft ? 680 : 420 }} className="fade-in">
         {processingLabel && (
           <div style={s.processingBanner} className="fade-in">
             <span style={s.processingDot} />
@@ -1140,6 +1146,15 @@ function ActiveRun({
         <div style={s.progressCard} className="dp-card">
           <PipelineProgress gate={gate?.gate ?? null} lastGate={lastGate} analysisMode={analysisMode} />
         </div>
+        {showLiveDraft && (
+          <div style={{ ...s.narrativeCard, marginTop: 14, opacity: 0.92 }} className="fade-in">
+            <div style={s.liveDraftLabel}>
+              <span style={s.processingDot} />
+              Writing narrative…
+            </div>
+            <Markdown content={sanitiseNarrative(narrativeDraft)} />
+          </div>
+        )}
         <ChainOfThought steps={steps} isRunning={isRunning} />
       </div>
     </div>
@@ -1431,6 +1446,7 @@ const s: Record<string, React.CSSProperties> = {
   gateContent:{ padding: "36px 20px 60px", flex: 1 },
 
   progressCard:      { background: "var(--dp-surface)", border: "1px solid var(--dp-line)", borderRadius: 14, padding: "16px 24px", boxShadow: "0 8px 40px rgba(11,31,42,0.06)" },
+  liveDraftLabel:    { display: "flex", alignItems: "center", gap: 8, fontSize: 12, fontWeight: 600, color: "var(--dp-ink-faint)", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 12 },
   processingBanner:  { display: "flex", alignItems: "center", gap: 10, color: "var(--dp-ink-secondary)", fontSize: 13, padding: "10px 16px", background: "var(--dp-surface-2)", borderRadius: 8, marginBottom: 12, border: "1px solid var(--dp-line)" },
   processingDot:     { width: 8, height: 8, borderRadius: "50%", background: "var(--dp-accent)", animation: "pulse 1.2s ease-in-out infinite", flexShrink: 0 },
 

@@ -288,12 +288,34 @@ def generate_narrative(state: AgentState) -> dict:
     prior_turns = _conversation_turns(state.get("conversation_history") or [])
     messages = _build_cached_messages(safe_schema, history_text, task_prompt) + prior_turns
 
+    # The draft is the longest LLM call in the run (~60-80s measured), so it
+    # streams: text deltas go out through stream_hub to whoever is watching
+    # the run's SSE stream, batched so a ~1.5k-token narrative becomes tens of
+    # events rather than hundreds. emit() is a no-op when nobody registered
+    # (tests, evals, CLI). The final message is identical to the non-streaming
+    # response — cost accounting and parsing are unchanged.
+    from agents.analyze import stream_hub
+    run_id = state.get("run_id") or ""
+    stream_hub.emit(run_id, {"type": "narrative_start"})
+    _FLUSH_AT = 150  # chars per SSE event
+
     with trace_generation("generate_narrative", _fast_model(), task_prompt, max_tokens=_MAX_TOKENS_NARRATIVE) as gen:
-        response = _anthropic_client().messages.create(
+        with _anthropic_client().messages.stream(
             model=_fast_model(),
             max_tokens=_MAX_TOKENS_NARRATIVE,
             messages=messages,
-        )
+        ) as llm_stream:
+            buf: list[str] = []
+            buf_len = 0
+            for text in llm_stream.text_stream:
+                buf.append(text)
+                buf_len += len(text)
+                if buf_len >= _FLUSH_AT:
+                    stream_hub.emit(run_id, {"type": "narrative_delta", "text": "".join(buf)})
+                    buf, buf_len = [], 0
+            if buf:
+                stream_hub.emit(run_id, {"type": "narrative_delta", "text": "".join(buf)})
+            response = llm_stream.get_final_message()
         cost_info = gen.update(response)
 
     if getattr(response, "stop_reason", None) == "max_tokens":

@@ -157,6 +157,29 @@ class _StubResponse:
         })()
 
 
+class _FakeStream:
+    """Stands in for the SDK's MessageStreamManager/MessageStream pair — the
+    draft call streams now, so client stubs must answer .messages.stream()."""
+
+    def __init__(self, response):
+        self._response = response
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    @property
+    def text_stream(self):
+        for block in getattr(self._response, "content", []):
+            if getattr(block, "type", "") == "text":
+                yield block.text
+
+    def get_final_message(self):
+        return self._response
+
+
 def _run_narrative(monkeypatch, history):
     """Call generate_narrative with a stubbed client; return the messages sent."""
     import agents.analyze.nodes_narrative as nn
@@ -171,6 +194,9 @@ def _run_narrative(monkeypatch, history):
             if len(sent) == 1:
                 return _StubResponse("polished narrative")
             return _StubResponse('{"findings": [], "corrected_narrative": ""}')
+
+        def stream(self, **kwargs):
+            return _FakeStream(self.create(**kwargs))
 
     class _Client:
         messages = _Messages()
@@ -238,6 +264,9 @@ def test_audit_call_budgets_for_a_thinking_block(monkeypatch):
             if len(calls) == 1:
                 return _StubResponse("polished narrative")
             return _StubResponse('{"findings": [], "corrected_narrative": ""}')
+
+        def stream(self, **kwargs):
+            return _FakeStream(self.create(**kwargs))
 
     class _Client:
         messages = _Messages()

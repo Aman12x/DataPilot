@@ -530,6 +530,34 @@ def _run_graph_stream(
     loop: asyncio.AbstractEventLoop,
     cancel: threading.Event,
 ) -> dict:
+    # Narrative-draft streaming: generate_narrative emits text deltas through
+    # stream_hub; forward them onto this run's SSE stream. Registered here so
+    # both fresh runs and gate resumes get it, and unregistered in the finally
+    # so an abandoned worker can't publish into a later run with the same id.
+    from agents.analyze import stream_hub
+
+    def _forward_delta(payload: dict) -> None:
+        try:
+            _publish_sync(run_id, payload, loop)
+        except Exception:
+            # A slow or gone reader must never stall narrative generation.
+            logger.debug("narrative delta publish failed for run %s", run_id, exc_info=True)
+
+    stream_hub.register(run_id, _forward_delta)
+    try:
+        return _run_graph_stream_inner(graph, arg, config, run_id, loop, cancel)
+    finally:
+        stream_hub.unregister(run_id)
+
+
+def _run_graph_stream_inner(
+    graph: Any,
+    arg: Any,
+    config: dict,
+    run_id: str,
+    loop: asyncio.AbstractEventLoop,
+    cancel: threading.Event,
+) -> dict:
     for chunk in graph.stream(arg, config, stream_mode="updates"):
         # Checked between nodes, which is the only place this thread is
         # interruptible — nothing can stop it mid-node. That bounds the work a
