@@ -16,6 +16,11 @@ from typing import Any
 import duckdb
 import pandas as pd
 
+# The precount runs analyst/LLM SQL, and a failure quotes it back — DuckDB
+# embeds the statement and pandas embeds column names, both customer data.
+# tests/test_log_safety.py only scans agents/, but the hazard is identical here.
+from agents.log_safety import redact_exception
+
 logger = logging.getLogger(__name__)
 
 # Connections are made to user-supplied hosts. Without an explicit timeout the
@@ -48,7 +53,34 @@ _FILE_READ_RE = re.compile(
     re.IGNORECASE,
 )
 
-_MAX_SQL_LIMIT = int(os.getenv("SQL_MAX_ROWS", "50000"))
+# Ceiling on rows we will materialise into pandas. This is NOT a truncation
+# limit — nothing is ever silently sliced. A result above the ceiling raises
+# ResultTooLargeError so the caller aggregates in SQL instead of analysing a
+# partial extract. 0 disables the check entirely.
+#
+# The old behaviour appended `LIMIT 50000` to any query that lacked one, which
+# handed CUPED and the t-test a non-deterministic 50k subset (no ORDER BY) and
+# reported the effect size as if it covered the population.
+_MAX_MATERIALIZE_ROWS = int(os.getenv("SQL_MAX_MATERIALIZE_ROWS", "5000000"))
+
+
+class ResultTooLargeError(ValueError):
+    """Raised when a result set exceeds the materialisation ceiling.
+
+    Carries the real row count so the caller can tell the analyst how far over
+    the query is, rather than just that it failed.
+    """
+
+    def __init__(self, rows: int, ceiling: int) -> None:
+        self.rows = rows
+        self.ceiling = ceiling
+        super().__init__(
+            f"Query returns {rows:,} rows, above the {ceiling:,}-row limit for "
+            f"in-memory analysis. Aggregate in SQL (GROUP BY the unit of "
+            f"analysis) so the warehouse returns the summary instead of the "
+            f"raw rows. Raise SQL_MAX_MATERIALIZE_ROWS only if the full extract "
+            f"genuinely has to be materialised."
+        )
 
 
 def _strip_leading_sql_comments(sql: str) -> str:
@@ -138,11 +170,14 @@ def validate_sql(sql: str) -> None:
         raise ValueError("File-read SQL functions are not permitted")
 
 
-def _ensure_limit(sql: str) -> str:
-    """Append LIMIT when missing (after validate_sql would have rejected — safety net)."""
-    if re.search(r"\bLIMIT\s+\d+", sql, re.IGNORECASE):
-        return sql
-    return f"{sql.rstrip()} LIMIT {_MAX_SQL_LIMIT}"
+def _count_wrapper(sql: str) -> str:
+    """Wrap a SELECT so the server counts the rows without shipping them.
+
+    The derived table needs an alias on Postgres and MySQL; DuckDB and BigQuery
+    accept one. `validate_sql` has already rejected multi-statement input, so
+    stripping a trailing semicolon is enough to make this safe to nest.
+    """
+    return f"SELECT COUNT(*) FROM (\n{sql.rstrip().rstrip(';')}\n) AS _dp_rowcount"
 
 
 # Strict allowlist, kept for the few places that interpolate a name where
@@ -276,16 +311,59 @@ class DBConnection:
     # ── Query ──────────────────────────────────────────────────────────────────
 
     def query(self, sql: str) -> pd.DataFrame:
-        """Execute SQL and return a DataFrame. Only SELECT is permitted."""
+        """Execute SQL and return a DataFrame. Only SELECT is permitted.
+
+        The full result set is returned — never a truncated prefix. When it
+        exceeds the materialisation ceiling this raises ResultTooLargeError
+        rather than analysing a partial extract.
+        """
         validate_sql(sql)
-        sql = _ensure_limit(sql)
+        if self.backend == "bigquery":
+            # BigQuery reports total_rows on the finished job, so the guard
+            # costs no extra query and no extra bytes scanned.
+            return self._query_bigquery(sql)
+
+        self._enforce_row_budget(sql)
         if self.backend == "duckdb":
             return self._query_duckdb(sql)
         if self.backend == "postgres":
             return self._query_postgres(sql)
-        if self.backend == "mysql":
-            return self._query_mysql(sql)
-        return self._query_bigquery(sql)
+        return self._query_mysql(sql)
+
+    def _enforce_row_budget(self, sql: str) -> None:
+        """Count rows server-side and refuse oversized results before fetching."""
+        if _MAX_MATERIALIZE_ROWS <= 0:
+            return
+        rows = self._count_rows(sql)
+        if rows is not None and rows > _MAX_MATERIALIZE_ROWS:
+            raise ResultTooLargeError(rows, _MAX_MATERIALIZE_ROWS)
+
+    def _count_rows(self, sql: str) -> int | None:
+        """Server-side row count for the given SELECT, or None if unavailable.
+
+        A count that fails for any reason must not block the real query — the
+        budget check is a guard rail, not a correctness requirement.
+        """
+        counter = _count_wrapper(sql)
+        try:
+            if self.backend == "duckdb":
+                con = duckdb.connect(self._path, read_only=True)
+                try:
+                    return int(con.execute(counter).fetchone()[0])
+                finally:
+                    con.close()
+            df = (
+                self._query_postgres(counter)
+                if self.backend == "postgres"
+                else self._query_mysql(counter)
+            )
+            return int(df.iloc[0, 0])
+        except Exception as exc:  # noqa: BLE001 — guard rail, never fatal
+            logger.warning(
+                "row-budget precount unavailable (%s) — proceeding without it",
+                redact_exception(exc),
+            )
+            return None
 
     def _query_duckdb(self, sql: str) -> pd.DataFrame:
         con = duckdb.connect(self._path, read_only=True)
@@ -373,7 +451,18 @@ class DBConnection:
     def _query_bigquery(self, sql: str) -> pd.DataFrame:
         client = self._bq_client()
         job = client.query(sql)
-        return job.to_dataframe(create_bqstorage_client=False)
+
+        # result() blocks until the job finishes but downloads nothing, so
+        # total_rows enforces the budget without a second query or extra bytes.
+        rows = job.result()
+        total = getattr(rows, "total_rows", None)
+        if _MAX_MATERIALIZE_ROWS > 0 and total is not None and total > _MAX_MATERIALIZE_ROWS:
+            raise ResultTooLargeError(int(total), _MAX_MATERIALIZE_ROWS)
+
+        # The Storage Read API streams Arrow instead of paging REST JSON; it is
+        # the difference between seconds and minutes on a large extract. Falls
+        # back automatically when google-cloud-bigquery-storage is absent.
+        return rows.to_dataframe(create_bqstorage_client=True)
 
     # ── Schema inspection ──────────────────────────────────────────────────────
 

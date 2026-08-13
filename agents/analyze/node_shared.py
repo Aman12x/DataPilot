@@ -398,8 +398,9 @@ JOIN       {events} e
            ON  e.{user_id} = ex.{user_id}
            AND {date_cast} >= {min_assign}
 LEFT JOIN  pre_exp p ON ex.{user_id} = p.{user_id}
-GROUP BY   e.{user_id}, ex.{_ident(mc.variant_col)}, ex.{_ident(mc.week_col)}{", " + segment_group if segment_group else ""}, p.{covariate}
-LIMIT 50000"""
+GROUP BY   e.{user_id}, ex.{_ident(mc.variant_col)}, ex.{_ident(mc.week_col)}{", " + segment_group if segment_group else ""}, p.{covariate}"""
+# No LIMIT: the GROUP BY already collapses this to one row per user, so a cap
+# would drop enrolled users from the experiment and bias every downstream test.
 
 
 def _extract_sql(text: str) -> str:

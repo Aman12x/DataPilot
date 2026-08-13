@@ -126,7 +126,10 @@ the code block.
 
 Requirements:
 - Return only the columns needed for the analysis — avoid SELECT *.
-- Add a LIMIT 50000 clause unless the task explicitly requires all rows.
+- **Never add a LIMIT.** The statistics run on whatever you return, so a LIMIT \
+silently reduces the analysis to an arbitrary subset and the reported effect \
+size becomes wrong rather than merely partial. Control size by aggregating to \
+the unit of analysis (see RULE 1), not by cutting rows off.
 
 ### RULE 1 — USER-LEVEL rows, never date-level
 
@@ -663,7 +666,9 @@ a comment. Do not then imply the result represents all customers.
 
 Requirements:
 - Return only the columns relevant to the task — avoid SELECT *
-- Add LIMIT 50000 unless the task requires all rows
+- **Never add a LIMIT.** Aggregate in SQL (GROUP BY the unit of analysis) so the \
+warehouse returns a summary; truncating rows silently makes the result wrong \
+instead of smaller. Use LIMIT only when the question is itself a top-N ranking.
 - Output only the SQL in a ```sql ... ``` block — no surrounding prose
 - **Never ask clarifying questions.** If the task is ambiguous, make a reasonable \
 assumption and write the SQL. State any assumption as a single SQL comment at the top.

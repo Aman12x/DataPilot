@@ -18,6 +18,7 @@ if ROOT not in sys.path:
 
 from memory.store import init_db
 from memory.semantic_cache import _ensure_cache_columns, check_cache, cosine_similarity
+from tools import db_tools
 from tools.db_tools import DBConnection, validate_sql
 
 
@@ -60,10 +61,40 @@ class TestSqlGuards:
         with pytest.raises(ValueError, match="Multi-statement"):
             validate_sql("SELECT '--' AS c; DROP TABLE events")
 
-    def test_appends_limit_when_missing(self, tmp_duckdb):
+    def test_never_truncates_a_result(self, tmp_duckdb):
+        """No implicit LIMIT: an unlimited SELECT returns every row.
+
+        The old behaviour appended `LIMIT 50000`, which handed the stats tools a
+        non-deterministic subset (no ORDER BY) and reported the effect size as
+        if it covered the population.
+        """
         db = DBConnection("duckdb", path=tmp_duckdb)
         df = db.query("SELECT user_id FROM events")
-        assert len(df) <= 50000
+        assert len(df) == 3
+        assert set(df["user_id"]) == {"u1", "u2", "u3"}
+
+    def test_oversized_result_raises_instead_of_truncating(self, tmp_duckdb, monkeypatch):
+        """Above the ceiling the query fails loudly — it never returns a prefix."""
+        monkeypatch.setattr(db_tools, "_MAX_MATERIALIZE_ROWS", 2)
+        db = DBConnection("duckdb", path=tmp_duckdb)
+        with pytest.raises(db_tools.ResultTooLargeError) as exc:
+            db.query("SELECT user_id FROM events")
+        assert exc.value.rows == 3
+        assert "Aggregate in SQL" in str(exc.value)
+
+    def test_row_budget_can_be_disabled(self, tmp_duckdb, monkeypatch):
+        monkeypatch.setattr(db_tools, "_MAX_MATERIALIZE_ROWS", 0)
+        db = DBConnection("duckdb", path=tmp_duckdb)
+        assert len(db.query("SELECT user_id FROM events")) == 3
+
+    def test_precount_survives_a_query_it_cannot_wrap(self, tmp_duckdb, monkeypatch):
+        """A precount failure must not block the real query — it is a guard rail."""
+        monkeypatch.setattr(db_tools, "_MAX_MATERIALIZE_ROWS", 1)
+        monkeypatch.setattr(
+            db_tools, "_count_wrapper", lambda sql: "SELECT COUNT(*) FROM _no_such_table"
+        )
+        db = DBConnection("duckdb", path=tmp_duckdb)
+        assert len(db.query("SELECT user_id FROM events")) == 3
 
 
 class TestSemanticCacheUserIsolation:

@@ -73,7 +73,6 @@ JOIN       events e  ON  ex.user_id = e.user_id
 LEFT JOIN  pre_exp p ON  ex.user_id = p.user_id
 GROUP BY   e.user_id, ex.variant, ex.week, e.platform, e.user_segment,
            p.pre_session_count
-LIMIT 50000
 """
 
 # Time-series metrics: full metrics_daily for all platforms/segments.
