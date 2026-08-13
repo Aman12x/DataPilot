@@ -73,21 +73,32 @@ def load_auxiliary_data(state: AgentState) -> dict:
             logger.warning("load_auxiliary_data: event aggregation failed: %s", redact_exception(exc))
 
     # ── Funnel: optional ──────────────────────────────────────────────────────
-    if mc.funnel_table:
-        _uid = _ident(mc.user_id_col)
-        funnel_sql = f"""\
+    # In pushdown mode the funnel is aggregated in-warehouse by
+    # compute_funnel_node — materializing the per-(user, step) rows here would
+    # reintroduce the exact transfer the pushdown exists to avoid.
+    if mc.funnel_table and state.get("sufficient_stats") is None:
+        try:
+            result["funnel_df"] = conn.query(_funnel_join_sql(mc))
+        except Exception as exc:
+            logger.warning("load_auxiliary_data: funnel query failed: %s", redact_exception(exc))
+    elif mc.funnel_table:
+        logger.info("load_auxiliary_data: pushdown mode — funnel stays in the warehouse.")
+
+    return result
+
+
+def _funnel_join_sql(mc) -> str:
+    """User-level funnel extract (funnel ⋈ experiment). One definition shared
+    by the materializing loader and the warehouse-pushdown funnel, so the two
+    paths can never analyze different populations."""
+    _uid = _ident(mc.user_id_col)
+    return f"""\
 SELECT f.{_uid}, ex.{_ident(mc.variant_col)} AS variant, f.step, f.completed
 FROM   {_ident(mc.funnel_table)} f
 JOIN   {_ident(mc.experiment_table)} ex
        ON f.{_uid} = ex.{_uid}
       AND ex.{_ident(mc.week_col)} = 1
 """
-        try:
-            result["funnel_df"] = conn.query(funnel_sql)
-        except Exception as exc:
-            logger.warning("load_auxiliary_data: funnel query failed: %s", redact_exception(exc))
-
-    return result
 
 
 # ── Node 7: decompose_metric ──────────────────────────────────────────────────
@@ -661,6 +672,20 @@ def check_guardrails_node(state: AgentState) -> dict:
 
 @observe(name="compute_funnel")
 def compute_funnel_node(state: AgentState) -> dict:
+    mc_push = state.get("metric_config") or load_metric_config()
+    if state.get("sufficient_stats") is not None:
+        if not mc_push.funnel_table or len(mc_push.funnel_steps or []) < 2:
+            return {}
+        from tools import pushdown
+        try:
+            result = pushdown.funnel_from_warehouse(
+                _db_conn(state), _funnel_join_sql(mc_push), mc_push.funnel_steps
+            )
+        except Exception as exc:
+            logger.warning("compute_funnel: pushdown failed — %s", redact_exception(exc))
+            return {}
+        return {"funnel_result": result} if result is not None else {}
+
     df = state.get("funnel_df")
     if df is None or (isinstance(df, pd.DataFrame) and df.empty):
         logger.warning("compute_funnel: no funnel_df in state, skipping.")

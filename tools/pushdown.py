@@ -32,6 +32,8 @@ from scipy import stats as sps
 from tools.db_tools import DBConnection, quote_ident
 from tools.schemas import (
     CupedResult,
+    FunnelResult,
+    FunnelStep,
     GroupMoments,
     GuardrailMetric,
     GuardrailResult,
@@ -491,6 +493,121 @@ def novelty_from_stats(ss: SufficientStats) -> NoveltyResult:
         effect_direction=effect_direction,
         novelty_likely=novelty_likely,
     )
+
+
+def _quote_literal(value: str, backend: str) -> str:
+    """SQL string literal with standard '' escaping. MySQL additionally treats
+    backslash as an escape character by default, so double those there — a
+    step value ending in a backslash would otherwise swallow the closing
+    quote."""
+    s = str(value)
+    if backend == "mysql":
+        s = s.replace("\\", "\\\\")
+    return "'" + s.replace("'", "''") + "'"
+
+
+def funnel_from_warehouse(
+    db: DBConnection,
+    funnel_sql: str,
+    candidate_steps: list[str],
+    alpha: float = 0.05,
+) -> FunnelResult | None:
+    """Conditional funnel computed in-warehouse; mirrors
+    funnel_tools.compute_funnel exactly.
+
+    The pandas path pivots to one row per user (MAX(completed) per step) and
+    makes step k's eligible population the users who completed step k−1. The
+    same pivot is one conditional-aggregation CTE; a second aggregation
+    reduces it to eligible/completed counts per (step, variant) — a handful
+    of numbers regardless of funnel size. The two-proportion z-test needs
+    nothing else.
+
+    Returns None when fewer than two candidate steps exist in the data
+    (mirrors compute_funnel_node's skip).
+    """
+    backend = db.backend
+    sub = f"(\n{funnel_sql.rstrip().rstrip(';')}\n) AS _dp_funnel"
+
+    step_col = quote_ident("step", backend)
+    present = {
+        str(r[0]) for r in
+        db.query(f"SELECT {step_col} AS _s FROM {sub} GROUP BY {step_col}").itertuples(index=False)
+    }
+    steps = [s for s in candidate_steps if s in present]
+    if len(steps) < 2:
+        return None
+
+    v = quote_ident("variant", backend)
+    uid = quote_ident("user_id", backend)
+    comp = quote_ident("completed", backend)
+
+    pivot_cols = ",\n".join(
+        f"MAX(CASE WHEN {step_col} = {_quote_literal(s, backend)} "
+        f"THEN {comp} ELSE 0 END) AS s{i}"
+        for i, s in enumerate(steps)
+    )
+    count_cols = []
+    for i in range(len(steps)):
+        if i == 0:
+            count_cols.append(f"COUNT(*) AS e0, SUM(s0) AS c0")
+        else:
+            count_cols.append(
+                f"SUM(CASE WHEN s{i-1} = 1 THEN 1 ELSE 0 END) AS e{i}, "
+                f"SUM(CASE WHEN s{i-1} = 1 THEN s{i} ELSE 0 END) AS c{i}"
+            )
+    q = (
+        f"WITH _dp_pivot AS (\n"
+        f"SELECT {uid}, {v} AS _variant,\n{pivot_cols}\n"
+        f"FROM {sub} GROUP BY {uid}, {v}\n"
+        f")\nSELECT _variant, {', '.join(count_cols)}\n"
+        f"FROM _dp_pivot GROUP BY _variant"
+    )
+    counts = {str(row["_variant"]): row for _, row in db.query(q).iterrows()}
+    if "control" not in counts or "treatment" not in counts:
+        raise ValueError(
+            f"variant_col must contain 'control' and 'treatment'. Found: {set(counts)}"
+        )
+
+    step_results: list[FunnelStep] = []
+    largest_delta = 0.0
+    biggest_dropoff_step = steps[0]
+    for i, step in enumerate(steps):
+        n_ctrl = int(counts["control"][f"e{i}"] or 0)
+        n_trt  = int(counts["treatment"][f"e{i}"] or 0)
+        if n_ctrl < 2 or n_trt < 2:
+            raise ValueError(
+                f"Not enough eligible users at step '{step}' "
+                f"(ctrl={n_ctrl}, trt={n_trt})."
+            )
+        c_ctrl = float(counts["control"][f"c{i}"] or 0)
+        c_trt  = float(counts["treatment"][f"c{i}"] or 0)
+        ctrl_rate = c_ctrl / n_ctrl
+        trt_rate  = c_trt / n_trt
+        delta = trt_rate - ctrl_rate
+        pct_change = (delta / ctrl_rate * 100) if ctrl_rate != 0 else float("inf")
+
+        p_pool = (c_ctrl + c_trt) / (n_ctrl + n_trt)
+        se = (p_pool * (1 - p_pool) * (1 / n_ctrl + 1 / n_trt)) ** 0.5
+        if se == 0:
+            p_value = 1.0
+        else:
+            z_stat = delta / se
+            p_value = float(2 * (1 - sps.norm.cdf(abs(z_stat))))
+
+        step_results.append(FunnelStep(
+            step=step,
+            control_rate=round(ctrl_rate, 4),
+            treatment_rate=round(trt_rate, 4),
+            delta=round(delta, 4),
+            pct_change=round(pct_change, 2),
+            p_value=round(p_value, 6),
+            significant=p_value < alpha,
+        ))
+        if abs(delta) > abs(largest_delta):
+            largest_delta = delta
+            biggest_dropoff_step = step
+
+    return FunnelResult(steps=step_results, biggest_dropoff_step=biggest_dropoff_step)
 
 
 def guardrails_from_stats(

@@ -166,3 +166,44 @@ def test_stats_survive_the_checkpoint_round_trip(stats):
     # And it is small — the entire point.
     n = len(blob[1]) if isinstance(blob, tuple) else len(blob)
     assert n < 200_000, f"sufficient stats blob unexpectedly large: {n} bytes"
+
+
+FUNNEL_SQL = """
+SELECT f.user_id, ex.variant AS variant, f.step, f.completed
+FROM   funnel f
+JOIN   experiment ex ON f.user_id = ex.user_id AND ex.week = 1
+"""
+FUNNEL_STEPS = ["impression", "click", "install", "d1_retain"]
+
+
+def test_funnel_matches(db):
+    from tools import funnel_tools
+    frame = db.query(FUNNEL_SQL)
+    ref = funnel_tools.compute_funnel(frame, variant_col="variant", steps=FUNNEL_STEPS)
+    got = pushdown.funnel_from_warehouse(db, FUNNEL_SQL, FUNNEL_STEPS)
+
+    assert got is not None
+    assert got.biggest_dropoff_step == ref.biggest_dropoff_step
+    assert len(got.steps) == len(ref.steps)
+    for g, r in zip(got.steps, ref.steps):
+        assert g.step == r.step
+        assert g.control_rate == pytest.approx(r.control_rate, abs=1e-4), g.step
+        assert g.treatment_rate == pytest.approx(r.treatment_rate, abs=1e-4), g.step
+        assert g.delta == pytest.approx(r.delta, abs=1e-4), g.step
+        assert g.p_value == pytest.approx(r.p_value, abs=1e-4), g.step
+        assert g.significant == r.significant, g.step
+
+
+def test_funnel_returns_none_below_two_steps(db):
+    got = pushdown.funnel_from_warehouse(db, FUNNEL_SQL, ["impression", "not_a_step"])
+    assert got is None
+
+
+def test_funnel_step_literal_escaping(db):
+    """A step value with a quote must not break (or escape) the pivot SQL."""
+    got = pushdown.funnel_from_warehouse(
+        db, FUNNEL_SQL, ["impression", "click", "o'brien's step"]
+    )
+    # The odd step just isn't present; the two real ones still compute.
+    assert got is not None
+    assert [s.step for s in got.steps] == ["impression", "click"]
