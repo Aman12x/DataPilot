@@ -83,10 +83,71 @@ def _conversation_turns(history: list[dict]) -> list[dict]:
 # ── Node 18: generate_narrative ───────────────────────────────────────────────
 
 @observe(name="generate_narrative", as_type="generation")
+def _fmt_value(v) -> str:
+    """Human formatting for a single looked-up value. Never raises."""
+    try:
+        if v is None or (isinstance(v, float) and math.isnan(v)):
+            return "—"
+        if isinstance(v, bool):
+            return str(v)
+        if isinstance(v, (int,)) or (hasattr(v, "dtype") and pd.api.types.is_integer_dtype(v)):
+            return f"{int(v):,}"
+        if isinstance(v, float) or (hasattr(v, "dtype") and pd.api.types.is_float_dtype(v)):
+            return f"{float(v):,.6g}"
+        return str(v)
+    except Exception:
+        return str(v)
+
+
+def _render_lookup_answer(df: pd.DataFrame) -> str:
+    """Deterministic markdown answer for a fast lookup — no LLM involved.
+
+    Every number is the query result verbatim, so there is nothing for the
+    narrative audit to check and nothing a revision loop could improve.
+    Shapes: 1×1 → the value; one row → a field list; small table → markdown
+    table (pipes escaped; no code fences — the frontend's sanitiseNarrative
+    strips fenced content).
+    """
+    if df.shape == (1, 1):
+        return f"**{df.columns[0]}**: {_fmt_value(df.iloc[0, 0])}"
+    if len(df) == 1:
+        return "\n".join(
+            f"- **{col}**: {_fmt_value(val)}" for col, val in df.iloc[0].items()
+        )
+    esc = lambda s: str(s).replace("|", "\\|").replace("\n", " ")  # noqa: E731
+    cols = [esc(c) for c in df.columns]
+    lines = [
+        "| " + " | ".join(cols) + " |",
+        "| " + " | ".join("---" for _ in cols) + " |",
+    ]
+    for _, row in df.iterrows():
+        lines.append("| " + " | ".join(esc(_fmt_value(v)) for v in row) + " |")
+    return "\n".join(lines)
+
+
 def generate_narrative(state: AgentState) -> dict:
     mc     = state.get("metric_config") or load_metric_config()
     metric = state.get("metric") or mc.primary_metric
     mode   = state.get("analysis_mode", "ab_test")
+
+    # ── Lookup fast path: the answer IS the query result ──────────────────────
+    # No narrative LLM call, no audit, no revision loop; the graph routes this
+    # straight to log_run, skipping both remaining gates. Must stay behind the
+    # same is_fast_lookup predicate the routing uses, or node and edges disagree.
+    if is_fast_lookup(state):
+        try:
+            answer = _render_lookup_answer(state["query_result"])
+        except Exception as exc:  # noqa: BLE001 — never let formatting kill the run
+            logger.warning("lookup render failed (%s) — falling back to to_string", redact_exception(exc))
+            answer = str(state["query_result"].to_string(max_rows=50))
+        return {
+            "narrative_draft":    answer,
+            "final_narrative":    answer,
+            "recommendation":     "",
+            "narrative_approved": True,
+            "audit_result":       None,
+            "audit_blocked":      False,
+        }
 
     analyst_notes = state.get("analyst_notes") or ""
     analyst_notes_section = (
@@ -135,16 +196,10 @@ def generate_narrative(state: AgentState) -> dict:
         from tools.schemas import NarrativeResult
         template_out = NarrativeResult(narrative_draft="", recommendation="")
 
-    elif mode == "general" and state.get("query_type") == "lookup":
-        task_prompt = LOOKUP_NARRATIVE_PROMPT.format(
-            task=safe_task,
-            tool_results_json=tool_results_json,
-            analyst_notes_section=analyst_notes_section,
-        ) + context_narrative_section
-        from tools.schemas import NarrativeResult
-        template_out = NarrativeResult(narrative_draft="", recommendation="")
-
     elif mode == "general":
+        # query_type == "lookup" never reaches here with a small result — the
+        # fast path above returns first. A "lookup" with a large result was
+        # misclassified, ran the full pipeline, and gets the full narrative.
         task_prompt = INSIGHTS_NARRATIVE_PROMPT.format(
             task=safe_task,
             tool_results_json=tool_results_json,
@@ -505,6 +560,14 @@ def _compute_quality_score(state: AgentState) -> float:
             bool(state.get("power_analysis_result")),
             bool(state.get("narrative_draft")),
         ]
+    elif is_fast_lookup(state):
+        # Fast lookups skip correlations and charts by design — scoring their
+        # absence as incompleteness would mark every perfect lookup ~0.6.
+        checks = [
+            bool(state.get("describe_result")),
+            bool(state.get("narrative_draft")),
+            bool(state.get("query_result") is not None),
+        ]
     else:  # general
         checks = [
             bool(state.get("describe_result")),
@@ -619,6 +682,7 @@ def log_run_node(state: AgentState) -> dict:
         ),
         metric_pack_id=state.get("metric_pack_id") or "",
         connection_id=state.get("connection_id") or "",
+        query_type=state.get("query_type") or "",
     )
 
     # In-band completeness scoring — fills eval_score when offline eval hasn't run yet

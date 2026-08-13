@@ -759,33 +759,6 @@ NUMERICAL ACCURACY — violations here are critical errors:
 """
 
 
-# ── LOOKUP_NARRATIVE_PROMPT ───────────────────────────────────────────────────
-# Used by generate_narrative when query_type == "lookup".
-# The user asked a simple question and wants a direct answer, not a report.
-# Parameterised: {task}, {tool_results_json}, {analyst_notes_section}
-
-LOOKUP_NARRATIVE_PROMPT = """\
-## Question
-
-{task}
-
-## Data
-
-```json
-{tool_results_json}
-```
-
-## Instructions
-
-Answer the question in 1–3 sentences. Lead with the exact number or value from the data. \
-No sections, no headers, no recommendations, no caveats, no analysis. \
-If the data contains a table of results (e.g. top 10 products), present it as a compact \
-markdown table. Every number must come from the data above — do not estimate or round differently.
-
-{analyst_notes_section}
-"""
-
-
 # ── SCHEMA_ANNOTATION_PROMPT ──────────────────────────────────────────────────
 # One-time prompt run when a user connects an external Postgres DB.
 # Parameterised: {raw_schema}, {sample_values_json}

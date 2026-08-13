@@ -44,6 +44,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
 from agents.analyze.checkpoint_serde import SafeCheckpointSerde
+from agents.analyze.node_shared import is_fast_lookup
 
 from agents.analyze.nodes import (
     analysis_gate,
@@ -168,12 +169,29 @@ def _route_after_execute_query(state: AgentState) -> str:
 def _route_after_describe_data(state: AgentState) -> str:
     """
     After describe_data:
-      - lookup queries → skip correlation/regression/timeseries, go straight to charts
-      - exploratory queries → run the full analysis pipeline
+      - fast lookups → skip correlation/regression/timeseries, go straight to charts
+      - everything else → run the full analysis pipeline
+
+    is_fast_lookup checks the actual row count, not just the classifier's
+    label — a "lookup" that returned hundreds of rows was misclassified and
+    runs the full pipeline.
     """
-    if state.get("query_type") == "lookup":
+    if is_fast_lookup(state):
         return "generate_charts"
     return "find_correlations"
+
+
+def _route_after_generate_charts(state: AgentState) -> str:
+    """
+    After generate_charts:
+      - fast lookups → straight to generate_narrative; there is nothing at the
+        analysis gate to review (describe stats on a handful of rows), and the
+        narrative is rendered deterministically from those rows
+      - everything else → analysis_gate for human review
+    """
+    if is_fast_lookup(state):
+        return "generate_narrative"
+    return "analysis_gate"
 
 
 _MAX_AUTO_REVISIONS = int(os.getenv("MAX_AUTO_REVISIONS", "2"))
@@ -182,10 +200,15 @@ _MAX_AUTO_REVISIONS = int(os.getenv("MAX_AUTO_REVISIONS", "2"))
 def _route_after_generate_narrative(state: AgentState) -> str:
     """
     After generate_narrative:
+      - Fast lookup → log_run directly; the narrative is a deterministic
+        rendering of the query result, so there is nothing for an analyst to
+        approve and nothing the audit loop could have flagged
       - Audit found critical issues AND under auto-revision cap → self-correct
         (conversation_history already contains the correction instructions)
       - Otherwise → show narrative_gate to the analyst
     """
+    if is_fast_lookup(state):
+        return "log_run"
     if (
         state.get("audit_blocked")
         and (state.get("narrative_revision_count") or 0) < _MAX_AUTO_REVISIONS
@@ -363,7 +386,11 @@ def build_graph(checkpointer=None) -> StateGraph:
     # Charts → HITL gate 2 → narrative
     # analysis_gate loops back to itself when analysis_approved=False (e.g. SRM not acknowledged)
     builder.add_edge("compute_funnel",  "generate_charts")
-    builder.add_edge("generate_charts", "analysis_gate")
+    builder.add_conditional_edges(
+        "generate_charts",
+        _route_after_generate_charts,
+        {"analysis_gate": "analysis_gate", "generate_narrative": "generate_narrative"},
+    )
     builder.add_conditional_edges(
         "analysis_gate",
         lambda s: "generate_narrative" if s.get("analysis_approved", True) else "analysis_gate",
@@ -372,7 +399,11 @@ def build_graph(checkpointer=None) -> StateGraph:
     builder.add_conditional_edges(
         "generate_narrative",
         _route_after_generate_narrative,
-        {"narrative_gate": "narrative_gate", "generate_narrative": "generate_narrative"},
+        {
+            "narrative_gate":     "narrative_gate",
+            "generate_narrative": "generate_narrative",
+            "log_run":            "log_run",
+        },
     )
 
     # Narrative revision loop / finish

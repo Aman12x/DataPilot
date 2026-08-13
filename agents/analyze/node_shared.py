@@ -30,7 +30,6 @@ from agents.analyze.prompts import (
     DECK_PROMPT,
     HISTORY_INJECTION_PREFIX,
     INSIGHTS_NARRATIVE_PROMPT,
-    LOOKUP_NARRATIVE_PROMPT,
     NARRATIVE_AUDIT_PROMPT,
     NARRATIVE_PROMPT,
     POWER_ANALYSIS_NARRATIVE_PROMPT,
@@ -175,6 +174,35 @@ def _anthropic_client() -> Any:
             )
         client = _client_cache[1]
     return _MeteredClient(client)
+
+
+# A lookup answer above this many rows is not a lookup — the classifier was
+# wrong, and the run is routed through the full exploratory pipeline instead.
+_LOOKUP_MAX_ROWS = int(os.getenv("LOOKUP_MAX_ROWS", "50"))
+
+
+def is_fast_lookup(state: dict) -> bool:
+    """True when the run can finish on the lookup fast path.
+
+    The fast path answers directly from the query result — no narrative LLM
+    call, no audit, no analysis or narrative gate. That is only safe when the
+    classifier said "lookup" AND the data agrees: a small, non-empty result.
+    Basing the check on the actual row count makes a misclassified exploratory
+    question self-healing — it falls back to the full pipeline instead of
+    returning a bare table with no analysis.
+
+    Every routing decision and node that participates in the fast path calls
+    this one predicate, so the branches cannot disagree with each other.
+    """
+    if state.get("analysis_mode", "ab_test") != "general":
+        return False
+    if state.get("query_type") != "lookup":
+        return False
+    df = state.get("query_result")
+    return (
+        isinstance(df, pd.DataFrame)
+        and 0 < len(df) <= _LOOKUP_MAX_ROWS
+    )
 
 
 def _model() -> str:
