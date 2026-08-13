@@ -162,16 +162,15 @@ Copy it and only modify table or column names if the schema differs.
 
 # ── SQL_CORRECTION_PROMPT ──────────────────────────────────────────────────────
 # Used by execute_query's error-correction retry loop.
-# Parameterised: {sql}, {error}, {schema_context}, {task}
+# Parameterised: {sql}, {error}, {task}
+# The database schema is NOT interpolated here — it arrives as the cached
+# prefix block (_cached_schema_block), byte-identical to generate_sql's, so
+# the correction call cache-reads the prefix that call just wrote.
 
 SQL_CORRECTION_PROMPT = """\
 ## Task
 
 {task}
-
-## Schema
-
-{schema_context}
 
 ## Failed SQL
 
@@ -185,7 +184,8 @@ SQL_CORRECTION_PROMPT = """\
 
 ## Instructions
 
-The SQL above failed with the error shown. Identify the root cause and fix it.
+The SQL above failed with the error shown. Identify the root cause and fix it, \
+using the database schema provided earlier in this message.
 
 Common causes to check:
 - Table or column name that does not exist in the schema (hallucination)
@@ -494,12 +494,14 @@ Formatting rules:
 
 # ── SCHEMA_CONFIG_INFERENCE_PROMPT ────────────────────────────────────────────
 # One-time prompt run when a user connects an external DB with no config file.
-# Parameterised: {schema_context}
+# Takes no parameters: the database schema arrives as the canonical cached
+# prefix block (_cached_schema_block) earlier in the same message, so this
+# call shares the cache entry with intent / SQL / narrative.
 # The LLM should return a JSON object matching MetricConfig fields.
 
 SCHEMA_CONFIG_INFERENCE_PROMPT = """\
-You are a data analyst. Given the following database schema, infer the most likely \
-values for a MetricConfig JSON object.
+You are a data analyst. Given the database schema provided above, infer the most \
+likely values for a MetricConfig JSON object.
 
 Output ONLY valid JSON with these exact keys (no prose, no markdown fences):
   primary_metric       — the main numeric outcome column to analyse (string)
@@ -528,9 +530,6 @@ Important: this schema may represent non-experiment data (health data, sensor re
 financial time-series, etc.). That is fine — fill experiment-specific fields \
 (variant_col, week_col, assignment_date_col) with their stated defaults. \
 Focus on correctly identifying primary_metric, date_col, and segment_cols for the actual data.
-
-Schema:
-{schema_context}
 """
 
 

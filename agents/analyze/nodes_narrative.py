@@ -245,8 +245,9 @@ def generate_narrative(state: AgentState) -> dict:
             analyst_notes_section=analyst_notes_section,
         ) + context_narrative_section
 
-    schema_context = (state.get("schema_context", "") or "")[:20_000]
-    safe_schema = wrap_untrusted_content(schema_context, label="database_schema") if schema_context else ""
+    # Canonical block — same bytes intent and generate_sql cached, so this
+    # call reads their prefix instead of writing a third truncation variant.
+    safe_schema = _cached_schema_block(state.get("schema_context", "") or "")
     history_text   = _format_history(state.get("relevant_history", []))
 
     # Multi-turn: static blocks, then a normalised conversation. See
@@ -288,11 +289,16 @@ def generate_narrative(state: AgentState) -> dict:
             narrative=polished_narrative,
             tool_results_json=tool_results_json,
         )
-        audit_resp = _anthropic_client().messages.create(
-            model=_fast_model(),
-            max_tokens=_MAX_TOKENS_AUDIT,
-            messages=[{"role": "user", "content": audit_prompt}],
-        )
+        with trace_generation("narrative_audit", _fast_model(), audit_prompt,
+                              max_tokens=_MAX_TOKENS_AUDIT) as audit_gen:
+            audit_resp = _anthropic_client().messages.create(
+                model=_fast_model(),
+                max_tokens=_MAX_TOKENS_AUDIT,
+                messages=[{"role": "user", "content": audit_prompt}],
+            )
+            audit_cost = audit_gen.update(audit_resp)
+        for k in ("cache_read_tokens", "cache_write_tokens", "estimated_cost_usd"):
+            cost_info[k] = cost_info.get(k, 0) + audit_cost.get(k, 0)
         if getattr(audit_resp, "stop_reason", None) == "max_tokens":
             # Truncated output surfaces below as a JSONDecodeError; name the
             # real cause so a systematic starvation is visible in Sentry.

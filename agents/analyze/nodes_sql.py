@@ -16,6 +16,7 @@ def generate_sql(state: AgentState) -> dict:
 
     task           = state.get("task", "")
     schema_context = state.get("schema_context", "")
+    raw_schema     = schema_context   # unfiltered — the canonical cached prefix
     history_text   = _format_history(state.get("relevant_history", []))
     db_backend     = state.get("db_backend", "duckdb")
     mc             = state.get("metric_config") or load_metric_config()
@@ -96,6 +97,16 @@ def generate_sql(state: AgentState) -> dict:
             few_shot_block=few_shot_block,
         )
 
+    # When the selector actually pruned tables, the full schema still precedes
+    # this prompt as the cached prefix — tell the model explicitly that the
+    # filtered Schema section below is the authoritative scope.
+    if schema_context != raw_schema:
+        task_prompt = (
+            "The complete database schema appears above for reference only. "
+            "Restrict your SQL to the tables in the Schema section below — "
+            "they were selected as relevant to this task.\n\n"
+        ) + task_prompt
+
     context_narrative = state.get("context_narrative", "")
     if context_narrative:
         task_prompt = (
@@ -103,7 +114,12 @@ def generate_sql(state: AgentState) -> dict:
             f"{wrap_untrusted_content(context_narrative[:2000], label='prior_context')}\n\n"
         ) + task_prompt
 
-    messages = _build_cached_messages(safe_schema, history_text, task_prompt)
+    # Cached prefix = the CANONICAL schema block, not the filtered safe_schema
+    # above. The filtered variant lives only inside task_prompt (it was being
+    # shipped twice — once there, once as a cache block whose bytes matched no
+    # other call). The canonical block is what intent wrote and what
+    # corrections and the narrative will read.
+    messages = _build_cached_messages(_cached_schema_block(raw_schema), history_text, task_prompt)
 
     with trace_generation("generate_sql", _fast_model(), task_prompt) as gen:
         response = _anthropic_client().messages.create(
@@ -161,9 +177,11 @@ def generate_sql(state: AgentState) -> dict:
     warnings_out = all_issues + pack_warnings
     result = {
         "generated_sql":      sql,
-        "cache_read_tokens":  cost_info.get("cache_read_tokens", 0),
-        "cache_write_tokens": cost_info.get("cache_write_tokens", 0),
-        "estimated_cost_usd": cost_info.get("estimated_cost_usd", 0.0),
+        # Accumulate — overwriting silently zeroed whatever intent recorded,
+        # and a query_gate-declined regeneration erased its own first attempt.
+        "cache_read_tokens":  (state.get("cache_read_tokens") or 0) + cost_info.get("cache_read_tokens", 0),
+        "cache_write_tokens": (state.get("cache_write_tokens") or 0) + cost_info.get("cache_write_tokens", 0),
+        "estimated_cost_usd": (state.get("estimated_cost_usd") or 0.0) + cost_info.get("estimated_cost_usd", 0.0),
     }
     if warnings_out:
         result["sql_validation_warnings"] = warnings_out

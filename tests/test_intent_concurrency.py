@@ -64,8 +64,8 @@ class TestUploadInference:
         inferred = load_metric_config().model_copy(
             update={"primary_metric": "sessions", "events_table": "events"}
         )
-        monkeypatch.setattr(ni, "_llm_resolve_intent", lambda *a: _intent_result())
-        monkeypatch.setattr(ni, "_llm_infer_config", lambda *a: inferred)
+        monkeypatch.setattr(ni, "_llm_resolve_intent", lambda *a: (_intent_result(), {}))
+        monkeypatch.setattr(ni, "_llm_infer_config", lambda *a: (inferred, {}))
 
         out = ni.resolve_task_intent(_upload_state())
         # Intent's task-informed metric wins over the schema-only guess...
@@ -79,11 +79,11 @@ class TestUploadInference:
 
         def _intent(*a):
             barrier.wait()  # deadlocks (and times out) unless infer runs in parallel
-            return _intent_result()
+            return _intent_result(), {}
 
         def _infer(*a):
             barrier.wait()
-            return load_metric_config()
+            return load_metric_config(), {}
 
         monkeypatch.setattr(ni, "_llm_resolve_intent", _intent)
         monkeypatch.setattr(ni, "_llm_infer_config", _infer)
@@ -92,7 +92,7 @@ class TestUploadInference:
         assert out["metric_config"].primary_metric == "revenue_usd"
 
     def test_no_inference_without_upload(self, monkeypatch):
-        monkeypatch.setattr(ni, "_llm_resolve_intent", lambda *a: _intent_result())
+        monkeypatch.setattr(ni, "_llm_resolve_intent", lambda *a: (_intent_result(), {}))
         def _boom(*a):
             raise AssertionError("schema inference ran for a non-upload")
         monkeypatch.setattr(ni, "_llm_infer_config", _boom)
@@ -101,7 +101,7 @@ class TestUploadInference:
         assert out["metric_config"].primary_metric == "revenue_usd"
 
     def test_no_inference_with_certified_pack(self, monkeypatch):
-        monkeypatch.setattr(ni, "_llm_resolve_intent", lambda *a: _intent_result())
+        monkeypatch.setattr(ni, "_llm_resolve_intent", lambda *a: (_intent_result(), {}))
         def _boom(*a):
             raise AssertionError("schema inference ran despite a metric pack")
         monkeypatch.setattr(ni, "_llm_infer_config", _boom)
@@ -114,13 +114,13 @@ class TestUploadInference:
 
 class TestInferConfigHelper:
     def test_empty_schema_returns_defaults(self):
-        assert ni._llm_infer_config("") == load_metric_config()
+        assert ni._llm_infer_config("") == (load_metric_config(), {})
 
     def test_llm_failure_returns_defaults(self, monkeypatch):
         def _boom():
             raise RuntimeError("api down")
         monkeypatch.setattr(ni, "_anthropic_client", _boom)
-        assert ni._llm_infer_config(SCHEMA) == load_metric_config()
+        assert ni._llm_infer_config(SCHEMA) == (load_metric_config(), {})
 
 
 class TestGraphShape:

@@ -183,6 +183,18 @@ def test_generate_sql_prompt_excludes_pruned_tables(monkeypatch, tmp_path):
         "user_id": "u1",
     })
     assert out["generated_sql"] == "SELECT 1"
-    sql_prompt = str(captured[-1]["messages"])
-    assert "TABLE: events" in sql_prompt.replace("\\n", "\n")
-    assert "table_5" not in sql_prompt
+    blocks = captured[-1]["messages"][0]["content"]
+    # Task prompt (final, uncached block): only the selected tables — this is
+    # the section the model is told to work from.
+    task_block = blocks[-1]["text"]
+    assert "TABLE: events" in task_block
+    assert "table_5" not in task_block
+    assert "reference only" in task_block  # pruning directive present
+    # Cached prefix: the CANONICAL full schema — deliberately including pruned
+    # tables, because the cache only hits when every call sends the same bytes.
+    cached_schema = [
+        b["text"] for b in blocks
+        if b.get("cache_control") and "USER_DATABASE_SCHEMA" in b.get("text", "")
+    ]
+    assert len(cached_schema) == 1
+    assert "table_5" in cached_schema[0]

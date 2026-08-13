@@ -214,6 +214,25 @@ def _fast_model() -> str:
     return os.getenv("FAST_MODEL", "claude-sonnet-5")
 
 
+# One cap for the schema block in every prompt. The value must be shared:
+# prompt caching only hits when the prefix is byte-identical, so two callers
+# slicing the schema differently can never read each other's cache entry.
+_SCHEMA_PROMPT_MAX_CHARS = int(os.getenv("SCHEMA_PROMPT_MAX_CHARS", "20000"))
+
+
+def _cached_schema_block(schema_context: str) -> str:
+    """The canonical wrapped schema block — identical bytes for every LLM call.
+
+    Intent, SQL generation, SQL correction, config inference, and narrative
+    all pass this same block to _build_cached_messages, so the first call in
+    a run writes the cache entry and every later call reads it. Before this
+    existed, each call cached a differently-sliced schema (full vs filtered
+    vs truncated) and no entry was ever read.
+    """
+    sc = (schema_context or "")[:_SCHEMA_PROMPT_MAX_CHARS]
+    return wrap_untrusted_content(sc, label="database_schema") if sc else ""
+
+
 def _build_cached_messages(
     schema_context: str,
     history_text: str,
@@ -224,6 +243,12 @@ def _build_cached_messages(
 
     Static blocks (system, schema, history) get cache_control so they're
     cached across runs. The task prompt at the end is never cached.
+
+    Pass _cached_schema_block(...) as schema_context — never a caller-local
+    slice or filter of the schema. The SYSTEM_PROMPT breakpoint alone is
+    under the API's 1024-token caching minimum, so the schema block is the
+    prefix that actually caches; it only hits if every caller sends the
+    same bytes.
     """
     static_blocks: list[dict] = [
         {
@@ -1079,14 +1104,17 @@ def _llm_correct_sql(
     prompt = SQL_CORRECTION_PROMPT.format(
         sql=sql,
         error=error,
-        schema_context=wrap_untrusted_content(schema_context, label="database_schema"),
         task=wrap_untrusted_content(task, label="analyst_task"),
     )
+    # Corrections fire seconds after generate_sql, so the canonical schema
+    # prefix is a guaranteed cache read — the schema lives in the cached
+    # block, not the correction prompt.
+    messages = _build_cached_messages(_cached_schema_block(schema_context), "", prompt)
     try:
         response = _anthropic_client().messages.create(
             model=_fast_model(),
             max_tokens=_MAX_TOKENS_SQL,
-            messages=[{"role": "user", "content": prompt}],
+            messages=messages,
         )
         return _extract_sql(response_text(response))
     except Exception as exc:

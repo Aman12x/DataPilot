@@ -46,8 +46,9 @@ def _llm_resolve_intent(
     Uses the cached-prefix message pattern (same as generate_sql) and limits
     tokens to 256 — we only need a small structured JSON response.
 
-    Returns a dict with keys: primary_metric, metric_direction, covariate,
-    guardrail_metrics, ambiguous, clarifying_question, reasoning.
+    Returns (result, cost_info) where result has keys: primary_metric,
+    metric_direction, covariate, guardrail_metrics, ambiguous,
+    clarifying_question, reasoning.
 
     Falls back to a safe default (ambiguous=False, mc defaults preserved) on
     any parse failure — never hard-fails.
@@ -62,8 +63,11 @@ def _llm_resolve_intent(
         default_metric=mc.primary_metric,
     )
     history_text = ""   # intent resolution doesn't need history injection
-    safe_schema = wrap_untrusted_content(schema_context, label="database_schema") if schema_context else ""
-    messages = _build_cached_messages(safe_schema, history_text, task_prompt)
+    # Canonical schema block: this is usually the first LLM call of a run, so
+    # it WRITES the cache entry that SQL gen, corrections, and the narrative
+    # then read. It previously cached the unsliced schema — bytes no other
+    # call sent.
+    messages = _build_cached_messages(_cached_schema_block(schema_context), history_text, task_prompt)
 
     safe_default = {
         "analysis_mode":       "ab_test",
@@ -77,11 +81,14 @@ def _llm_resolve_intent(
     }
 
     try:
-        response = _anthropic_client().messages.create(
-            model=_model(),
-            max_tokens=256,
-            messages=messages,
-        )
+        with trace_generation("resolve_task_intent", _model(), task_prompt,
+                              max_tokens=256) as gen:
+            response = _anthropic_client().messages.create(
+                model=_model(),
+                max_tokens=256,
+                messages=messages,
+            )
+            cost_info = gen.update(response)
         raw = response_text(response).strip()
         # Strip markdown fences if present
         if raw.startswith("```"):
@@ -90,10 +97,10 @@ def _llm_resolve_intent(
         # Ensure all required keys exist, filling from defaults where missing
         for key, default_val in safe_default.items():
             result.setdefault(key, default_val)
-        return result
+        return result, cost_info
     except Exception as exc:
         logger.warning("_llm_resolve_intent: parse failed (%s) — using defaults.", redact_exception(exc))
-        return safe_default
+        return safe_default, {}
 
 
 def _apply_intent_to_config(
@@ -171,34 +178,37 @@ def _apply_intent_to_config(
 
 # ── Schema-only config inference (runs concurrently with intent) ─────────────
 
-def _llm_infer_config(schema_context: str) -> "MetricConfig":
+def _llm_infer_config(schema_context: str) -> tuple["MetricConfig", dict]:
     """
     LLM infers a MetricConfig from the schema alone — no task input, so it is
     independent of intent resolution and safe to run concurrently with it.
 
-    Falls back to defaults on any failure; every inferred name is cross-checked
-    against the live schema so a hallucinated column cannot propagate to
-    _canonical_experiment_sql().
+    Returns (config, cost_info). Falls back to defaults on any failure; every
+    inferred name is cross-checked against the live schema so a hallucinated
+    column cannot propagate to _canonical_experiment_sql().
     """
     defaults = load_metric_config()
     if not schema_context:
-        return defaults
+        return defaults, {}
 
-    prompt = SCHEMA_CONFIG_INFERENCE_PROMPT.format(
-        schema_context=wrap_untrusted_content(schema_context, label="database_schema"),
+    # The schema rides in the canonical cached block — the same bytes the
+    # concurrent intent call sends, so whichever call lands first writes the
+    # cache entry and the other (plus SQL gen and the narrative) reads it.
+    messages = _build_cached_messages(
+        _cached_schema_block(schema_context), "", SCHEMA_CONFIG_INFERENCE_PROMPT
     )
 
     try:
-        with trace_generation("infer_metric_config", _fast_model(), prompt) as gen:
+        with trace_generation("infer_metric_config", _fast_model(), SCHEMA_CONFIG_INFERENCE_PROMPT) as gen:
             response = _anthropic_client().messages.create(
                 model=_fast_model(),
                 max_tokens=512,
-                messages=[{"role": "user", "content": prompt}],
+                messages=messages,
             )
-            gen.update(response)
+            cost_info = gen.update(response)
     except Exception as exc:
         logger.warning("_llm_infer_config: LLM call failed (%s), using defaults.", redact_exception(exc))
-        return defaults
+        return defaults, {}
 
     try:
         raw = response_text(response).strip()
@@ -207,12 +217,12 @@ def _llm_infer_config(schema_context: str) -> "MetricConfig":
         inferred = MetricConfig(**json.loads(raw))
     except Exception as exc:
         logger.warning("_llm_infer_config: response parsing failed (%s), using defaults.", redact_exception(exc))
-        return defaults
+        return defaults, cost_info
 
     inferred, issues = _sanitise_metric_config(inferred, schema_context, load_metric_config())
     for w in issues:
         logger.warning("_llm_infer_config: schema mismatch — %s", redact(w))
-    return inferred
+    return inferred, cost_info
 
 
 # ── Node 3b: resolve_task_intent ──────────────────────────────────────────────
@@ -244,19 +254,22 @@ def resolve_task_intent(state: AgentState) -> dict:
     # metric_config, so its live path reduced to exactly this).
     run_infer = bool(state.get("duckdb_path")) and not state.get("metric_pack_id")
 
+    costs: list[dict] = []
     if run_infer:
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=2, thread_name_prefix="intent") as pool:
             intent_future = pool.submit(_llm_resolve_intent, task, schema_context, mc)
             infer_future  = pool.submit(_llm_infer_config, schema_context)
-            result      = intent_future.result()
-            inferred_mc = infer_future.result()
+            result, intent_cost      = intent_future.result()
+            inferred_mc, infer_cost  = infer_future.result()
+        costs += [intent_cost, infer_cost]
         # Intent resolves against the schema-inferred base, not demo defaults —
         # the base has the upload's real table names and guardrail metrics.
         mc = inferred_mc
 
     else:
-        result = _llm_resolve_intent(task, schema_context, mc)
+        result, intent_cost = _llm_resolve_intent(task, schema_context, mc)
+        costs.append(intent_cost)
 
     clarification = ""
     # Guard: if the LLM claims ambiguity because a column "doesn't exist" but it
@@ -286,7 +299,8 @@ def resolve_task_intent(state: AgentState) -> dict:
         clarification = analyst_response.get("answer", "")
         if clarification.strip():
             full_task = f"{task}\n\nAnalyst clarification: {clarification}"
-            result = _llm_resolve_intent(full_task, schema_context, mc)
+            result, reresolve_cost = _llm_resolve_intent(full_task, schema_context, mc)
+            costs.append(reresolve_cost)
 
     updated_mc = _apply_intent_to_config(result, mc, schema_context)
 
@@ -330,5 +344,10 @@ def resolve_task_intent(state: AgentState) -> dict:
         "analysis_mode":        final_mode,
         "power_mde_target_pct": mde_target_pct,
         "query_type":           query_type,
+        # These calls' usage previously vanished — the runs table showed zero
+        # cache tokens run after run and the gap was unmeasurable.
+        "cache_read_tokens":  (state.get("cache_read_tokens") or 0) + sum(c.get("cache_read_tokens", 0) for c in costs),
+        "cache_write_tokens": (state.get("cache_write_tokens") or 0) + sum(c.get("cache_write_tokens", 0) for c in costs),
+        "estimated_cost_usd": (state.get("estimated_cost_usd") or 0.0) + sum(c.get("estimated_cost_usd", 0.0) for c in costs),
     }
 
