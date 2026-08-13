@@ -48,6 +48,8 @@ _PYDANTIC_MODELS: dict[str, type[BaseModel]] = {
         schema_models.NoveltyResult,
         schema_models.SrmResult,
         schema_models.MdeResult,
+        schema_models.SufficientStats,
+        schema_models.GroupMoments,
         schema_models.SensitivityRow,
         schema_models.PowerAnalysisResult,
         schema_models.NarrativeResult,

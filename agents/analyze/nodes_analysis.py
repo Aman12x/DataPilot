@@ -225,6 +225,18 @@ def run_cuped_node(state: AgentState) -> dict:
     if df is None:
         return {}
 
+    ss = state.get("sufficient_stats")
+    if ss is not None:
+        if covariate == metric:
+            logger.warning("run_cuped: covariate equals metric — skipping (pushdown).")
+            return {}
+        from tools import pushdown
+        try:
+            return {"cuped_result": pushdown.cuped_from_stats(ss)}
+        except ValueError as exc:
+            logger.warning("run_cuped: skipping — %s", redact_exception(exc))
+            return {}
+
     if covariate == metric:
         logger.warning(
             "run_cuped: covariate '%s' is the same as metric '%s' — "
@@ -263,12 +275,6 @@ def run_ttest_node(state: AgentState) -> dict:
     # CUPED adjusts the ATE internally; run_ttest always operates on the original metric col
     use_col = metric
 
-    if variant not in df.columns or use_col not in df.columns:
-        return {}
-
-    ctrl = df[df[variant] == "control"][use_col].dropna()
-    trt  = df[df[variant] == "treatment"][use_col].dropna()
-
     # Auto-winsorize metrics whose names suggest heavy-tailed / revenue-style distributions.
     _SKEWED_KEYWORDS = {
         "revenue", "spend", "amount", "price", "cost", "purchase",
@@ -288,6 +294,24 @@ def run_ttest_node(state: AgentState) -> dict:
         alternative = "less"
     else:
         alternative = "two-sided"
+
+    ss = state.get("sufficient_stats")
+    if ss is not None:
+        from tools import pushdown
+        try:
+            result = pushdown.ttest_from_stats(
+                ss, winsorize_pct=winsorize_pct, alternative=alternative
+            )
+        except ValueError as exc:
+            logger.warning("run_ttest: skipping — %s", redact_exception(exc))
+            return {}
+        return {"ttest_result": result}
+
+    if variant not in df.columns or use_col not in df.columns:
+        return {}
+
+    ctrl = df[df[variant] == "control"][use_col].dropna()
+    trt  = df[df[variant] == "treatment"][use_col].dropna()
 
     result = stats_tools.run_ttest(ctrl, trt, winsorize_pct=winsorize_pct,
                                    alternative=alternative)
@@ -352,6 +376,17 @@ def run_hte_node(state: AgentState) -> dict:
     if df is None:
         return {}
 
+    ss = state.get("sufficient_stats")
+    if ss is not None:
+        if not ss.by_segment:
+            return {}
+        from tools import pushdown
+        try:
+            return {"hte_result": pushdown.hte_from_stats(ss)}
+        except ValueError as exc:
+            logger.warning("run_hte: skipping — %s", redact_exception(exc))
+            return {}
+
     segment_cols = [c for c in mc.segment_cols if c in df.columns]
     if not segment_cols or metric not in df.columns or variant not in df.columns:
         return {}
@@ -374,6 +409,24 @@ def detect_novelty_node(state: AgentState) -> dict:
 
     if df is None:
         return {}
+
+    ss = state.get("sufficient_stats")
+    if ss is not None:
+        from tools import pushdown
+        if not ss.by_week:
+            return {"novelty_result": _NoveltyResult(
+                week1_ate=0.0, week2_ate=0.0, effect_direction="unknown",
+                novelty_likely=False, skipped=True,
+                skip_reason="Required column(s) missing: week",
+            )}
+        try:
+            return {"novelty_result": pushdown.novelty_from_stats(ss)}
+        except ValueError as exc:
+            logger.warning("detect_novelty: skipping — %s", redact_exception(exc))
+            return {"novelty_result": _NoveltyResult(
+                week1_ate=0.0, week2_ate=0.0, effect_direction="unknown",
+                novelty_likely=False, skipped=True, skip_reason=str(exc),
+            )}
 
     # Return a typed skip result so the narrative knows why this section is absent.
     missing = [col for col in [metric, "variant", "week"] if col not in df.columns]
@@ -406,23 +459,35 @@ def compute_mde_node(state: AgentState) -> dict:
     mc     = state.get("metric_config") or load_metric_config()
     metric = state.get("metric") or mc.primary_metric
 
-    if df is None or "variant" not in df.columns or metric not in df.columns:
-        return {}
-
-    ctrl = df[df["variant"] == "control"][metric].dropna()
-    trt  = df[df["variant"] == "treatment"][metric].dropna()
-
-    if len(ctrl) < 2 or len(trt) < 2:
-        return {}
-
     cuped = state.get("cuped_result")
     cuped_ate = cuped.cuped_ate if cuped else None
 
+    ss = state.get("sufficient_stats")
+    if ss is not None:
+        from tools import pushdown
+        ctrl_m = ss.overall.get("control")
+        trt_m  = ss.overall.get("treatment")
+        if ctrl_m is None or trt_m is None or ctrl_m.n < 2 or trt_m.n < 2:
+            return {}
+        n_control, n_treatment = ctrl_m.n, trt_m.n
+        baseline_mean = pushdown._mean(ctrl_m)
+        baseline_std  = math.sqrt(pushdown._var(ctrl_m))
+    else:
+        if df is None or "variant" not in df.columns or metric not in df.columns:
+            return {}
+        ctrl = df[df["variant"] == "control"][metric].dropna()
+        trt  = df[df["variant"] == "treatment"][metric].dropna()
+        if len(ctrl) < 2 or len(trt) < 2:
+            return {}
+        n_control, n_treatment = len(ctrl), len(trt)
+        baseline_mean = float(ctrl.mean())
+        baseline_std  = float(ctrl.std())
+
     result = mde_tools.compute_mde(
-        n_control=len(ctrl),
-        n_treatment=len(trt),
-        baseline_mean=float(ctrl.mean()),
-        baseline_std=float(ctrl.std()),
+        n_control=n_control,
+        n_treatment=n_treatment,
+        baseline_mean=baseline_mean,
+        baseline_std=baseline_std,
         observed_effect_abs=cuped_ate,
     )
 
@@ -556,18 +621,31 @@ FROM {_ident(mc.events_table)}
 @observe(name="check_guardrails")
 def check_guardrails_node(state: AgentState) -> dict:
     df = _safe_df(state)
-    if df is None or "variant" not in df.columns:
-        return {}
-
     mc = state.get("metric_config") or load_metric_config()
-    present = [m for m in mc.guardrail_metrics if m in df.columns]
-    if not present:
-        return {}
 
     # When primary metric is higher_is_better, unknown guardrail drops are harmful
     default_direction = (
         "decrease" if mc.metric_direction == "higher_is_better" else "increase"
     )
+
+    ss = state.get("sufficient_stats")
+    if ss is not None:
+        if not ss.guardrails:
+            return {}
+        from tools import pushdown
+        result = pushdown.guardrails_from_stats(
+            ss,
+            harm_directions=mc.guardrail_harm_directions,
+            default_direction=default_direction,
+        )
+        return {"guardrail_result": result}
+
+    if df is None or "variant" not in df.columns:
+        return {}
+
+    present = [m for m in mc.guardrail_metrics if m in df.columns]
+    if not present:
+        return {}
 
     result = guardrail_tools.check_guardrails(
         df,
@@ -814,7 +892,11 @@ def generate_charts_node(state: AgentState) -> dict:
                 charts = [s.model_dump() for s in specs]
             else:
                 charts = []
-            n_rows = len(state.get("query_result", pd.DataFrame()))  # type: ignore[arg-type]
+            ss = state.get("sufficient_stats")
+            if ss is not None:
+                n_rows = ss.total_rows  # preview frame is 2 rows; the extract is not
+            else:
+                n_rows = len(state.get("query_result", pd.DataFrame()))  # type: ignore[arg-type]
             ti     = compute_trust_indicators(None, ttest, n_rows)
         return {"charts": charts, "trust_indicators": ti.model_dump()}
     except Exception as exc:

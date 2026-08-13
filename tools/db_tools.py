@@ -338,6 +338,28 @@ class DBConnection:
         if rows is not None and rows > _MAX_MATERIALIZE_ROWS:
             raise ResultTooLargeError(rows, _MAX_MATERIALIZE_ROWS)
 
+    def count_rows(self, sql: str) -> int:
+        """Server-side row count for a validated SELECT. Raises on failure —
+        unlike _count_rows, which is a fail-open guard rail. Used by the
+        pushdown path, where the count doubles as the SQL validity probe."""
+        validate_sql(sql)
+        counter = _count_wrapper(sql)
+        if self.backend == "duckdb":
+            con = duckdb.connect(self._path, read_only=True)
+            try:
+                return int(con.execute(counter).fetchone()[0])
+            finally:
+                con.close()
+        if self.backend == "bigquery":
+            client = self._bq_client()
+            return int(next(iter(client.query(counter).result()))[0])
+        df = (
+            self._query_postgres(counter)
+            if self.backend == "postgres"
+            else self._query_mysql(counter)
+        )
+        return int(df.iloc[0, 0])
+
     def _count_rows(self, sql: str) -> int | None:
         """Server-side row count for the given SELECT, or None if unavailable.
 

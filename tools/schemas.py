@@ -139,6 +139,47 @@ class ForecastResult(BaseModel):
 
 # ── guardrail_tools ───────────────────────────────────────────────────────────
 
+# ── pushdown (sufficient statistics) ─────────────────────────────────────────
+
+class GroupMoments(BaseModel):
+    """Raw moments for one (group, metric) cell, computed in-warehouse.
+
+    Everything the A/B stats need is derivable from these: mean = s1/n,
+    var = (s2 - s1²/n)/(n-1), population skewness from s3. The joint (metric,
+    covariate) moments feed CUPED; they cover only rows where BOTH are
+    non-null, mirroring the pandas path's dropna semantics.
+    """
+    n:   int   = 0      # rows with non-null metric
+    s1:  float = 0.0    # Σ y
+    s2:  float = 0.0    # Σ y²
+    s3:  float = 0.0    # Σ y³
+    # Joint metric+covariate moments (overall groups only; zero elsewhere)
+    n_j:   int   = 0    # rows with metric AND covariate non-null
+    sy_j:  float = 0.0  # Σ y   over joint rows
+    syy_j: float = 0.0  # Σ y²  over joint rows
+    sx_j:  float = 0.0  # Σ x   over joint rows
+    sxx_j: float = 0.0  # Σ x²  over joint rows
+    sxy_j: float = 0.0  # Σ x·y over joint rows
+
+
+class SufficientStats(BaseModel):
+    """Sufficient statistics for the full A/B analysis, computed in-warehouse.
+
+    Replaces the user-level DataFrame when the extract is too large to
+    materialize: three aggregate queries over the analyst-approved SQL (as a
+    subquery) reduce N user rows to a handful of moment cells, and every
+    stats node computes from these instead.
+    """
+    metric:     str
+    covariate:  str
+    total_rows: int                                        # rows in the extract
+    overall:    dict[str, GroupMoments]                    # variant → moments
+    by_segment: dict[str, dict[str, GroupMoments]] = {}    # "col=val,col=val" → variant → moments
+    by_week:    dict[str, dict[str, GroupMoments]] = {}    # week (str) → variant → moments
+    guardrails: dict[str, dict[str, GroupMoments]] = {}    # metric → variant → moments
+    segment_total: int = 0                                 # rows with all segment cols non-null
+
+
 class GuardrailMetric(BaseModel):
     metric:         str
     control_mean:   float

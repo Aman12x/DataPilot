@@ -28,6 +28,7 @@ from tools.schemas import (
     RegressionResult,
     SliceResult,
     SrmResult,
+    SufficientStats,
     TtestResult,
     TrustIndicators,
 )
@@ -77,6 +78,10 @@ class AgentState(TypedDict, total=False):
     generated_sql: str                  # SQL produced by agent
     sql_validation_warnings: list[str]  # suspected hallucinated tables, surfaced at query gate
     query_result: pd.DataFrame          # raw result — user-level experiment data
+                                        # (per-variant preview frame in pushdown mode)
+    sufficient_stats: SufficientStats   # in-warehouse moments; set when the extract
+                                        # exceeded PUSHDOWN_ROWS and stats nodes
+                                        # compute from moments instead of the frame
     daily_df: pd.DataFrame              # metrics_daily time series — for decomp/anomaly/forecast
     funnel_df: pd.DataFrame             # funnel table — for compute_funnel
 

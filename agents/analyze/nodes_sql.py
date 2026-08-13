@@ -228,6 +228,59 @@ def query_gate(state: AgentState) -> dict:
     return result
 
 
+# How many user-level rows an A/B extract may have before the stats are
+# computed in-warehouse instead of in pandas. 0 disables pushdown entirely.
+_PUSHDOWN_ROWS = int(os.getenv("PUSHDOWN_ROWS", "100000"))
+
+
+def _fetch_or_pushdown(state: AgentState, sql: str, mc) -> tuple[pd.DataFrame, Any]:
+    """Materialize the extract, or — for large A/B extracts — compute
+    sufficient statistics in the warehouse and return a per-variant preview.
+
+    The row count doubles as the SQL validity probe: it executes the approved
+    statement server-side, so a broken query raises here and feeds the same
+    LLM-correction retry loop that a failed materialization would.
+    """
+    db = _db_conn(state)
+    mode = state.get("analysis_mode", "ab_test")
+    if mode != "ab_test" or _PUSHDOWN_ROWS <= 0:
+        return db.query(sql), None
+
+    from tools import pushdown
+
+    n_rows = db.count_rows(sql)
+    if n_rows <= _PUSHDOWN_ROWS:
+        return db.query(sql), None
+
+    metric    = state.get("metric") or mc.primary_metric
+    covariate = state.get("covariate") or mc.covariate
+    cols = set(pushdown.probe_columns(db, sql))
+    required = {metric, covariate, "variant"}
+    missing = required - cols
+    if missing:
+        # Same contract as the post-materialize column check: surface the gap
+        # so the retry loop corrects the SQL or falls back to canonical.
+        raise ValueError(
+            f"Query result is missing required column(s) {sorted(missing)} — "
+            f"the analysis needs {sorted(required)}."
+        )
+
+    stats = pushdown.compute_sufficient_stats(
+        db, sql,
+        metric=metric,
+        covariate=covariate,
+        segment_cols=[c for c in mc.segment_cols if c in cols],
+        guardrail_metrics=[g for g in mc.guardrail_metrics if g in cols],
+        week_col="week" if "week" in cols else "",
+        total_rows=n_rows,
+    )
+    logger.info(
+        "execute_query: pushdown engaged — %s rows stay in the warehouse "
+        "(threshold %s).", f"{n_rows:,}", f"{_PUSHDOWN_ROWS:,}",
+    )
+    return pushdown.preview_frame(stats), stats
+
+
 # ── Node 6: execute_query ─────────────────────────────────────────────────────
 
 @observe(name="execute_query")
@@ -247,10 +300,11 @@ def execute_query(state: AgentState) -> dict:
     # in production text-to-SQL systems (AWS, CHESS, ReFoRCE, etc.).
     current_sql = sql
     df: pd.DataFrame | None = None
+    sufficient_stats = None
 
     for attempt in range(_MAX_SQL_RETRIES + 1):
         try:
-            df = _db_conn(state).query(current_sql)
+            df, sufficient_stats = _fetch_or_pushdown(state, current_sql, mc)
             if attempt > 0:
                 logger.info("execute_query: SQL succeeded after %d LLM correction(s).", attempt)
             break
@@ -300,7 +354,7 @@ def execute_query(state: AgentState) -> dict:
             return {"query_result": pd.DataFrame()}
         canonical_sql = _canonical_experiment_sql(mc)
         try:
-            df = _db_conn(state).query(canonical_sql)
+            df, sufficient_stats = _fetch_or_pushdown(state, canonical_sql, mc)
             current_sql = canonical_sql
             logger.info("execute_query: canonical SQL succeeded (%d rows).", len(df))
         except Exception as exc:
@@ -359,13 +413,26 @@ def execute_query(state: AgentState) -> dict:
     # ── Phase 4: Content validation ───────────────────────────────────────────
     # Replace (not append) so stale warnings from a prior 0-row attempt don't
     # persist after the analyst fixes the SQL and re-executes.
-    content_warnings = _validate_query_content(df, mc, state.get("analysis_mode", "ab_test"))
-    for w in content_warnings:
-        logger.warning("execute_query: content validation — %s", redact(w))
+    # Pushdown mode skips it: the row-level checks it performs (value ranges,
+    # duplicate users) don't apply to a per-variant preview frame.
+    if sufficient_stats is not None:
+        content_warnings = []
+        logger.info(
+            "execute_query: pushdown mode — %s rows aggregated in-warehouse, "
+            "%d moment cells in state.",
+            f"{sufficient_stats.total_rows:,}",
+            len(sufficient_stats.overall) + len(sufficient_stats.by_segment)
+            + len(sufficient_stats.by_week),
+        )
+    else:
+        content_warnings = _validate_query_content(df, mc, state.get("analysis_mode", "ab_test"))
+        for w in content_warnings:
+            logger.warning("execute_query: content validation — %s", redact(w))
 
     result: dict = {
         "query_result":            df,
         "sql_validation_warnings": content_warnings,
+        "sufficient_stats":        sufficient_stats,
     }
     if current_sql != sql:
         result["generated_sql"] = current_sql

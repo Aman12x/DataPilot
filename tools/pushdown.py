@@ -1,0 +1,558 @@
+"""
+tools/pushdown.py — A/B statistics from in-warehouse sufficient statistics.
+
+The A/B path materialized one row per user into pandas and ran scipy over the
+frame. At enterprise scale that is the wall: 10M rows is ~1.4 GB in memory and
+~27s of checkpoint serialization per super-step. But every statistic the
+pipeline computes — Welch t, CUPED, SRM, HTE, novelty, MDE, guardrails — is a
+function of counts, sums, and sums of squares. This module:
+
+  1. wraps the analyst-approved user-level SQL as a subquery and computes
+     those moments in the warehouse (three aggregate queries, tens of rows
+     returned, regardless of extract size);
+  2. reproduces each stats tool's exact output model from the moments,
+     mirroring tools/stats_tools.py et al. formula for formula.
+
+The approved SQL is untouched — the query gate reviews the same statement;
+the warehouse just aggregates over it instead of shipping the rows.
+
+Known limitation vs the pandas path: winsorization needs quantiles, which
+moments cannot provide. ttest_from_stats reports winsorized=False and appends
+a note when clipping was requested, rather than silently pretending.
+"""
+from __future__ import annotations
+
+import itertools
+import logging
+import math
+from typing import Any
+
+from scipy import stats as sps
+
+from tools.db_tools import DBConnection, quote_ident
+from tools.schemas import (
+    CupedResult,
+    GroupMoments,
+    GuardrailMetric,
+    GuardrailResult,
+    HteResult,
+    NoveltyResult,
+    SegmentResult,
+    SufficientStats,
+    TtestResult,
+)
+
+logger = logging.getLogger(__name__)
+
+
+# ── Moment arithmetic ─────────────────────────────────────────────────────────
+
+def _mean(g: GroupMoments) -> float:
+    return g.s1 / g.n if g.n else 0.0
+
+
+def _var(g: GroupMoments) -> float:
+    """Sample variance (ddof=1) from raw moments."""
+    if g.n < 2:
+        return 0.0
+    return max((g.s2 - g.s1 * g.s1 / g.n) / (g.n - 1), 0.0)
+
+
+def _skew(g: GroupMoments) -> float:
+    """Population skewness (scipy.stats.skew default, bias=True)."""
+    if g.n < 2:
+        return 0.0
+    mean = _mean(g)
+    m2 = g.s2 / g.n - mean * mean
+    if m2 <= 1e-24:
+        return 0.0
+    m3 = g.s3 / g.n - 3.0 * mean * (g.s2 / g.n) + 2.0 * mean ** 3
+    return m3 / m2 ** 1.5
+
+
+def _welch(n_t: int, mean_t: float, var_t: float,
+           n_c: int, mean_c: float, var_c: float,
+           alpha: float, alternative: str) -> tuple[float, float, float, float, float]:
+    """Welch t-test from summary stats: (t, p, ci_lower, ci_upper, cohens_d).
+
+    Mirrors stats_tools.run_ttest: scipy ttest_ind(treatment, control,
+    equal_var=False), CI on the mean difference with Welch-Satterthwaite dof,
+    one-sided CI at α rather than α/2.
+    """
+    mean_diff = mean_t - mean_c
+    se = math.sqrt(var_t / n_t + var_c / n_c)
+    if se <= 0:
+        raise ValueError("Zero variance in both groups — t-test undefined.")
+    t_stat = mean_diff / se
+    dof = (var_t / n_t + var_c / n_c) ** 2 / (
+        (var_t / n_t) ** 2 / (n_t - 1) + (var_c / n_c) ** 2 / (n_c - 1)
+    )
+    if alternative == "greater":
+        p = float(sps.t.sf(t_stat, df=dof))
+    elif alternative == "less":
+        p = float(sps.t.cdf(t_stat, df=dof))
+    else:
+        p = float(2.0 * sps.t.sf(abs(t_stat), df=dof))
+
+    tail_alpha = alpha if alternative != "two-sided" else alpha / 2
+    t_crit = float(sps.t.ppf(1 - tail_alpha, df=dof))
+    ci_lower = mean_diff - t_crit * se
+    ci_upper = mean_diff + t_crit * se
+
+    pooled_std = math.sqrt(((n_t - 1) * var_t + (n_c - 1) * var_c) / (n_t + n_c - 2))
+    cohens_d = mean_diff / pooled_std if pooled_std > 1e-12 else 0.0
+    return t_stat, p, ci_lower, ci_upper, cohens_d
+
+
+# ── SQL builder + collection ──────────────────────────────────────────────────
+
+def _f(col: str, backend: str) -> str:
+    """Column as a float expression. `1.0 *` coerces to double on every
+    backend (DuckDB, Postgres, MySQL, BigQuery) without dialect-specific CAST."""
+    return f"(1.0 * {quote_ident(col, backend)})"
+
+
+def _moment_selects(col: str, backend: str, prefix: str) -> str:
+    y = _f(col, backend)
+    q = quote_ident(col, backend)
+    return (
+        f"SUM(CASE WHEN {q} IS NOT NULL THEN 1 ELSE 0 END) AS {prefix}_n,\n"
+        f"SUM(CASE WHEN {q} IS NOT NULL THEN {y} ELSE 0 END) AS {prefix}_s1,\n"
+        f"SUM(CASE WHEN {q} IS NOT NULL THEN {y}*{y} ELSE 0 END) AS {prefix}_s2,\n"
+        f"SUM(CASE WHEN {q} IS NOT NULL THEN {y}*{y}*{y} ELSE 0 END) AS {prefix}_s3"
+    )
+
+
+def probe_columns(db: DBConnection, base_sql: str) -> list[str]:
+    """Column names of the approved SQL without materializing any rows."""
+    df = db.query(f"SELECT * FROM (\n{base_sql.rstrip().rstrip(';')}\n) AS _dp_probe LIMIT 0")
+    return list(df.columns)
+
+
+def compute_sufficient_stats(
+    db: DBConnection,
+    base_sql: str,
+    metric: str,
+    covariate: str,
+    segment_cols: list[str],
+    guardrail_metrics: list[str],
+    variant_col: str = "variant",
+    week_col: str = "week",
+    total_rows: int = 0,
+) -> SufficientStats:
+    """Three aggregate queries over the approved SQL → SufficientStats."""
+    backend = db.backend
+    sub = f"(\n{base_sql.rstrip().rstrip(';')}\n) AS _dp_push"
+    v = quote_ident(variant_col, backend)
+    yq = quote_ident(metric, backend)
+    xq = quote_ident(covariate, backend)
+    y = _f(metric, backend)
+    x = _f(covariate, backend)
+
+    # Query 1 — per-variant: metric moments (incl. Σy³ for skewness), joint
+    # metric+covariate moments for CUPED, and guardrail moments.
+    joint = f"{yq} IS NOT NULL AND {xq} IS NOT NULL"
+    parts = [
+        _moment_selects(metric, backend, "m"),
+        f"SUM(CASE WHEN {joint} THEN 1 ELSE 0 END) AS j_n",
+        f"SUM(CASE WHEN {joint} THEN {y} ELSE 0 END) AS j_sy",
+        f"SUM(CASE WHEN {joint} THEN {y}*{y} ELSE 0 END) AS j_syy",
+        f"SUM(CASE WHEN {joint} THEN {x} ELSE 0 END) AS j_sx",
+        f"SUM(CASE WHEN {joint} THEN {x}*{x} ELSE 0 END) AS j_sxx",
+        f"SUM(CASE WHEN {joint} THEN {x}*{y} ELSE 0 END) AS j_sxy",
+    ]
+    for i, gm in enumerate(guardrail_metrics):
+        parts.append(_moment_selects(gm, backend, f"g{i}"))
+    q1 = f"SELECT {v} AS _variant,\n" + ",\n".join(parts) + f"\nFROM {sub} GROUP BY {v}"
+    df1 = db.query(q1)
+
+    overall: dict[str, GroupMoments] = {}
+    guardrails: dict[str, dict[str, GroupMoments]] = {gm: {} for gm in guardrail_metrics}
+    for _, row in df1.iterrows():
+        variant = str(row["_variant"])
+        overall[variant] = GroupMoments(
+            n=int(row["m_n"] or 0), s1=float(row["m_s1"] or 0),
+            s2=float(row["m_s2"] or 0), s3=float(row["m_s3"] or 0),
+            n_j=int(row["j_n"] or 0), sy_j=float(row["j_sy"] or 0),
+            syy_j=float(row["j_syy"] or 0), sx_j=float(row["j_sx"] or 0),
+            sxx_j=float(row["j_sxx"] or 0), sxy_j=float(row["j_sxy"] or 0),
+        )
+        for i, gm in enumerate(guardrail_metrics):
+            guardrails[gm][variant] = GroupMoments(
+                n=int(row[f"g{i}_n"] or 0), s1=float(row[f"g{i}_s1"] or 0),
+                s2=float(row[f"g{i}_s2"] or 0), s3=float(row[f"g{i}_s3"] or 0),
+            )
+
+    # Query 2 — per (all segment cols jointly, variant): metric moments.
+    # Mirrors run_hte's cross-product subgroups and its dropna over
+    # [metric] + segment_cols.
+    by_segment: dict[str, dict[str, GroupMoments]] = {}
+    segment_total = 0
+    if segment_cols:
+        seg_idents = [quote_ident(c, backend) for c in segment_cols]
+        not_null = " AND ".join(f"{s} IS NOT NULL" for s in seg_idents + [yq])
+        q2 = (
+            f"SELECT {', '.join(seg_idents)}, {v} AS _variant,\n"
+            + _moment_selects(metric, backend, "m")
+            + f"\nFROM {sub} WHERE {not_null}"
+            + f"\nGROUP BY {', '.join(seg_idents)}, {v}"
+        )
+        df2 = db.query(q2)
+        for _, row in df2.iterrows():
+            label = ",".join(f"{c}={row[c]}" for c in segment_cols)
+            variant = str(row["_variant"])
+            g = GroupMoments(
+                n=int(row["m_n"] or 0), s1=float(row["m_s1"] or 0),
+                s2=float(row["m_s2"] or 0), s3=float(row["m_s3"] or 0),
+            )
+            by_segment.setdefault(label, {})[variant] = g
+            segment_total += g.n
+
+    # Query 3 — per (week, variant): metric moments for novelty. Skipped when
+    # the extract has no week column (novelty node emits a typed skip result).
+    by_week: dict[str, dict[str, GroupMoments]] = {}
+    if not week_col:
+        return SufficientStats(
+            metric=metric, covariate=covariate, total_rows=total_rows,
+            overall=overall, by_segment=by_segment, by_week=by_week,
+            guardrails=guardrails, segment_total=segment_total,
+        )
+    w = quote_ident(week_col, backend)
+    q3 = (
+        f"SELECT {w} AS _week, {v} AS _variant,\n"
+        + _moment_selects(metric, backend, "m")
+        + f"\nFROM {sub} WHERE {w} IS NOT NULL GROUP BY {w}, {v}"
+    )
+    try:
+        df3 = db.query(q3)
+        for _, row in df3.iterrows():
+            by_week.setdefault(str(row["_week"]), {})[str(row["_variant"])] = GroupMoments(
+                n=int(row["m_n"] or 0), s1=float(row["m_s1"] or 0),
+                s2=float(row["m_s2"] or 0), s3=float(row["m_s3"] or 0),
+            )
+    except Exception as exc:  # noqa: BLE001 — week column may not exist; novelty skips
+        logger.info("pushdown: week aggregation unavailable (%s)", type(exc).__name__)
+
+    return SufficientStats(
+        metric=metric, covariate=covariate, total_rows=total_rows,
+        overall=overall, by_segment=by_segment, by_week=by_week,
+        guardrails=guardrails, segment_total=segment_total,
+    )
+
+
+def preview_frame(ss: SufficientStats) -> Any:
+    """Small per-variant frame standing in for query_result.
+
+    Carries the metric/covariate/variant columns the downstream plumbing
+    checks for (semantic-cache eligibility, gate payloads), holding per-variant
+    means rather than user rows.
+    """
+    import pandas as pd
+    rows = []
+    for variant, g in sorted(ss.overall.items()):
+        rows.append({
+            "variant": variant,
+            ss.metric: round(_mean(g), 6),
+            ss.covariate: round(g.sx_j / g.n_j, 6) if g.n_j else 0.0,
+            "n_users": g.n,
+        })
+    return pd.DataFrame(rows)
+
+
+# ── Stats from moments (each mirrors its pandas counterpart exactly) ──────────
+
+def _arms(groups: dict[str, GroupMoments]) -> tuple[GroupMoments, GroupMoments]:
+    ctrl, trt = groups.get("control"), groups.get("treatment")
+    if ctrl is None or trt is None:
+        raise ValueError(
+            f"variant_col must contain 'control' and 'treatment'. Found: {set(groups)}"
+        )
+    return ctrl, trt
+
+
+def ttest_from_stats(
+    ss: SufficientStats,
+    alpha: float = 0.05,
+    winsorize_pct: float = 0.0,
+    alternative: str = "two-sided",
+) -> TtestResult:
+    if alternative not in ("two-sided", "greater", "less"):
+        raise ValueError("alternative must be 'two-sided', 'greater', or 'less'.")
+    ctrl, trt = _arms(ss.overall)
+    if ctrl.n < 2 or trt.n < 2:
+        raise ValueError("Need at least 2 observations per group for t-test.")
+
+    ctrl_skew, trt_skew = _skew(ctrl), _skew(trt)
+    skewness_warning = None
+    if abs(ctrl_skew) > 2.0 or abs(trt_skew) > 2.0:
+        skewness_warning = (
+            f"Highly skewed distribution (control skew={ctrl_skew:+.1f}, "
+            f"treatment skew={trt_skew:+.1f}). "
+            "Consider winsorizing or using the Mann-Whitney U test."
+        )
+    if winsorize_pct > 0.0:
+        # Quantile clipping is not derivable from moments; be loud, not wrong.
+        note = "Winsorization skipped: not available in warehouse-pushdown mode."
+        skewness_warning = f"{skewness_warning} {note}" if skewness_warning else note
+
+    t_stat, p, ci_lo, ci_hi, d = _welch(
+        trt.n, _mean(trt), _var(trt), ctrl.n, _mean(ctrl), _var(ctrl),
+        alpha, alternative,
+    )
+    return TtestResult(
+        t_stat=round(t_stat, 4),
+        p_value=round(p, 6),
+        ci_lower=round(ci_lo, 6),
+        ci_upper=round(ci_hi, 6),
+        significant=bool(p < alpha),
+        cohens_d=round(d, 4),
+        n_control=ctrl.n,
+        n_treatment=trt.n,
+        control_mean=round(_mean(ctrl), 6),
+        treatment_mean=round(_mean(trt), 6),
+        winsorized=False,
+        skewness_warning=skewness_warning,
+        alternative=alternative,
+    )
+
+
+def cuped_from_stats(ss: SufficientStats) -> CupedResult:
+    """CUPED from joint moments; mirrors stats_tools.run_cuped (pooled theta)."""
+    ctrl, trt = _arms(ss.overall)
+    if ctrl.n_j < 2 or trt.n_j < 2:
+        raise ValueError("Need at least 2 observations per variant for CUPED.")
+
+    n = ctrl.n_j + trt.n_j
+    sy = ctrl.sy_j + trt.sy_j
+    syy = ctrl.syy_j + trt.syy_j
+    sx = ctrl.sx_j + trt.sx_j
+    sxx = ctrl.sxx_j + trt.sxx_j
+    sxy = ctrl.sxy_j + trt.sxy_j
+
+    var_x = (sxx - sx * sx / n) / (n - 1)
+    if var_x == 0:
+        raise ValueError(f"Covariate '{ss.covariate}' has zero variance — cannot apply CUPED.")
+    cov_xy = (sxy - sx * sy / n) / (n - 1)
+    theta = cov_xy / var_x
+
+    mean_x = sx / n
+    mean_y_c, mean_y_t = ctrl.sy_j / ctrl.n_j, trt.sy_j / trt.n_j
+    mean_x_c, mean_x_t = ctrl.sx_j / ctrl.n_j, trt.sx_j / trt.n_j
+
+    raw_ate = mean_y_t - mean_y_c
+    # Y_adj = Y - θ(X - mean_x); group mean of Y_adj = mean_y_g - θ(mean_x_g - mean_x)
+    cuped_ate = (mean_y_t - theta * (mean_x_t - mean_x)) - (mean_y_c - theta * (mean_x_c - mean_x))
+
+    # Pooled variance before vs after adjustment:
+    # var(Y - θX) = var(Y) + θ²var(X) - 2θcov(X,Y)   (constants drop out)
+    var_before = (syy - sy * sy / n) / (n - 1)
+    var_after = var_before + theta * theta * var_x - 2.0 * theta * cov_xy
+    reduction = (1 - var_after / var_before) * 100 if var_before > 0 else 0.0
+
+    return CupedResult(
+        raw_ate=round(raw_ate, 6),
+        cuped_ate=round(cuped_ate, 6),
+        variance_reduction_pct=round(reduction, 2),
+        theta=round(theta, 6),
+    )
+
+
+def hte_from_stats(
+    ss: SufficientStats,
+    alpha: float = 0.05,
+    min_segment_size: int = 30,
+) -> HteResult:
+    """Per-subgroup Welch tests; mirrors stats_tools.run_hte (Bonferroni,
+    significant-first sort). interaction_p_value is None — the OLS F-test
+    needs row-level residuals the moments don't carry."""
+    total = ss.segment_total
+    results: list[SegmentResult] = []
+    for label, groups in ss.by_segment.items():
+        ctrl, trt = groups.get("control"), groups.get("treatment")
+        if ctrl is None or trt is None:
+            continue
+        if ctrl.n < min_segment_size or trt.n < min_segment_size:
+            continue
+        try:
+            t_stat, p, *_ = _welch(trt.n, _mean(trt), _var(trt),
+                                   ctrl.n, _mean(ctrl), _var(ctrl),
+                                   alpha, "two-sided")
+        except ValueError:
+            continue
+        ate = _mean(trt) - _mean(ctrl)
+        results.append(SegmentResult(
+            segment=label,
+            effect_size=round(ate, 6),
+            segment_share=round((ctrl.n + trt.n) / total, 4) if total else 0.0,
+            control_mean=round(_mean(ctrl), 6),
+            treatment_mean=round(_mean(trt), 6),
+            p_value=round(p, 6),
+            significant=bool(p < alpha),
+            n_control=ctrl.n,
+            n_treatment=trt.n,
+        ))
+
+    if not results:
+        raise ValueError(
+            f"No subgroups had >= {min_segment_size} observations per variant. "
+            "Try reducing min_segment_size or adding more data."
+        )
+
+    n_tests = len(results)
+    if n_tests > 1:
+        bonferroni_alpha = alpha / n_tests
+        for r in results:
+            r.significant = r.p_value < bonferroni_alpha
+
+    results.sort(key=lambda r: (not r.significant, -abs(r.effect_size)))
+    top = results[0]
+    return HteResult(
+        top_segment=top.segment,
+        effect_size=top.effect_size,
+        segment_share=top.segment_share,
+        all_segments=results,
+        interaction_p_value=None,
+    )
+
+
+def _week_to_int(val: Any) -> int | None:
+    """Mirror of novelty_tools' week normalization."""
+    try:
+        return int(float(val))
+    except (TypeError, ValueError):
+        pass
+    s = str(val).strip().lower()
+    for prefix in ("week_", "week", "w"):
+        if s.startswith(prefix):
+            s = s[len(prefix):]
+            break
+    try:
+        return int(s)
+    except (TypeError, ValueError):
+        return None
+
+
+def novelty_from_stats(ss: SufficientStats) -> NoveltyResult:
+    """Week-1 vs week-2 ATE; mirrors novelty_tools.detect_novelty_effect."""
+    weekly: dict[int, dict[str, GroupMoments]] = {}
+    for raw_week, groups in ss.by_week.items():
+        wk = _week_to_int(raw_week)
+        if wk is None:
+            raise ValueError(
+                f"week_col contains values that cannot be parsed as week numbers: "
+                f"{sorted(ss.by_week)}"
+            )
+        merged = weekly.setdefault(wk, {})
+        for variant, g in groups.items():
+            if variant in merged:
+                m = merged[variant]
+                merged[variant] = GroupMoments(
+                    n=m.n + g.n, s1=m.s1 + g.s1, s2=m.s2 + g.s2, s3=m.s3 + g.s3,
+                )
+            else:
+                merged[variant] = g
+
+    if not {1, 2}.issubset(weekly):
+        raise ValueError(f"week_col must contain weeks 1 and 2. Found: {set(weekly)}")
+
+    def ate_for_week(week: int) -> float:
+        groups = weekly[week]
+        ctrl, trt = groups.get("control"), groups.get("treatment")
+        if ctrl is None or trt is None or ctrl.n < 2 or trt.n < 2:
+            raise ValueError(f"Not enough data in week {week} to compute ATE.")
+        return _mean(trt) - _mean(ctrl)
+
+    week1_ate = ate_for_week(1)
+    week2_ate = ate_for_week(2)
+    abs1, abs2 = abs(week1_ate), abs(week2_ate)
+
+    if abs1 == 0 and abs2 == 0:
+        effect_direction = "stable"
+    elif abs1 == 0:
+        effect_direction = "growing" if week2_ate > 0 else "decaying"
+    elif abs2 > abs1 * 1.10:
+        effect_direction = "growing"
+    elif abs2 < abs1 * 0.90:
+        effect_direction = "decaying"
+    elif (week1_ate > 0) != (week2_ate > 0) and abs2 > 0:
+        effect_direction = "decaying"
+    else:
+        effect_direction = "stable"
+
+    sign_reversed = abs1 > 0 and abs2 > 0 and (week1_ate > 0) != (week2_ate > 0)
+    novelty_likely = (
+        effect_direction == "decaying"
+        and abs1 > 0
+        and (abs2 < 0.5 * abs1 or sign_reversed)
+    )
+    return NoveltyResult(
+        week1_ate=round(week1_ate, 6),
+        week2_ate=round(week2_ate, 6),
+        effect_direction=effect_direction,
+        novelty_likely=novelty_likely,
+    )
+
+
+def guardrails_from_stats(
+    ss: SufficientStats,
+    alpha: float = 0.05,
+    harm_directions: dict[str, str] | None = None,
+    default_direction: str = "both",
+) -> GuardrailResult:
+    """Mirrors guardrail_tools.check_guardrails (two-sided Welch, keyword
+    harm-direction inference, Bonferroni downgrade)."""
+    from tools.guardrail_tools import _infer_harm_direction
+
+    guardrails: list[GuardrailMetric] = []
+    for metric, groups in ss.guardrails.items():
+        ctrl, trt = groups.get("control"), groups.get("treatment")
+        if ctrl is None or trt is None or ctrl.n < 2 or trt.n < 2:
+            continue
+        ctrl_mean, trt_mean = _mean(ctrl), _mean(trt)
+        if ctrl_mean != 0:
+            delta_pct = (trt_mean - ctrl_mean) / abs(ctrl_mean) * 100
+        else:
+            delta_pct = (trt_mean - ctrl_mean) * 100
+        try:
+            _, p_value, *_ = _welch(trt.n, trt_mean, _var(trt),
+                                    ctrl.n, ctrl_mean, _var(ctrl),
+                                    alpha, "two-sided")
+        except ValueError:
+            continue
+
+        if harm_directions and metric in harm_directions:
+            direction = harm_directions[metric]
+        else:
+            inferred = _infer_harm_direction(metric)
+            direction = inferred if inferred != "both" else default_direction
+
+        significant = p_value < alpha
+        if direction == "increase":
+            breached = significant and (trt_mean > ctrl_mean)
+        elif direction == "decrease":
+            breached = significant and (trt_mean < ctrl_mean)
+        else:
+            breached = significant
+
+        guardrails.append(GuardrailMetric(
+            metric=metric,
+            control_mean=round(ctrl_mean, 6),
+            treatment_mean=round(trt_mean, 6),
+            delta_pct=round(delta_pct, 2),
+            p_value=round(p_value, 6),
+            breached=breached,
+        ))
+
+    n_tests = len(guardrails)
+    if n_tests > 1:
+        corrected_alpha = alpha / n_tests
+        for g in guardrails:
+            if g.breached and g.p_value >= corrected_alpha:
+                g.breached = False
+
+    breached_count = sum(1 for g in guardrails if g.breached)
+    return GuardrailResult(
+        guardrails=guardrails,
+        any_breached=breached_count > 0,
+        breached_count=breached_count,
+    )
