@@ -709,6 +709,12 @@ def log_run_node(state: AgentState) -> dict:
             if not narrative.strip():
                 logger.info("log_run: skipping SQL cache — narrative is empty")
                 return {"run_id": run_id}
+            # No user_id kwarg: store_cache UPDATEs the runs row this node just
+            # inserted, which already carries user_id — check_cache scopes by
+            # reading it back. Passing it here was a TypeError that killed
+            # every A/B run at this, the final node, from 2026-06-28 until a
+            # profiling session caught it — and meant the semantic cache
+            # stored nothing at all in that window.
             semantic_cache.store_cache(
                 task=task,
                 node_name="generate_sql",
@@ -719,7 +725,6 @@ def log_run_node(state: AgentState) -> dict:
                 },
                 run_id=run_id,
                 dataset_fingerprint=state.get("dataset_fingerprint") or state.get("duckdb_path", ""),
-                user_id=state.get("user_id"),
             )
         else:
             logger.info(
