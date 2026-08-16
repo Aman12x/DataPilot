@@ -171,13 +171,30 @@ deliberately not the app's Fernet key, which lives on the box being backed up.
 Every failure is recorded in the report and logged at warning: an off-box
 hiccup must never fail the maintenance pass.
 
-**It is inert until those variables are set, and they are not set on the
-production service today** (checked against Railway; with no bucket,
-`upload_backups_offbox` returns `{"enabled": False}` and the pass skips it). So
-the disk-loss gap above is still open in practice. Two operator steps close it:
-provision a bucket and set the variables, then do one restore drill — download
-a snapshot, point `AUTH_DB_PATH` at it locally, log in. Until that drill has
-been run, treat the off-box copies as untested rather than as a recovery plan.
+**Live on production since 2026-08-05**, against a Cloudflare R2 bucket
+(`datapilot-backups`). A pass logs the whole report at INFO, so `railway logs`
+shows exactly what happened:
+
+```
+'offbox': {'enabled': True, 'uploaded': ['datapilot-backups/auth-...db',
+           'datapilot-backups/datapilot_memory-...db'], 'pruned': [], 'errors': []}
+```
+
+**Restore drill, run 2026-08-05 and passing.** Downloaded the newest `auth.db`
+from the bucket, `PRAGMA integrity_check` clean, all nine tables present, and a
+pre-existing account authenticated against the restored file with a wrong
+password still rejected. Hashes and salts survive the `VACUUM INTO` snapshot,
+the R2 round trip and the restore. Re-run it after any change to the snapshot or
+upload path; a backup nobody has restored is not a recovery plan.
+
+**Two things to get right when configuring this.** The variables belong on the
+**backend** service — on this project that is `DataPilot`, not `pretty-emotion`,
+which serves the SPA and never runs the retention pass. Put them on the frontend
+and nothing uploads, silently. And `BACKUP_S3_ENDPOINT` must be the account-level
+host with **no bucket path**: R2's bucket page displays the endpoint with the
+bucket appended, and boto3 appends it again. Leave `BACKUP_S3_SSE` unset for R2,
+which encrypts at rest on its own — an `x-amz-server-side-encryption` header it
+refuses would fail every upload at warning level without failing the pass.
 
 ---
 
