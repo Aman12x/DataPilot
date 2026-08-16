@@ -32,7 +32,7 @@ certifi==2026.2.25
     #   httpx
     #   requests
     #   sentry-sdk
-cffi==2.1.1 ; platform_python_implementation != 'PyPy'
+cffi==2.1.1
     # via cryptography
 charset-normalizer==3.4.9
     # via requests
@@ -42,11 +42,6 @@ click==8.4.2
     #   uvicorn
 cmdstanpy==1.3.0
     # via prophet
-colorama==0.4.6 ; sys_platform == 'win32'
-    # via
-    #   click
-    #   pytest
-    #   tqdm
 contourpy==1.3.3
     # via matplotlib
 cryptography==50.0.0
@@ -54,11 +49,11 @@ cryptography==50.0.0
     #   -r backend/requirements.in
     #   google-auth
     #   python-jose
-cuda-bindings==13.3.1 ; python_full_version < '3.15' and sys_platform == 'linux'
+cuda-bindings==13.3.1
     # via torch
-cuda-pathfinder==1.6.0 ; python_full_version < '3.15' and sys_platform == 'linux'
+cuda-pathfinder==1.6.0
     # via cuda-bindings
-cuda-toolkit==13.0.3.0 ; sys_platform == 'linux'
+cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3.0
     # via torch
 cycler==0.12.1
     # via matplotlib
@@ -100,11 +95,11 @@ fsspec==2026.2.0
     # via
     #   huggingface-hub
     #   torch
-google-api-core==2.30.3
+google-api-core[grpc]==2.30.3
     # via
     #   google-cloud-bigquery
     #   google-cloud-core
-google-auth==2.56.3
+google-auth[pyopenssl]==2.56.3
     # via
     #   google-api-core
     #   google-cloud-bigquery
@@ -132,7 +127,7 @@ h11==0.16.0
     # via
     #   httpcore
     #   uvicorn
-hf-xet==1.6.0 ; platform_machine == 'AMD64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64'
+hf-xet==1.6.0
     # via huggingface-hub
 holidays==0.93
     # via prophet
@@ -239,46 +234,46 @@ numpy==2.5.2
     #   sentence-transformers
     #   stanio
     #   transformers
-nvidia-cublas==13.1.1.3 ; sys_platform == 'linux'
+nvidia-cublas==13.1.1.3
     # via
     #   cuda-toolkit
     #   nvidia-cudnn-cu13
     #   nvidia-cusolver
-nvidia-cuda-cupti==13.0.85 ; (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')
+nvidia-cuda-cupti==13.0.85
     # via cuda-toolkit
-nvidia-cuda-nvrtc==13.0.88 ; sys_platform == 'linux'
+nvidia-cuda-nvrtc==13.0.88
     # via
     #   cuda-toolkit
     #   nvidia-cublas
-nvidia-cuda-runtime==13.0.96 ; (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')
+nvidia-cuda-runtime==13.0.96
     # via cuda-toolkit
-nvidia-cudnn-cu13==9.20.0.48 ; sys_platform == 'linux'
+nvidia-cudnn-cu13==9.20.0.48
     # via torch
-nvidia-cufft==12.0.0.61 ; (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')
+nvidia-cufft==12.0.0.61
     # via cuda-toolkit
-nvidia-cufile==1.15.1.6 ; (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')
+nvidia-cufile==1.15.1.6
     # via cuda-toolkit
-nvidia-curand==10.4.0.35 ; (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')
+nvidia-curand==10.4.0.35
     # via cuda-toolkit
-nvidia-cusolver==12.0.4.66 ; (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')
+nvidia-cusolver==12.0.4.66
     # via cuda-toolkit
-nvidia-cusparse==12.6.3.3 ; (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')
+nvidia-cusparse==12.6.3.3
     # via
     #   cuda-toolkit
     #   nvidia-cusolver
-nvidia-cusparselt-cu13==0.8.1 ; sys_platform == 'linux'
+nvidia-cusparselt-cu13==0.8.1
     # via torch
-nvidia-nccl-cu13==2.29.7 ; sys_platform == 'linux'
+nvidia-nccl-cu13==2.29.7
     # via torch
-nvidia-nvjitlink==13.3.33 ; (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')
+nvidia-nvjitlink==13.3.33
     # via
     #   cuda-toolkit
     #   nvidia-cufft
     #   nvidia-cusolver
     #   nvidia-cusparse
-nvidia-nvshmem-cu13==3.4.5 ; sys_platform == 'linux'
+nvidia-nvshmem-cu13==3.4.5
     # via torch
-nvidia-nvtx==13.0.85 ; (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')
+nvidia-nvtx==13.0.85
     # via cuda-toolkit
 openpyxl==3.1.5
     # via -r backend/requirements.in
@@ -320,7 +315,7 @@ packaging==25.0
     #   matplotlib
     #   pytest
     #   transformers
-pandas==2.3.3
+pandas==3.0.5
     # via
     #   -r backend/requirements.in
     #   cmdstanpy
@@ -358,7 +353,7 @@ pyasn1==0.6.4
     #   rsa
 pyasn1-modules==0.4.2
     # via google-auth
-pycparser==3.0 ; implementation_name != 'PyPy' and platform_python_implementation != 'PyPy'
+pycparser==3.0
     # via cffi
 pydantic==2.13.4
     # via
@@ -392,12 +387,10 @@ python-dotenv==1.2.2
     # via
     #   -r backend/requirements.in
     #   uvicorn
-python-jose==3.5.0
+python-jose[cryptography]==3.5.0
     # via -r backend/requirements.in
 python-multipart==0.0.32
     # via -r backend/requirements.in
-pytz==2026.1.post1
-    # via pandas
 pyyaml==6.0.3
     # via
     #   huggingface-hub
@@ -439,10 +432,8 @@ scipy==1.18.0
     #   sentence-transformers
 sentence-transformers==5.6.1
     # via -r backend/requirements.in
-sentry-sdk==2.66.1
+sentry-sdk[fastapi]==2.66.1
     # via -r backend/requirements.in
-setuptools==84.0.0
-    # via torch
 shellingham==1.5.4
     # via typer
 six==1.17.0
@@ -482,7 +473,7 @@ tqdm==4.67.3
     #   transformers
 transformers==5.15.0
     # via sentence-transformers
-triton==3.7.1 ; python_full_version < '3.15' and sys_platform == 'linux'
+triton==3.7.1
     # via torch
 typer==0.24.1
     # via
@@ -512,10 +503,6 @@ typing-inspection==0.4.2
     # via
     #   fastapi
     #   pydantic
-tzdata==2026.3
-    # via
-    #   pandas
-    #   psycopg
 urllib3==2.7.0
     # via
     #   botocore
@@ -525,11 +512,11 @@ uuid-utils==0.14.1
     # via
     #   langchain-core
     #   langsmith
-uvicorn==0.52.3
+uvicorn[standard]==0.52.3
     # via
     #   -r backend/requirements.in
     #   sse-starlette
-uvloop==0.22.1 ; platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32'
+uvloop==0.22.1
     # via uvicorn
 watchfiles==1.2.0
     # via uvicorn
