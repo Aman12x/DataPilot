@@ -81,14 +81,34 @@ def _llm_resolve_intent(
     }
 
     try:
-        with trace_generation("resolve_task_intent", _model(), task_prompt,
-                              max_tokens=256) as gen:
-            response = _anthropic_client().messages.create(
-                model=_model(),
-                max_tokens=256,
-                messages=messages,
+        try:
+            with trace_generation("resolve_task_intent", _model(), task_prompt,
+                                  max_tokens=256) as gen:
+                response = _anthropic_client().messages.create(
+                    model=_model(),
+                    max_tokens=256,
+                    messages=messages,
+                )
+                cost_info = gen.update(response)
+        except anthropic.NotFoundError:
+            # A dead MODEL pin is a permanent config error, not a transient
+            # failure — falling into safe_default would silently disable
+            # intent resolution on EVERY run (this happened: a retired model
+            # id sat in the env and intent 404'd for weeks unnoticed).
+            # Retry once on the workhorse model and shout.
+            logger.error(
+                "resolve_task_intent: model %r not found (stale MODEL env pin?) "
+                "— retrying on FAST_MODEL %r. Fix the pin.",
+                _model(), _fast_model(),
             )
-            cost_info = gen.update(response)
+            with trace_generation("resolve_task_intent", _fast_model(), task_prompt,
+                                  max_tokens=256) as gen:
+                response = _anthropic_client().messages.create(
+                    model=_fast_model(),
+                    max_tokens=256,
+                    messages=messages,
+                )
+                cost_info = gen.update(response)
         raw = response_text(response).strip()
         # Strip markdown fences if present
         if raw.startswith("```"):
