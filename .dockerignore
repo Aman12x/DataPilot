@@ -35,3 +35,10 @@ frontend/dist/
 # Docs
 *.md
 decisions.md
+
+# Local state that must never ride along in a build context
+.env.*
+*.db
+*.sqlite
+*.sqlite3
+tmp_uploads/

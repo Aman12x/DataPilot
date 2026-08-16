@@ -47,6 +47,26 @@ that no longer exist.
 `/app/data`; only the read path is configurable, so repointing it sends the app
 looking for a file nothing creates.
 
+### The container user
+
+The backend runs as the unprivileged `app` user (uid 1000), not root. The
+volume at `/app/db` is created root-owned outside the image, so
+`backend/entrypoint.sh` starts as root, `chown`s the mount once (only when its
+owner is wrong), and `exec`s uvicorn through `setpriv` as `app`. There is no
+`USER` directive in the Dockerfile on purpose — put one in and the entrypoint
+can no longer fix the volume, and every SQLite open under `/app/db` fails with
+`readonly database` / `unable to open database file`.
+
+Two things follow from the uid change:
+
+- `HF_HOME=/app/.cache/huggingface` is set in the image and must stay set. The
+  MiniLM model is loaded with `local_files_only=True` and silently falls back
+  to a hashing embedder when the cache isn't where `huggingface_hub` looks;
+  the default `~/.cache` differs between build-time root and runtime `app`.
+- If Railway's `RAILWAY_RUN_UID` is set on the service, it must be `1000` (or
+  unset). Any other value and the entrypoint's `chown` and the platform's
+  idea of the user disagree.
+
 ### Boot-time hard failures
 
 The backend refuses to start when deployed if `SECRET_KEY` is missing, shorter
@@ -270,6 +290,8 @@ The sending domain must also be verified in Resend. `EMAIL_TIMEOUT_SECONDS`
 | Password reset silently does nothing | `EMAIL_FROM` malformed or domain unverified — check logs |
 | Brute force isn't rate limited | Client IP resolving to a rotating address; `DEBUG_CLIENT_IP=true` |
 | No chain-of-thought events with Redis on | `_publish_sync` needs the passed-in loop |
+| `/health` shows `"redis": "fallback_in_memory"` | `REDIS_URL` set but unreachable at boot; limits/budgets are single-pod until restart. Boot log has `REDIS FALLBACK` at ERROR (Sentry event) |
+| SQLite `readonly database` / `unable to open database file` under `/app/db` | Container not starting as root, so `entrypoint.sh` couldn't `chown` the volume — check `RAILWAY_RUN_UID` and that `ENTRYPOINT` wasn't overridden by a `startCommand` |
 | Disk filling | Check `sizes_mb` in the retention log; `graph_free` shows reclaimable bytes |
 | Analyses stall while API stays up | Graph executor saturated — `MAX_CONCURRENT_GRAPH_INVOKES` |
 | Whole API stalls | Something blocking on the event loop — `pytest tests/test_event_loop_blocking.py` names the call |
