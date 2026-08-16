@@ -13,17 +13,7 @@
 
 # --- No upstream fix at the time of writing ---------------------------------
 PYSEC-2026-1325   # ecdsa==0.19.2         fix: none   Minerva timing on P-256 sign_digest; we verify JWTs (HS256), never sign with ecdsa
-PYSEC-2026-139    # torch==2.10.0         fix: none   pt2 loading handler deserialization; app loads only the baked-in MiniLM, never user models
 
 # --- Fixable: waiting on the next Dependabot pass (requirements.in bump) -----
-PYSEC-2026-2132   # click==8.3.1          fix: 8.3.3
-PYSEC-2026-215    # idna==3.11            fix: 3.15
-PYSEC-2026-2987   # pygments==2.19.2      fix: 2.20.0
-PYSEC-2026-2275   # requests==2.32.5      fix: 2.33.0  extract_zipped_paths tmp-file race; not called by the app
-PYSEC-2026-141    # urllib3==2.6.3        fix: 2.7.0   proxy cross-origin redirect header leak
-PYSEC-2026-142    # urllib3==2.6.3        fix: 2.7.0   streaming read decompresses whole body
-PYSEC-2026-2582   # langsmith==0.7.20     fix: 0.8.0   pull_prompt deserialization; app never pulls prompts from LangSmith
-PYSEC-2026-2583   # langsmith==0.7.20     fix: 0.7.31  hide_outputs not applied to streamed tokens
-GHSA-f4xh-w4cj-qxq8 # langsmith==0.7.20   fix: 0.8.18  TracingMiddleware arbitrary file read; middleware not installed here
-PYSEC-2026-2290   # transformers==5.3.0   fix: 5.5.0   LightGlue model-loading RCE from attacker repo; only baked-in MiniLM is loaded
-PYSEC-2025-194    # torch==2.10.0         fix: 2.13.0  torch.jit.script memory corruption, local attack only
+# (empty — the 11 entries that sat here were cleared by the 2026-08-16 recompile:
+#  click, idna, pygments, requests, urllib3, langsmith, transformers, torch)
