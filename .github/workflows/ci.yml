@@ -39,6 +39,14 @@ jobs:
       - name: Check Python dependency consistency
         run: python -m pip check
 
+      # Python counterpart of `npm audit --audit-level=high` in build-frontend.
+      # Audits the pins in backend/requirements.txt as written (no resolve, no
+      # install) and fails on any ID not triaged in backend/pip-audit-ignore.txt.
+      - name: Audit backend dependencies
+        run: |
+          python -m pip install --quiet pip-audit
+          python backend/pip_audit_gate.py
+
       # data/dau_experiment.db is gitignored, and the fixture-integrity tests in
       # tests/test_sql_generation_eval.py open it read-only. Skipping them when it
       # is absent would let the eval's tables drift unnoticed, so build it here.

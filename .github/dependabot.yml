@@ -12,8 +12,10 @@ version: 2
 # so in practice only majors and failures should ever need attention here.
 #
 # Monthly does mean a security patch can sit for up to a month. `npm audit
-# --audit-level=high` and gitleaks run on every push, so a high-severity issue
-# still turns CI red — that is the backstop, not the schedule.
+# --audit-level=high`, `backend/pip_audit_gate.py` (pip-audit over the backend
+# pins, minus the triaged IDs in backend/pip-audit-ignore.txt) and gitleaks run
+# on every push, so a new advisory still turns CI red — that is the backstop,
+# not the schedule.
 
 updates:
   # Root requirements.txt is a single `-r backend/requirements.txt` line, so

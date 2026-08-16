@@ -7,7 +7,7 @@
 
 PYTHON ?= $(shell [ -x ./venv/bin/python ] && echo ./venv/bin/python || echo python3)
 
-.PHONY: eval eval-all eval-full eval-baseline test test-fast test-all data clean e2e
+.PHONY: eval eval-all eval-full eval-baseline test test-fast test-all audit data clean e2e
 
 ## Run all fast offline evals (no API key)
 eval:
@@ -38,6 +38,10 @@ test:
 ## so a green run here does not mean CI is green — see `make test`.
 test-fast:
 	$(PYTHON) -m pytest tests/ -q -m "not integration and not slow" --tb=short
+
+## Same dependency audit CI runs (test-backend). Needs `pip install pip-audit`.
+audit:
+	$(PYTHON) backend/pip_audit_gate.py
 
 ## Everything, including integration tests (needs live Redis + Postgres)
 test-all:
