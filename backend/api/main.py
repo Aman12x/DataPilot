@@ -152,6 +152,7 @@ async def lifespan(app: FastAPI):
     # ── Redis ─────────────────────────────────────────────────────────────────
     from .run_manager import REDIS_URL, set_redis_client
     redis_client = None
+    app.state.redis_fallback = False
     if REDIS_URL:
         try:
             import redis.asyncio as aioredis
@@ -160,7 +161,16 @@ async def lifespan(app: FastAPI):
             set_redis_client(redis_client)
             logger.info("Redis connected (%s)", REDIS_URL.split("@")[-1])
         except Exception as exc:
-            logger.warning("Redis connection failed (%s) — using in-memory queues", exc)
+            # ERROR, not WARNING: the operator configured Redis, so this pod
+            # is now silently single-pod for auth rate limits, guest budgets
+            # and run queues. Sentry captures ERROR-level records as events;
+            # /health reports redis="fallback_in_memory" for the smoke check.
+            logger.error(
+                "REDIS FALLBACK: REDIS_URL is set but the connection failed (%s) — "
+                "using in-memory rate limits/budgets/queues (single-pod only)",
+                exc,
+            )
+            app.state.redis_fallback = True
             redis_client = None
     else:
         logger.info("REDIS_URL not set — using in-memory run queues (single-pod only)")
@@ -342,6 +352,14 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "Content-Security-Policy", _DOCS_CSP if is_docs else _API_CSP
         )
 
+        # Token-bearing and identity responses must never be cached by a
+        # shared proxy or the browser's back/forward cache. Set/refresh return
+        # tokens in the body when AUTH_RETURN_TOKENS is on, and /auth/me
+        # returns the account.
+        if path == "/auth" or path.startswith("/auth/"):
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["Pragma"] = "no-cache"
+
         if is_deployed():
             response.headers.setdefault(
                 "Strict-Transport-Security",
@@ -375,8 +393,12 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"] if _wildcard else _origins,
     allow_credentials=not _wildcard,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    # Explicit rather than "*": every verb the routers declare, and only the
+    # headers the SPA sends (frontend/src/api/client.ts). Safelisted headers
+    # (Accept, Content-Type for simple types) never need listing; Content-Type
+    # is here for JSON and multipart bodies.
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Workspace-Id"],
 )
 
 from .routes.auth import router as auth_router

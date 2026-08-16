@@ -528,6 +528,20 @@ class TestHealth:
         assert "checks" in body
         assert body["checks"]["graph"] == "ok"
 
+    def test_health_surfaces_redis_fallback(self, client):
+        """REDIS_URL set but unreachable at boot must not read as the benign
+        "not_configured": limits and budgets are single-pod in that state."""
+        state = client.app.state
+        before = getattr(state, "redis_fallback", False)
+        state.redis_fallback = True
+        try:
+            r = client.get("/health")
+            assert r.json()["checks"]["redis"] == "fallback_in_memory"
+            # Not an outage: one pod still serves correctly, so no 503 from it.
+            assert not r.json()["checks"]["redis"].startswith("error")
+        finally:
+            state.redis_fallback = before
+
 
 # ════════════════════════════════════════════════════════════════════════════════
 # PDF

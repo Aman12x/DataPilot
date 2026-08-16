@@ -420,6 +420,11 @@ async def health(request: Request):
             checks["redis"] = "ok"
         except Exception as exc:
             checks["redis"] = f"error: {exc}"
+    elif getattr(request.app.state, "redis_fallback", False):
+        # REDIS_URL was set but unreachable at boot: limits and budgets are
+        # in-memory on this pod. Not an "error" (the app serves fine on one
+        # pod) but distinct from "not_configured" so it cannot hide.
+        checks["redis"] = "fallback_in_memory"
     else:
         checks["redis"] = "not_configured"
 

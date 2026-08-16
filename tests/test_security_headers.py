@@ -63,6 +63,60 @@ def test_existing_headers_still_present(client):
     assert "camera=()" in headers["Permissions-Policy"]
 
 
+def test_auth_responses_are_never_cacheable(client):
+    """Set/refresh can return tokens in the body and /auth/me returns the
+    account; a shared proxy or bfcache must not hold onto either."""
+    for path in ("/auth/me", "/auth/refresh", "/auth/login"):
+        headers = client.get(path).headers
+        assert headers.get("Cache-Control") == "no-store", path
+        assert headers.get("Pragma") == "no-cache", path
+
+
+def test_no_store_does_not_leak_to_other_routes(client):
+    for path in ("/health", "/authors", "/no-such-route"):
+        assert client.get(path).headers.get("Cache-Control") != "no-store", path
+
+
+# ── CORS ──────────────────────────────────────────────────────────────────────
+
+
+def _preflight(client, method, headers=None):
+    request_headers = {
+        "Origin": "http://localhost:5173",
+        "Access-Control-Request-Method": method,
+    }
+    if headers is not None:
+        request_headers["Access-Control-Request-Headers"] = headers
+    return client.options("/runs", headers=request_headers)
+
+
+def test_cors_allows_the_headers_the_spa_sends(client):
+    """frontend/src/api/client.ts sends Authorization, Content-Type and
+    X-Workspace-Id. Anything else the browser asks for must be refused."""
+    r = _preflight(client, "POST", "authorization, content-type, x-workspace-id")
+    assert r.status_code == 200
+    allowed = {h.strip().lower() for h in r.headers["Access-Control-Allow-Headers"].split(",")}
+    assert {"authorization", "content-type", "x-workspace-id"} <= allowed
+
+
+def test_cors_refuses_headers_nobody_sends(client):
+    r = _preflight(client, "POST", "x-evil-header")
+    assert r.status_code == 400
+
+
+def test_cors_lists_explicit_methods_not_wildcard(client):
+    r = _preflight(client, "DELETE")
+    assert r.status_code == 200
+    methods = r.headers["Access-Control-Allow-Methods"]
+    assert "*" not in methods
+    for verb in ("GET", "POST", "PUT", "PATCH", "DELETE"):
+        assert verb in methods
+
+
+def test_cors_refuses_methods_no_router_declares(client):
+    assert _preflight(client, "TRACE").status_code == 400
+
+
 # ── Docs pages ────────────────────────────────────────────────────────────────
 
 
