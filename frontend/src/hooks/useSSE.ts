@@ -79,8 +79,15 @@ export function useSSE(runId: string | null, reconnectTrigger: number = 0) {
   const [error, setError] = useState<string>("");
   const [steps, setSteps] = useState<StepEvent[]>([]);
   // Live narrative draft, streamed token-batch by token-batch while
-  // generate_narrative runs. narrative_start resets it so an audit-declined
-  // revision replaces the stale draft instead of appending to it.
+  // generate_narrative runs. It is cleared when a gate arrives (the gate
+  // shows the finished draft from its payload) so that the revision after a
+  // narrative-gate decline starts from empty. We cannot rely on the server's
+  // narrative_start for that: the resumed worker emits it within ms of the
+  // resume POST, before the browser has minted a stream token and opened the
+  // new EventSource, and a reconnect reads the Redis stream from `$` — so in
+  // production the reset was lost and revision deltas appended to the old
+  // draft under "Writing narrative…". narrative_start is kept as a
+  // belt-and-braces reset for the in-memory (replayed) path.
   const [narrativeDraft, setNarrativeDraft] = useState<string>("");
   const gateReceivedRef = useRef(false);
 
@@ -130,6 +137,7 @@ export function useSSE(runId: string | null, reconnectTrigger: number = 0) {
           }
           if (m.type === "gate") {
             gateReceivedRef.current = true;
+            setNarrativeDraft("");
             setGate(m as unknown as GateEvent);
           }
           if (m.type === "done") {
