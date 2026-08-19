@@ -226,7 +226,24 @@ jobs:
 
       - name: Install Playwright browsers
         working-directory: frontend
-        run: npx playwright install --with-deps chromium
+        # `--with-deps` runs apt-get, and the runner image's default mirror
+        # (azure.archive.ubuntu.com) has stalled mid-`apt-get update` with no
+        # timeout — the step sat for 18 min until the job limit killed it,
+        # three runs in a row on 2026-08-19 — while archive.ubuntu.com
+        # answered in the same log. Point apt at the canonical mirror, give
+        # it a network timeout, and retry once so a transient blip does not
+        # cost a whole job.
+        run: |
+          set -euo pipefail
+          if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+            sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+              /etc/apt/sources.list.d/ubuntu.sources
+          fi
+          echo 'Acquire::http::Timeout "30"; Acquire::https::Timeout "30"; Acquire::Retries "3";' \
+            | sudo tee /etc/apt/apt.conf.d/99-datapilot-timeouts >/dev/null
+          timeout 8m npx playwright install --with-deps chromium \
+            || { echo "::warning::Playwright install stalled — retrying once"; \
+                 timeout 8m npx playwright install --with-deps chromium; }
 
       - name: Run E2E tests
         working-directory: frontend
