@@ -55,13 +55,16 @@ def test_oversized_general_query_blocks_at_query_gate(tmp_duckdb, monkeypatch):
     assert routed == "query_gate"
 
 
-def test_other_general_failures_keep_the_old_empty_frame_path(tmp_duckdb, monkeypatch):
-    """Scope guard: only the materialisation refusal is promoted to a block."""
+def test_other_general_failures_also_block_at_query_gate(tmp_duckdb, monkeypatch):
+    """Any terminal DB error in general mode goes back to the analyst with the
+    DB's message, instead of an empty frame and a 'no data' narrative."""
     monkeypatch.setattr(ns, "_db_conn", lambda state: DBConnection("duckdb", path=tmp_duckdb))
     monkeypatch.setattr(ns, "_llm_correct_sql", lambda sql, *a: sql)
     st = {**_state(tmp_duckdb), "generated_sql": "SELECT nope FROM events"}
 
     out = ns.execute_query(st)
     assert out["query_result"].empty
-    assert not out.get("sql_validation_warnings")
-    assert _route_after_execute_query({**st, **out}) == "describe_data"
+    warnings = out["sql_validation_warnings"]
+    assert len(warnings) == 1 and warnings[0].startswith("Query failed:")
+    assert "nope" in warnings[0]          # the DB's own message, for the analyst
+    assert _route_after_execute_query({**st, **out}) == "query_gate"

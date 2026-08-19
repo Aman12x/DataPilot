@@ -153,8 +153,9 @@ def _route_after_metric_config_gate(state: AgentState) -> str:
 
 
 # Substrings of sql_validation_warnings that must stop the run at query_gate.
-# "-row limit" is the ResultTooLargeError message (tools/db_tools.py).
-_BLOCKING_WARNING_MARKERS = ("0 rows", "-row limit")
+# "-row limit" is the ResultTooLargeError message (tools/db_tools.py);
+# "Query failed:" is execute_query's wrapper for any other terminal DB error.
+_BLOCKING_WARNING_MARKERS = ("0 rows", "-row limit", "Query failed:")
 
 
 def _is_blocking_warning(w: str) -> bool:

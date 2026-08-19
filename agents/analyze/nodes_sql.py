@@ -375,11 +375,22 @@ def execute_query(state: AgentState) -> dict:
                     "sql_validation_warnings": [str(last_exc)],
                     "sufficient_stats":        None,
                 }
+            # Same treatment for every other terminal failure: the analyst
+            # approved this SQL at query_gate and is the one who can fix it.
+            # An empty frame here used to run the whole pipeline on nothing
+            # and end in a "no data" narrative. The DB's message names the
+            # column/table and is shown to the analyst (their own data); the
+            # log keeps only the class.
+            detail = str(last_exc) if last_exc is not None else "no result was produced"
             logger.warning(
-                "execute_query: LLM SQL failed for general-mode query — "
-                "returning empty DataFrame. Check schema context and SQL generation prompt."
+                "execute_query: general-mode SQL failed (%s) — returning to query_gate.",
+                redact_exception(last_exc) if last_exc is not None else "no exception",
             )
-            return {"query_result": pd.DataFrame()}
+            return {
+                "query_result":            pd.DataFrame(),
+                "sql_validation_warnings": [f"Query failed: {detail}"],
+                "sufficient_stats":        None,
+            }
         canonical_sql = _canonical_experiment_sql(mc)
         try:
             df, sufficient_stats = _fetch_or_pushdown(state, canonical_sql, mc)
