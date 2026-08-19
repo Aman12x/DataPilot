@@ -24,7 +24,7 @@ import time
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.responses import Response
 from pydantic import BaseModel, Field, field_validator
 from sse_starlette.sse import EventSourceResponse
@@ -617,17 +617,39 @@ async def stream_token(
     return {"stream_token": token}
 
 
+# Redis stream entry ids are "<ms>-<seq>"; "$" = only new entries, "0" = from
+# the beginning. Anything else is not a resume point we can hand to XREAD.
+_STREAM_ID_RE = re.compile(r"^(\$|0|\d+-\d+)$")
+
+
 @router.get("/runs/{run_id}/stream")
 async def stream_run(
     run_id: str,
     request: Request,
     stream_token: str = Query(...),
-    last_id: str = Query(default="$"),  # pass Last-Event-ID on reconnect
+    last_id: str = Query(default="$"),
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
 ):
+    """SSE stream for one run.
+
+    Every event carries the Redis stream id it came from as its SSE `id`, so a
+    client can resume mid-stream: the frontend opens a *new* EventSource on
+    resume/token refresh (a browser auto-reconnect would send Last-Event-ID by
+    itself) and passes the last id it saw as `?last_id=`. Without it a
+    reconnect reads from `$` and everything published during the reconnect
+    window — the narrative_start reset, the first deltas of a revision — is
+    simply gone. `Last-Event-ID` is honoured too for the auto-reconnect case.
+    In-memory mode has no ids (events carry "$") and cannot replay; that only
+    matters for single-process dev.
+    """
     current_user = _user_from_stream_token(stream_token, run_id)
     graph        = _get_graph(request)
     await _check_ownership(graph, run_id, current_user["user_id"])
 
+    if last_id == "$" and last_event_id:
+        last_id = last_event_id
+    if not _STREAM_ID_RE.match(last_id):
+        last_id = "$"
     effective_last_id = last_id
 
     async def event_generator():
@@ -713,13 +735,16 @@ async def stream_run(
 
             # Forward Chain-of-Thought steps and narrative-draft deltas directly
             if item.get("type") in ("step", "narrative_start", "narrative_delta"):
-                yield {"data": json.dumps(item)}
+                yield {"data": json.dumps(item), "id": effective_last_id}
                 continue
 
             if not item.get("ok"):
                 cleanup_run(run_id)
                 logger.error("run.error run=%s: %s", run_id, item.get("error"))
-                yield {"data": json.dumps({"type": "error", "message": item.get("error", "Unknown error")})}
+                yield {
+                    "data": json.dumps({"type": "error", "message": item.get("error", "Unknown error")}),
+                    "id": effective_last_id,
+                }
                 return
 
             interrupt_payload = await asyncio.to_thread(
@@ -776,7 +801,7 @@ async def stream_run(
                     "deck_data":        {},
                 },
             }
-            yield {"data": json.dumps(done_event, cls=_JsonEncoder)}
+            yield {"data": json.dumps(done_event, cls=_JsonEncoder), "id": effective_last_id}
             return
 
     return EventSourceResponse(event_generator())

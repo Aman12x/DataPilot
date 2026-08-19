@@ -298,12 +298,16 @@ call. Everything else uses `FAST_MODEL`. If the `MODEL` pin 404s
 (`anthropic.NotFoundError`), intent retries once on `FAST_MODEL` and logs at
 ERROR; any other error still lands in the safe default.
 
-**A reconnecting SSE client reads the Redis stream from `$`** (it never sends
-`last_id`), so anything published during the reconnect window — between
-`resume()` and the new `EventSource` opening — is gone. Never make client state
-depend on a server event in that window; clear the streamed narrative draft on
-the `gate` event the client always sees, not on `narrative_start`. In-memory
-mode replays the queue and hides this, so it only reproduces in production.
+**SSE resume is by stream id, and only in Redis mode.** Every event the
+server yields carries its Redis stream id as the SSE `id`; `useSSE` remembers
+the last one and passes `?last_id=` when it opens a fresh `EventSource` (on
+resume and on token refresh — a browser auto-reconnect would send
+`Last-Event-ID`, which is honoured too). Before that, a reconnect read from `$`
+and anything published in the reconnect window — the `narrative_start` reset,
+the first deltas of a revision — was gone, which is why the draft is *also*
+cleared client-side on the `gate` event. In-memory mode has no ids and cannot
+replay, so that class of bug only reproduces in production; keep client state
+independent of server events that land in a reconnect window.
 
 **`npx playwright install --with-deps` can hang for the whole job.** The runner
 image picks its apt mirror through `mirror+file:/etc/apt/apt-mirrors.txt`, and
@@ -336,10 +340,6 @@ Detail — why each is open, the intended fix, and how to verify — lives in
   as of 2026-08-19 (`HTTP_413_CONTENT_TOO_LARGE` rename landed with the FastAPI
   0.141 pins). Before acting on one, check the version **CI** resolves — the
   local venv has run ahead of the pins before.
-- **SSE reconnect drops the in-flight narrative deltas** (token refresh every
-  50 min, or a slow reconnect after a gate): the client never sends `last_id`
-  so it reads from `$`. Cosmetic — the gate shows the real draft afterwards —
-  but the fix is to track the last `_stream_id` client-side and pass it.
 - **A fenced draft renders its opening ```` ``` ```` line while streaming**:
   `sanitiseNarrative` only strips *closed* fences and the server strips the
   outer fence only on the final message.

@@ -90,6 +90,11 @@ export function useSSE(runId: string | null, reconnectTrigger: number = 0) {
   // belt-and-braces reset for the in-memory (replayed) path.
   const [narrativeDraft, setNarrativeDraft] = useState<string>("");
   const gateReceivedRef = useRef(false);
+  // Last SSE id seen (the server stamps every event with its Redis stream
+  // id). Passed as ?last_id= when we open a fresh EventSource on resume or
+  // token refresh, so the server replays what was published during the
+  // reconnect window instead of starting from "$" and dropping it.
+  const lastEventIdRef = useRef<string>("");
 
   useEffect(() => {
     setGate(null);
@@ -97,6 +102,7 @@ export function useSSE(runId: string | null, reconnectTrigger: number = 0) {
     setError("");
     setSteps([]);
     setNarrativeDraft("");
+    lastEventIdRef.current = "";
   }, [runId]);
 
   useEffect(() => {
@@ -113,11 +119,15 @@ export function useSSE(runId: string | null, reconnectTrigger: number = 0) {
         );
         if (cancelled) return;
 
+        const resume = lastEventIdRef.current && lastEventIdRef.current !== "$"
+          ? `&last_id=${encodeURIComponent(lastEventIdRef.current)}`
+          : "";
         es = new EventSource(
-          `${API_BASE}/runs/${runId}/stream?stream_token=${encodeURIComponent(data.stream_token)}`
+          `${API_BASE}/runs/${runId}/stream?stream_token=${encodeURIComponent(data.stream_token)}${resume}`
         );
 
         es.onmessage = (e) => {
+          if (e.lastEventId) lastEventIdRef.current = e.lastEventId;
           let msg: unknown;
           try {
             msg = JSON.parse(e.data);
