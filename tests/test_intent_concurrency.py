@@ -129,3 +129,29 @@ class TestGraphShape:
         g = build_graph()
         assert "infer_metric_config" not in g.get_graph().nodes
         assert "resolve_task_intent" in g.get_graph().nodes
+
+
+class TestSpendContextPropagation:
+    def test_worker_threads_see_the_active_meter(self, monkeypatch):
+        """ThreadPoolExecutor drops contextvars; the node must copy the context
+        so both LLM calls price into the run's meter (and its budget)."""
+        from agents import spend
+
+        seen: dict[str, object] = {}
+
+        def _intent(*a):
+            seen["intent"] = spend.current_meter()
+            return _intent_result(), {}
+
+        def _infer(*a):
+            seen["infer"] = spend.current_meter()
+            return load_metric_config(), {}
+
+        monkeypatch.setattr(ni, "_llm_resolve_intent", _intent)
+        monkeypatch.setattr(ni, "_llm_infer_config", _infer)
+
+        with spend.meter() as m:
+            ni.resolve_task_intent(_upload_state())
+
+        assert seen["intent"] is m
+        assert seen["infer"] is m

@@ -276,10 +276,22 @@ def resolve_task_intent(state: AgentState) -> dict:
 
     costs: list[dict] = []
     if run_infer:
+        import contextvars
         from concurrent.futures import ThreadPoolExecutor
+        # ThreadPoolExecutor does not propagate contextvars, so without an
+        # explicit copy the worker threads see no active spend meter (and no
+        # Langfuse/OTel trace): both LLM calls would price to nowhere and the
+        # run's budget would under-count. One fresh copy per submit, as
+        # LangGraph's own executor does.
         with ThreadPoolExecutor(max_workers=2, thread_name_prefix="intent") as pool:
-            intent_future = pool.submit(_llm_resolve_intent, task, schema_context, mc)
-            infer_future  = pool.submit(_llm_infer_config, schema_context)
+            intent_future = pool.submit(
+                contextvars.copy_context().run,
+                _llm_resolve_intent, task, schema_context, mc,
+            )
+            infer_future  = pool.submit(
+                contextvars.copy_context().run,
+                _llm_infer_config, schema_context,
+            )
             result, intent_cost      = intent_future.result()
             inferred_mc, infer_cost  = infer_future.result()
         costs += [intent_cost, infer_cost]
