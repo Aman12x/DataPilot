@@ -2,7 +2,12 @@
 # do not edit it by hand.
 #
 #   uv pip compile backend/requirements.in -o backend/requirements.txt \
-#       --python-version 3.13
+#       --python-version 3.13 --universal
+#
+# --universal matters: it emits environment markers so the Linux-only CUDA/
+# triton wheels torch pulls in do not break `pip install -r` on a Mac dev
+# box. A Dependabot recompile (#68) once flattened the file to a single-
+# platform resolve; if the markers vanish, recompile with the line above.
 #
 # Why the split: requirements.txt used to be a pip freeze, so ~85 transitive
 # packages were pinned alongside the ~30 real ones. Dependabot cannot tell the
@@ -50,7 +55,7 @@ fpdf2==2.8.8
 # ── Data sources (BYO connectors) ─────────────────────────────────────────────
 psycopg2-binary>=2.9
 pymysql>=1.1.0
-google-cloud-bigquery>=3.25.0
+google-cloud-bigquery[bqstorage]>=3.25.0
 db-dtypes>=1.7.1
 openpyxl>=3.1
 

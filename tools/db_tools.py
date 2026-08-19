@@ -64,6 +64,19 @@ _FILE_READ_RE = re.compile(
 _MAX_MATERIALIZE_ROWS = int(os.getenv("SQL_MAX_MATERIALIZE_ROWS", "5000000"))
 
 
+def _is_bqstorage_failure(exc: BaseException) -> bool:
+    """True for the errors the Storage Read API raises when it cannot be used
+    for this job — permission, API not enabled, quota, transport — as opposed
+    to a failure of the query itself (which finished before we got here)."""
+    try:
+        from google.api_core import exceptions as gexc
+    except ImportError:  # pragma: no cover
+        return False
+    return isinstance(exc, (gexc.PermissionDenied, gexc.Forbidden, gexc.ServiceUnavailable,
+                            gexc.ResourceExhausted, gexc.FailedPrecondition,
+                            gexc.MethodNotImplemented, gexc.Unauthenticated))
+
+
 class ResultTooLargeError(ValueError):
     """Raised when a result set exceeds the materialisation ceiling.
 
@@ -502,9 +515,21 @@ class DBConnection:
             raise ResultTooLargeError(int(total), _MAX_MATERIALIZE_ROWS)
 
         # The Storage Read API streams Arrow instead of paging REST JSON; it is
-        # the difference between seconds and minutes on a large extract. Falls
-        # back automatically when google-cloud-bigquery-storage is absent.
-        return rows.to_dataframe(create_bqstorage_client=True)
+        # the difference between seconds and minutes on a large extract. The
+        # client falls back to REST by itself when the bigquery-storage
+        # package is absent, but NOT when the service account lacks
+        # bigquery.readsessions.create (or the API is disabled): that raises.
+        # A customer's SA with plain jobUser/dataViewer must still get rows.
+        try:
+            return rows.to_dataframe(create_bqstorage_client=True)
+        except Exception as exc:  # noqa: BLE001 — GoogleAPICallError family
+            if not _is_bqstorage_failure(exc):
+                raise
+            logger.warning(
+                "BigQuery Storage Read API unavailable (%s) — falling back to REST paging",
+                type(exc).__name__,
+            )
+            return rows.to_dataframe(create_bqstorage_client=False)
 
     # ── Schema inspection ──────────────────────────────────────────────────────
 
