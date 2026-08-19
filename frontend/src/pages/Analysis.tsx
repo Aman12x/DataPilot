@@ -1152,7 +1152,7 @@ function ActiveRun({
               <span style={s.processingDot} />
               Writing narrative…
             </div>
-            <Markdown content={sanitiseNarrative(narrativeDraft)} />
+            <Markdown content={sanitiseNarrative(narrativeDraft, true)} />
           </div>
         )}
         <ChainOfThought steps={steps} isRunning={isRunning} />

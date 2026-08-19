@@ -93,12 +93,32 @@ export function stripMarkdown(md: string): string {
     .trim();
 }
 
-/** Remove SQL / code fences from narrative before rendering. */
-export function sanitiseNarrative(md: string): string {
-  const trimmed = md.trim();
+/**
+ * Remove SQL / code fences from narrative before rendering.
+ *
+ * `partial` is for the live draft, which arrives token-batch by token-batch:
+ * a fence the model has opened but not yet closed must not render as a
+ * literal ``` line (the outer wrapper the model sometimes puts around the
+ * whole answer) or as raw SQL (an embedded example mid-stream). For the
+ * finished narrative an unclosed fence is left alone — stripping to the end
+ * would hide real content behind a formatting slip.
+ */
+export function sanitiseNarrative(md: string, partial = false): string {
+  let trimmed = md.trim();
   // If the entire narrative is wrapped in a single outer code fence, extract it.
   const outerFence = trimmed.match(/^```[\w]*\n([\s\S]*?)```\s*$/);
   if (outerFence) return outerFence[1].trim().replace(/\n{3,}/g, "\n\n");
-  // Otherwise strip embedded code blocks (e.g. SQL examples).
-  return trimmed.replace(/```[\w]*\n[\s\S]*?```/g, "").replace(/\n{3,}/g, "\n\n").trim();
+  if (partial) {
+    // Outer fence opened, not yet closed: drop the opener line and keep the body.
+    trimmed = trimmed.replace(/^```[\w]*\n?/, "");
+  }
+  // Strip embedded (closed) code blocks, e.g. SQL examples.
+  let out = trimmed.replace(/```[\w]*\n[\s\S]*?```/g, "");
+  if (partial) {
+    // An embedded fence still open at the end of the buffer: hide it until
+    // it closes rather than rendering the raw code.
+    const open = out.lastIndexOf("```");
+    if (open !== -1) out = out.slice(0, open);
+  }
+  return out.replace(/\n{3,}/g, "\n\n").trim();
 }
