@@ -110,6 +110,22 @@ def _checkable_sql(sql: str) -> str:
     mutation. A scanner (not a regex) because `--` inside a string literal
     does not start a comment.
     """
+    return _scan_sql(sql, keep_literals=False)
+
+
+def nestable_sql(sql: str) -> str:
+    """The statement with comments removed and the trailing `;` stripped, so
+    it can sit inside `SELECT … FROM ( … ) AS alias`.
+
+    `rstrip(';')` alone is not enough: the LLM writes `SELECT …; -- note`,
+    which executes fine standalone but leaves the `;` in place (a comment
+    follows it) and is a parse error once nested. Literal bodies are kept
+    verbatim — this text is executed.
+    """
+    return _scan_sql(sql, keep_literals=True).rstrip().rstrip(";").rstrip()
+
+
+def _scan_sql(sql: str, *, keep_literals: bool) -> str:
     out: list[str] = []
     i, n = 0, len(sql)
     while i < n:
@@ -131,10 +147,14 @@ def _checkable_sql(sql: str) -> str:
             i += 1
             while i < n:
                 if sql[i] == quote and i + 1 < n and sql[i + 1] == quote:
+                    if keep_literals:
+                        out.append(quote * 2)
                     i += 2                                 # doubled-quote escape
                     continue
                 if sql[i] == quote:
                     break
+                if keep_literals:
+                    out.append(sql[i])
                 i += 1
             if i < n:
                 out.append(quote)
@@ -174,10 +194,10 @@ def _count_wrapper(sql: str) -> str:
     """Wrap a SELECT so the server counts the rows without shipping them.
 
     The derived table needs an alias on Postgres and MySQL; DuckDB and BigQuery
-    accept one. `validate_sql` has already rejected multi-statement input, so
-    stripping a trailing semicolon is enough to make this safe to nest.
+    accept one. `validate_sql` has already rejected multi-statement input;
+    `nestable_sql` drops comments and the trailing semicolon.
     """
-    return f"SELECT COUNT(*) FROM (\n{sql.rstrip().rstrip(';')}\n) AS _dp_rowcount"
+    return f"SELECT COUNT(*) FROM (\n{nestable_sql(sql)}\n) AS _dp_rowcount"
 
 
 # Strict allowlist, kept for the few places that interpolate a name where

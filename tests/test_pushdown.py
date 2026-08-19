@@ -207,3 +207,112 @@ def test_funnel_step_literal_escaping(db):
     # The odd step just isn't present; the two real ones still compute.
     assert got is not None
     assert [s.step for s in got.steps] == ["impression", "click"]
+
+
+# ── Type coercion: BOOLEAN and wide-integer columns ──────────────────────────
+# `1.0 * col` was DECIMAL arithmetic (Σy³ of a BIGINT overflowed the
+# DECIMAL(38) accumulator) and a binder error on BOOLEAN — which is what
+# read_csv_auto makes of a true/false CSV flag. The pandas path coerced both.
+
+@pytest.fixture
+def typed_db(tmp_path):
+    import duckdb
+    path = str(tmp_path / "typed.db")
+    con = duckdb.connect(path)
+    con.execute("""
+        CREATE TABLE users (
+            user_id   VARCHAR,
+            variant   VARCHAR,
+            converted BOOLEAN,
+            spend     BIGINT,
+            sessions  INTEGER,
+            churned   BOOLEAN,
+            week      INTEGER
+        )
+    """)
+    rows = []
+    for i in range(40):
+        v = "control" if i % 2 == 0 else "treatment"
+        rows.append((f"u{i}", v, (i % 3 == 0) or (v == "treatment" and i % 5 == 0),
+                     500_000_000_000 + i * 1_000_000_000, i % 7, i % 4 == 0, i % 2))
+    con.executemany("INSERT INTO users VALUES (?,?,?,?,?,?,?)", rows)
+    con.close()
+    return DBConnection("duckdb", path=path)
+
+
+TYPED_SQL = "SELECT user_id, variant, converted, spend, sessions, churned, week FROM users"
+
+
+def test_boolean_metric_and_guardrail_push_down(typed_db):
+    frame = typed_db.query(TYPED_SQL)
+    ss = pushdown.compute_sufficient_stats(
+        typed_db, TYPED_SQL,
+        metric="converted", covariate="sessions",
+        segment_cols=[], guardrail_metrics=["churned"], total_rows=len(frame),
+    )
+    got = pushdown.ttest_from_stats(ss)
+    ctrl = frame[frame["variant"] == "control"]["converted"].astype(float)
+    trt  = frame[frame["variant"] == "treatment"]["converted"].astype(float)
+    ref = stats_tools.run_ttest(ctrl, trt)
+    assert got.control_mean == pytest.approx(ref.control_mean, abs=1e-9)
+    assert got.treatment_mean == pytest.approx(ref.treatment_mean, abs=1e-9)
+    assert got.p_value == pytest.approx(ref.p_value, abs=1e-9)
+
+    g = pushdown.guardrails_from_stats(ss)
+    r = guardrail_tools.check_guardrails(
+        frame.assign(churned=frame["churned"].astype(float)),
+        variant_col="variant", guardrail_metrics=["churned"],
+    )
+    assert g.guardrails[0].control_mean == pytest.approx(r.guardrails[0].control_mean, abs=1e-9)
+    assert g.guardrails[0].treatment_mean == pytest.approx(r.guardrails[0].treatment_mean, abs=1e-9)
+
+
+def test_wide_bigint_metric_does_not_overflow(typed_db):
+    """Σy³ of ~5e11 values: DECIMAL(38) overflowed (HUGEINT), DOUBLE must not."""
+    frame = typed_db.query(TYPED_SQL)
+    ss = pushdown.compute_sufficient_stats(
+        typed_db, TYPED_SQL,
+        metric="spend", covariate="sessions",
+        segment_cols=[], guardrail_metrics=[], total_rows=len(frame),
+    )
+    got = pushdown.ttest_from_stats(ss)
+    ctrl = frame[frame["variant"] == "control"]["spend"].astype(float)
+    trt  = frame[frame["variant"] == "treatment"]["spend"].astype(float)
+    ref = stats_tools.run_ttest(ctrl, trt)
+    assert got.control_mean == pytest.approx(ref.control_mean, rel=1e-12)
+    assert got.p_value == pytest.approx(ref.p_value, rel=1e-9)
+
+
+def test_boolean_completed_funnel(tmp_path):
+    import duckdb
+    from tools import funnel_tools
+    path = str(tmp_path / "funnel.db")
+    con = duckdb.connect(path)
+    con.execute("CREATE TABLE f (user_id VARCHAR, variant VARCHAR, step VARCHAR, completed BOOLEAN)")
+    rows = []
+    for i in range(60):
+        v = "control" if i % 2 == 0 else "treatment"
+        rows.append((f"u{i}", v, "view", True))
+        rows.append((f"u{i}", v, "click", i % 3 == 0 or (v == "treatment" and i % 4 == 0)))
+    con.executemany("INSERT INTO f VALUES (?,?,?,?)", rows)
+    con.close()
+    db = DBConnection("duckdb", path=path)
+    sql = "SELECT user_id, variant, step, completed FROM f"
+    ref = funnel_tools.compute_funnel(db.query(sql), variant_col="variant", steps=["view", "click"])
+    got = pushdown.funnel_from_warehouse(db, sql, ["view", "click"])
+    assert got is not None
+    for g, r in zip(got.steps, ref.steps):
+        assert g.control_rate == pytest.approx(r.control_rate, abs=1e-4), g.step
+        assert g.treatment_rate == pytest.approx(r.treatment_rate, abs=1e-4), g.step
+
+
+# ── Nesting the approved SQL ──────────────────────────────────────────────────
+
+def test_count_rows_tolerates_trailing_comment_after_semicolon(typed_db):
+    """`SELECT …; -- note` runs standalone; it must count (and nest) too."""
+    assert typed_db.count_rows(TYPED_SQL + "; -- analyst note\n/* end */") == 40
+
+
+def test_probe_columns_tolerates_trailing_comment(typed_db):
+    cols = pushdown.probe_columns(typed_db, TYPED_SQL + "; -- note")
+    assert "converted" in cols

@@ -248,7 +248,20 @@ def _fetch_or_pushdown(state: AgentState, sql: str, mc) -> tuple[pd.DataFrame, A
 
     from tools import pushdown
 
-    n_rows = db.count_rows(sql)
+    # The count is the pushdown gate, not the SQL validity probe: a statement
+    # can execute standalone yet fail nested as a derived table (duplicate
+    # output names on MySQL/BigQuery, dialect quirks). If the count itself
+    # fails, materialize the way the analyst's SQL was approved to run and
+    # let db.query's own row budget decide — don't hand a working query to
+    # the LLM-correction loop over a probe artefact.
+    try:
+        n_rows = db.count_rows(sql)
+    except Exception as exc:  # noqa: BLE001
+        logger.info(
+            "execute_query: pushdown row count failed (%s) — materializing.",
+            redact_exception(exc),
+        )
+        return db.query(sql), None
     if n_rows <= _PUSHDOWN_ROWS:
         return db.query(sql), None
 

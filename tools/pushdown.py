@@ -29,7 +29,7 @@ from typing import Any
 
 from scipy import stats as sps
 
-from tools.db_tools import DBConnection, quote_ident
+from tools.db_tools import DBConnection, nestable_sql, quote_ident
 from tools.schemas import (
     CupedResult,
     FunnelResult,
@@ -108,14 +108,34 @@ def _welch(n_t: int, mean_t: float, var_t: float,
 
 # ── SQL builder + collection ──────────────────────────────────────────────────
 
-def _f(col: str, backend: str) -> str:
-    """Column as a float expression. `1.0 *` coerces to double on every
-    backend (DuckDB, Postgres, MySQL, BigQuery) without dialect-specific CAST."""
-    return f"(1.0 * {quote_ident(col, backend)})"
+_DOUBLE_TYPE = {
+    "duckdb":   "DOUBLE",
+    "postgres": "DOUBLE PRECISION",
+    "mysql":    "DOUBLE",
+    "bigquery": "FLOAT64",
+}
 
 
-def _moment_selects(col: str, backend: str, prefix: str) -> str:
-    y = _f(col, backend)
+def _f(col: str, backend: str, bool_cols: frozenset[str] = frozenset()) -> str:
+    """Column as a double-precision expression.
+
+    An explicit CAST, not `1.0 * col`: that multiplication is DECIMAL
+    arithmetic on DuckDB/Postgres/MySQL — Σy³ of a BIGINT overflows the
+    DECIMAL(38) accumulator (HUGEINT overflow) where float64 never did — and
+    it is a binder error outright on a BOOLEAN column, which is what
+    read_csv_auto makes of a true/false flag. The pandas path coerced both
+    with astype(float); booleans take the CASE form because no backend casts
+    BOOL straight to a float type.
+    """
+    q = quote_ident(col, backend)
+    if col in bool_cols:
+        return f"(CASE WHEN {q} THEN 1.0 ELSE 0.0 END)"
+    return f"CAST({q} AS {_DOUBLE_TYPE.get(backend, 'DOUBLE PRECISION')})"
+
+
+def _moment_selects(col: str, backend: str, prefix: str,
+                    bool_cols: frozenset[str] = frozenset()) -> str:
+    y = _f(col, backend, bool_cols)
     q = quote_ident(col, backend)
     return (
         f"SUM(CASE WHEN {q} IS NOT NULL THEN 1 ELSE 0 END) AS {prefix}_n,\n"
@@ -127,8 +147,39 @@ def _moment_selects(col: str, backend: str, prefix: str) -> str:
 
 def probe_columns(db: DBConnection, base_sql: str) -> list[str]:
     """Column names of the approved SQL without materializing any rows."""
-    df = db.query(f"SELECT * FROM (\n{base_sql.rstrip().rstrip(';')}\n) AS _dp_probe LIMIT 0")
+    df = db.query(f"SELECT * FROM (\n{nestable_sql(base_sql)}\n) AS _dp_probe LIMIT 0")
     return list(df.columns)
+
+
+def probe_bool_columns(db: DBConnection, base_sql: str, cols: list[str]) -> frozenset[str]:
+    """Which of `cols` the approved SQL yields as BOOLEAN.
+
+    One-row sample: the SQL builders need to know this to pick the CASE form
+    over a CAST. A LIMIT 0 frame carries dtypes on DuckDB/BigQuery but not
+    through pd.read_sql on Postgres/MySQL, so one row is sampled instead.
+    Best-effort: a NULL sample reads as not-boolean, which just falls back to
+    the CAST (i.e. the previous behaviour). Never raises.
+    """
+    if not cols:
+        return frozenset()
+    try:
+        import numpy as np
+        import pandas as pd
+        q = f"SELECT * FROM (\n{nestable_sql(base_sql)}\n) AS _dp_probe LIMIT 1"
+        df = db.query(q)
+        found: set[str] = set()
+        for c in cols:
+            if c not in df.columns:
+                continue
+            dt = df[c].dtype
+            if dt.kind == "b" or isinstance(dt, pd.BooleanDtype):
+                found.add(c)
+            elif len(df) and isinstance(df[c].iloc[0], (bool, np.bool_)):
+                found.add(c)
+        return frozenset(found)
+    except Exception as exc:  # noqa: BLE001 — probe is advisory
+        logger.info("pushdown: boolean probe unavailable (%s)", type(exc).__name__)
+        return frozenset()
 
 
 def compute_sufficient_stats(
@@ -141,21 +192,26 @@ def compute_sufficient_stats(
     variant_col: str = "variant",
     week_col: str = "week",
     total_rows: int = 0,
+    bool_cols: frozenset[str] | None = None,
 ) -> SufficientStats:
     """Three aggregate queries over the approved SQL → SufficientStats."""
     backend = db.backend
-    sub = f"(\n{base_sql.rstrip().rstrip(';')}\n) AS _dp_push"
+    sub = f"(\n{nestable_sql(base_sql)}\n) AS _dp_push"
+    if bool_cols is None:
+        bool_cols = probe_bool_columns(
+            db, base_sql, [metric, covariate, *guardrail_metrics]
+        )
     v = quote_ident(variant_col, backend)
     yq = quote_ident(metric, backend)
     xq = quote_ident(covariate, backend)
-    y = _f(metric, backend)
-    x = _f(covariate, backend)
+    y = _f(metric, backend, bool_cols)
+    x = _f(covariate, backend, bool_cols)
 
     # Query 1 — per-variant: metric moments (incl. Σy³ for skewness), joint
     # metric+covariate moments for CUPED, and guardrail moments.
     joint = f"{yq} IS NOT NULL AND {xq} IS NOT NULL"
     parts = [
-        _moment_selects(metric, backend, "m"),
+        _moment_selects(metric, backend, "m", bool_cols),
         f"SUM(CASE WHEN {joint} THEN 1 ELSE 0 END) AS j_n",
         f"SUM(CASE WHEN {joint} THEN {y} ELSE 0 END) AS j_sy",
         f"SUM(CASE WHEN {joint} THEN {y}*{y} ELSE 0 END) AS j_syy",
@@ -164,7 +220,7 @@ def compute_sufficient_stats(
         f"SUM(CASE WHEN {joint} THEN {x}*{y} ELSE 0 END) AS j_sxy",
     ]
     for i, gm in enumerate(guardrail_metrics):
-        parts.append(_moment_selects(gm, backend, f"g{i}"))
+        parts.append(_moment_selects(gm, backend, f"g{i}", bool_cols))
     q1 = f"SELECT {v} AS _variant,\n" + ",\n".join(parts) + f"\nFROM {sub} GROUP BY {v}"
     df1 = db.query(q1)
 
@@ -195,7 +251,7 @@ def compute_sufficient_stats(
         not_null = " AND ".join(f"{s} IS NOT NULL" for s in seg_idents + [yq])
         q2 = (
             f"SELECT {', '.join(seg_idents)}, {v} AS _variant,\n"
-            + _moment_selects(metric, backend, "m")
+            + _moment_selects(metric, backend, "m", bool_cols)
             + f"\nFROM {sub} WHERE {not_null}"
             + f"\nGROUP BY {', '.join(seg_idents)}, {v}"
         )
@@ -222,7 +278,7 @@ def compute_sufficient_stats(
     w = quote_ident(week_col, backend)
     q3 = (
         f"SELECT {w} AS _week, {v} AS _variant,\n"
-        + _moment_selects(metric, backend, "m")
+        + _moment_selects(metric, backend, "m", bool_cols)
         + f"\nFROM {sub} WHERE {w} IS NOT NULL GROUP BY {w}, {v}"
     )
     try:
@@ -526,7 +582,7 @@ def funnel_from_warehouse(
     (mirrors compute_funnel_node's skip).
     """
     backend = db.backend
-    sub = f"(\n{funnel_sql.rstrip().rstrip(';')}\n) AS _dp_funnel"
+    sub = f"(\n{nestable_sql(funnel_sql)}\n) AS _dp_funnel"
 
     step_col = quote_ident("step", backend)
     present = {
@@ -540,6 +596,10 @@ def funnel_from_warehouse(
     v = quote_ident("variant", backend)
     uid = quote_ident("user_id", backend)
     comp = quote_ident("completed", backend)
+    # A BOOLEAN completed flag cannot sit in the same CASE as the integer 0
+    # on Postgres/BigQuery; the pandas pivot (aggfunc="max") accepted it.
+    if "completed" in probe_bool_columns(db, funnel_sql, ["completed"]):
+        comp = f"(CASE WHEN {comp} THEN 1 ELSE 0 END)"
 
     pivot_cols = ",\n".join(
         f"MAX(CASE WHEN {step_col} = {_quote_literal(s, backend)} "
