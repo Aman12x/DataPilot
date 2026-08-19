@@ -29,10 +29,11 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field, field_validator
 from sse_starlette.sse import EventSourceResponse
 
+from agents import spend
 from agents.analyze.prompt_safety import strip_delimiters
 
 from ..auth_rate import client_ip
-from ..budget import check_budget, scope_for
+from ..budget import check_budget, record_spend, scope_for
 from ..deps import (
     create_pdf_token,
     create_stream_token,
@@ -41,6 +42,7 @@ from ..deps import (
     verify_scoped_token,
 )
 from ..run_manager import (
+    check_deck_rate_limit,
     check_rate_limit,
     check_resume_rate_limit,
     cleanup_run,
@@ -909,6 +911,11 @@ async def generate_run_deck(
     if existing:
         return {"deck_data": existing}
 
+    # Only an actual generation counts against the bucket; cache hits above
+    # are free and unlimited.
+    caller_scope = scope_for(current_user["user_id"], ip)
+    await check_deck_rate_limit(caller_scope)
+
     narrative = (values.get("final_narrative") or "").strip()
     if not narrative:
         raise HTTPException(status_code=409, detail="Run has no approved narrative yet")
@@ -920,7 +927,21 @@ async def generate_run_deck(
     if is_fast_lookup(values):
         return {"deck_data": {}}
 
-    deck = await asyncio.to_thread(_generate_deck, values, narrative)
+    # The graph's nodes run under run_manager's meter; this call lives outside
+    # the graph, so it needs its own meter and its own bill — charged to the
+    # caller (a teammate may open the deck from history), not the run's
+    # creator. to_thread copies the contextvars, so the meter is active inside
+    # _generate_deck.
+    deck_meter = spend.Meter()
+    try:
+        with spend.meter(deck_meter):
+            deck = await asyncio.to_thread(_generate_deck, values, narrative)
+    finally:
+        usd, calls = deck_meter.take_unbilled()
+        if usd > 0:
+            await record_spend(caller_scope, usd)
+            logger.info("deck.spend run=%s scope=%s usd=%.6f calls=%d",
+                        run_id, caller_scope, usd, calls)
     if deck:
         try:
             # Persist so later views (history, re-opens) get it for free.

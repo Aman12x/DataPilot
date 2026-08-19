@@ -287,6 +287,21 @@ async def check_resume_rate_limit(scope: str) -> None:
     )
 
 
+async def check_deck_rate_limit(scope: str) -> None:
+    """Cap deck generations per budget scope.
+
+    POST /runs/{id}/deck is an LLM call outside the graph. A successful deck
+    is persisted and served from state afterwards, but a failed generation is
+    not — so without a bucket every retry is a fresh paid call. Shares the
+    resume ceiling: one deck per finished run is the legitimate rate.
+    """
+    await _check_window_limit(
+        f"rate:deck:{scope}",
+        _MAX_RESUMES,
+        f"Rate limit: max {_MAX_RESUMES} deck generations per {_WINDOW_SECS}s",
+    )
+
+
 # ── Node labels for Chain-of-Thought streaming ────────────────────────────────
 
 _NODE_LABELS: dict[str, str | None] = {
