@@ -85,7 +85,15 @@ def _build_feature_matrix(df: pd.DataFrame, target_col: str) -> pd.DataFrame:
             num_df[col] = num_df[col].fillna(num_df[col].median())
 
     # Categorical → one-hot
-    cat_cols = feature_df.select_dtypes(include=["object", "category"]).columns
+    # String columns are `str` dtype on pandas 3 and `object` on pandas 2;
+    # select_dtypes(include="object") only found the former via a deprecated
+    # compat path (Pandas4Warning). Test the dtype directly so both work.
+    cat_cols = [
+        c for c in feature_df.columns
+        if pd.api.types.is_string_dtype(feature_df[c])
+        or pd.api.types.is_object_dtype(feature_df[c])
+        or isinstance(feature_df[c].dtype, pd.CategoricalDtype)
+    ]
     parts: list[pd.DataFrame] = [num_df]
     for col in cat_cols:
         n_unique = feature_df[col].nunique()

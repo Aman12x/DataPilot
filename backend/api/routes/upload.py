@@ -100,7 +100,11 @@ def _infer_tables(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
     if variant_col is None:
         _ctrl  = {"control", "ctrl", "holdout", "hold"}
         _treat = {"treatment", "treated", "test", "exposed", "variant", "b"}
-        for c in df.select_dtypes("object").columns:
+        # str dtype on pandas 3, object on pandas 2 — test the dtype, don't
+        # rely on select_dtypes("object")'s deprecated compat inclusion.
+        text_cols = [c for c in df.columns
+                     if pd.api.types.is_string_dtype(df[c]) or pd.api.types.is_object_dtype(df[c])]
+        for c in text_cols:
             vals = {str(v).lower() for v in df[c].dropna().unique()}
             if len(vals) == 2 and (vals & _treat) and (vals & _ctrl):
                 variant_col = c

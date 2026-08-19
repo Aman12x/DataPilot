@@ -295,8 +295,10 @@ our modules (and Starlette's `StarletteDeprecationWarning`, which subclasses
 stay warnings. `--disable-warnings` in CI only hides the summary, so this is
 the only thing that stops them accumulating (the `HTTP_413` rename sat for
 months). A library deprecation surfacing at *our* call site counts — change the
-call. Before acting on one, check the version **CI** resolves; the local venv
-has run ahead of the pins before.
+call. Its first CI run caught `select_dtypes(include="object")` relying on
+pandas 3's deprecated compat path for `str` columns, which the local venv
+(still on pandas 2) could not see — **keep the venv on the pins** (`pip install
+-r backend/requirements.txt`); it has drifted both ahead of and behind them.
 
 **Tests import two different module trees.** `tests/test_api.py` uses `api.*`
 (because `backend/` is on `sys.path`); newer tests use `backend.api.*`. They are
