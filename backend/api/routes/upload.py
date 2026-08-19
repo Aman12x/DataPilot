@@ -193,7 +193,7 @@ async def _read_capped(file: UploadFile, limit: int) -> bytes:
         total += len(chunk)
         if total > limit:
             raise HTTPException(
-                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                 detail="File exceeds 50 MB limit",
             )
         chunks.append(chunk)
@@ -274,12 +274,12 @@ async def upload_file(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is empty")
     if len(df) > _MAX_ROWS:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=f"File exceeds {_MAX_ROWS:,} row limit",
         )
     if len(df.columns) > _MAX_COLS:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=f"File exceeds {_MAX_COLS} column limit",
         )
 
