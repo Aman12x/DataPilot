@@ -43,6 +43,15 @@ transitive package by hand is what caused `pydantic_core` vs `pydantic`,
 merged and broke the production image build. The resolver picks compatible sets;
 Dependabot bumping one pin in isolation cannot.
 
+**Don't merge Dependabot's *pip* PRs; redo the bump on `main`.** Its compiler
+ignores `--universal`, so the PR's `requirements.txt` loses every environment
+marker (the Linux-only CUDA/triton wheels torch pulls in then break
+`pip install -r` on a Mac) and drops `setuptools`. #68 and #71 both did it.
+Bump the pin in the `.in`, recompile with the command above plus
+`--constraint <previous requirements.txt minus the bumped line>` so nothing
+else moves, diff the package set ignoring markers to prove that, push, close the
+PR as superseded. Dependabot's GitHub-actions and npm PRs are fine to merge.
+
 - `-m integration` needs live Redis and Postgres containers; CI runs them, and
   `make test-all` runs everything if you have them up.
 - `-m slow` downloads the MiniLM model or calls the LLM. Only
@@ -154,7 +163,45 @@ connection is now owner-only, symmetric with creation.
 
 **Every LLM call is metered.** `_anthropic_client()` returns a wrapper that
 prices each response. Don't reach around it — four of seven call sites used to
-record nothing because metering lived at the call sites.
+record nothing because metering lived at the call sites. Two ways it still
+silently stops working: the meter is a **contextvar**, so any
+`ThreadPoolExecutor` you create yourself must submit via
+`contextvars.copy_context().run` (LangGraph's executor does this; the intent/
+config-inference pool did not and priced to nowhere); and an LLM call that runs
+**outside the graph** — `POST /runs/{id}/deck` — is outside `run_manager`'s
+`spend.meter` too, so it needs its own meter, `record_spend` to the caller's
+scope, and a rate bucket (a failed generation is not persisted, so without one
+every retry is a fresh paid call).
+
+**Pushdown SQL is built for four dialects and for types pandas coerced.** In
+`tools/pushdown.py` go through `_f()` (explicit `CAST … AS DOUBLE/DOUBLE
+PRECISION/FLOAT64`; BOOLEAN columns — what `read_csv_auto` makes of a
+true/false flag — take the `CASE WHEN col THEN 1.0 ELSE 0.0 END` form, found by
+`probe_bool_columns`). `1.0 * col` looked portable and was DECIMAL arithmetic:
+Σy³ of a BIGINT overflows DECIMAL(38), and it is a binder error on BOOLEAN. Wrap
+the approved statement with `db_tools.nestable_sql()` — `rstrip(';')` misses
+`SELECT …; -- note` — and never let a failed `count_rows` veto the analyst's
+query (a derived table has stricter rules than standalone execution); fall back
+to materializing. When you add a check to `_validate_query_content`, mirror it
+in `_validate_sufficient_stats`: pushdown mode never sees the frame, and an
+event-level extract from a missing GROUP BY is the canonical reason a result
+crosses the pushdown threshold in the first place.
+
+**The lookup fast path skips both human gates and the audit.** Only the
+classifier's "lookup" *or* `_is_lookup_task` can put a run on it. Keep the regex
+conservative: anything that reads as a comparison or a cut (`vs`, `by variant`,
+`per region`, `treatment`, `over time`) is analysis, however the sentence opens
+— "what was the average revenue per user by variant" shipped as an approved
+two-row table before `_ANALYSIS_RE` learned those tokens.
+
+**`audit_result is None` means "passed" only when the audit was not
+attempted.** The fast-lookup path legitimately has nothing to audit; an audit
+that ran and did not complete (truncated, malformed JSON, API error) sets
+`audit_skipped`, appends a visible "Audit unavailable" note to the draft, and
+`log_run` records `audit_passed=0`. The audit's `max_tokens` scales with the
+draft — it must echo the whole narrative back on a moderate finding — and the
+in-place patcher only replaces a quote that occurs exactly once; an ambiguous
+quote rides to the gate rather than editing the wrong occurrence.
 
 ## Decisions that look wrong but aren't
 
@@ -182,6 +229,19 @@ blob just to learn its age.
 **`_get_columns_duckdb` uses `information_schema`, not `pragma_table_info(?)`.**
 DuckDB re-parses that bound value as a qualified name, so it fails on any name
 containing a quote. Parameterising it is not enough.
+
+**The deck is billed to whoever asked for it, not the run's creator.** A
+workspace teammate can open a finished run from history and generate the deck;
+charging the creator's scope would let one person drain another's budget.
+`_check_run_access(mutate=False)` stays — viewing (and deck generation) is a
+teammate action — while the route's `update_state` is only a cache write.
+
+**BigQuery tries the Storage Read API and falls back to REST on its own.** The
+client falls back only when the `bigquery-storage` package is absent; a service
+account without `bigquery.readsessions.create` raises instead. `_query_bigquery`
+catches the Read-API error family (`PermissionDenied`/`Forbidden`/…) and re-reads
+the same finished job over REST — a customer SA with plain jobUser/dataViewer
+must still get rows. Query failures are not in that list and still propagate.
 
 **Unknown models price at the most expensive known tier.** Under-charging lets
 spend slip past the cap; over-charging only trips it early. An unpriced model
@@ -234,7 +294,32 @@ do — is unrestricted; only literal `style=` attributes in parsed HTML and
 affect the other.
 
 **`MODEL` only affects intent resolution** (`nodes_intent.py`), a small JSON
-call. Everything else uses `FAST_MODEL`.
+call. Everything else uses `FAST_MODEL`. If the `MODEL` pin 404s
+(`anthropic.NotFoundError`), intent retries once on `FAST_MODEL` and logs at
+ERROR; any other error still lands in the safe default.
+
+**A reconnecting SSE client reads the Redis stream from `$`** (it never sends
+`last_id`), so anything published during the reconnect window — between
+`resume()` and the new `EventSource` opening — is gone. Never make client state
+depend on a server event in that window; clear the streamed narrative draft on
+the `gate` event the client always sees, not on `narrative_start`. In-memory
+mode replays the queue and hides this, so it only reproduces in production.
+
+**`npx playwright install --with-deps` can hang for the whole job.** The runner
+image picks its apt mirror through `mirror+file:/etc/apt/apt-mirrors.txt`, and
+`azure.archive.ubuntu.com` has stalled mid-`apt-get update` with no timeout
+(four runs on 2026-08-19, all killed by the job limit — conclusion "cancelled",
+e2e never ran). Both workflows now rewrite `apt-mirrors.txt` to
+`archive.ubuntu.com`, run `apt-get update` under a hard timeout with a
+kill-and-retry (a timed-out first attempt leaves a child `apt-get` holding the
+lock), then `install-deps` and `install` separately. Editing `ubuntu.sources`
+alone does nothing. Keep that step when touching the workflows.
+
+**`/health` reports the deployed commit** (`"commit"`, from
+`RAILWAY_GIT_COMMIT_SHA`). `curl -s …/health | jq -r .commit` against
+`git rev-parse origin/main` is the deploy check; `railway deployment list
+--json` is the fallback. Both Railway services (`DataPilot` backend,
+`pretty-emotion` frontend) deploy every push to `main`.
 
 ## Known-open issues
 
@@ -246,12 +331,23 @@ Detail — why each is open, the intended fix, and how to verify — lives in
   stage — baseline 20/20 strict on claude-sonnet-5 — and `score_faithfulness`
   no longer fails open. Still ungated: intent routing, audit catch rate, and
   the production `eval_score` mislabelling completeness as quality.
-- **One deprecation left in our own code**, not failing a build (CI runs pytest
-  with `--disable-warnings`, so this list grows silently):
-  `HTTP_413_REQUEST_ENTITY_TOO_LARGE` in `routes/upload.py`. **Do not rename it
-  yet** — the pinned `fastapi==0.115.0` resolves starlette 0.38.6, which lacks
-  the replacement `HTTP_413_CONTENT_TOO_LARGE`, so the rename is an
-  `AttributeError` at import in CI. It rides along with a FastAPI bump. The
-  warning is only visible because **the local venv is ahead of the pins**
-  (`fastapi 0.135.1`) — check the version CI actually resolves before acting on
-  any deprecation.
+- **Deprecations don't fail the build** (CI runs pytest with
+  `--disable-warnings`, so they accumulate silently). None left in our own code
+  as of 2026-08-19 (`HTTP_413_CONTENT_TOO_LARGE` rename landed with the FastAPI
+  0.141 pins). Before acting on one, check the version **CI** resolves — the
+  local venv has run ahead of the pins before.
+- **SSE reconnect drops the in-flight narrative deltas** (token refresh every
+  50 min, or a slow reconnect after a gate): the client never sends `last_id`
+  so it reads from `$`. Cosmetic — the gate shows the real draft afterwards —
+  but the fix is to track the last `_stream_id` client-side and pass it.
+- **A fenced draft renders its opening ```` ``` ```` line while streaming**:
+  `sanitiseNarrative` only strips *closed* fences and the server strips the
+  outer fence only on the final message.
+- **General-mode SQL failures other than the row-limit refusal still degrade
+  to an empty frame** (`execute_query` → `{"query_result": DataFrame()}` → a
+  "no data" narrative). The over-ceiling case now blocks at `query_gate`;
+  routing every terminal failure there is the consistent next step.
+- **Pushdown parity is proven only on DuckDB** (`tests/test_pushdown.py`); the
+  Postgres/MySQL/BigQuery builders share the generator but have no
+  integration test. `_funnel_join_sql` in `nodes_analysis.py` quotes with the
+  Postgres default regardless of backend (pre-existing).
