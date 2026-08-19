@@ -288,6 +288,16 @@ do — is unrestricted; only literal `style=` attributes in parsed HTML and
 `<style>` blocks are governed. This is why the SPA policy carries no
 `'unsafe-inline'` despite being full of `style={{}}` props.
 
+**Deprecations in our own code fail the test run.** `pytest.ini` turns
+`DeprecationWarning`/`FutureWarning`/`PendingDeprecationWarning` attributed to
+our modules (and Starlette's `StarletteDeprecationWarning`, which subclasses
+`UserWarning` and is attributed to `<sys>`) into errors; third-party internals
+stay warnings. `--disable-warnings` in CI only hides the summary, so this is
+the only thing that stops them accumulating (the `HTTP_413` rename sat for
+months). A library deprecation surfacing at *our* call site counts — change the
+call. Before acting on one, check the version **CI** resolves; the local venv
+has run ahead of the pins before.
+
 **Tests import two different module trees.** `tests/test_api.py` uses `api.*`
 (because `backend/` is on `sys.path`); newer tests use `backend.api.*`. They are
 *separate module objects* with separate state — monkeypatching one does not
@@ -335,19 +345,6 @@ Detail — why each is open, the intended fix, and how to verify — lives in
   stage — baseline 20/20 strict on claude-sonnet-5 — and `score_faithfulness`
   no longer fails open. Still ungated: intent routing, audit catch rate, and
   the production `eval_score` mislabelling completeness as quality.
-- **Deprecations don't fail the build** (CI runs pytest with
-  `--disable-warnings`, so they accumulate silently). None left in our own code
-  as of 2026-08-19 (`HTTP_413_CONTENT_TOO_LARGE` rename landed with the FastAPI
-  0.141 pins). Before acting on one, check the version **CI** resolves — the
-  local venv has run ahead of the pins before.
-- **A fenced draft renders its opening ```` ``` ```` line while streaming**:
-  `sanitiseNarrative` only strips *closed* fences and the server strips the
-  outer fence only on the final message.
-- **General-mode SQL failures other than the row-limit refusal still degrade
-  to an empty frame** (`execute_query` → `{"query_result": DataFrame()}` → a
-  "no data" narrative). The over-ceiling case now blocks at `query_gate`;
-  routing every terminal failure there is the consistent next step.
-- **Pushdown parity is proven only on DuckDB** (`tests/test_pushdown.py`); the
-  Postgres/MySQL/BigQuery builders share the generator but have no
-  integration test. `_funnel_join_sql` in `nodes_analysis.py` quotes with the
-  Postgres default regardless of backend (pre-existing).
+- **Pushdown parity is proven on DuckDB and Postgres** (`tests/test_pushdown.py`,
+  `tests/test_pushdown_postgres_integration.py` in the integration job); MySQL
+  and BigQuery share the builders but have no integration test.

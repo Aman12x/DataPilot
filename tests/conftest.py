@@ -28,6 +28,7 @@ Ground truth baked into fixtures:
 
 import pytest
 import numpy as np
+import datetime
 import pandas as pd
 
 
@@ -174,7 +175,7 @@ def base_metrics_daily_df():
 
     rows = []
     for day_idx in range(TOTAL_DAYS):
-        date = pd.Timestamp("2024-01-01") + pd.Timedelta(days=day_idx)
+        date = pd.Timestamp("2024-01-01") + datetime.timedelta(days=day_idx)
         in_exp = day_idx >= EXP_START
 
         for platform, base_dau in [("android", 500), ("ios", 400), ("web", 300)]:

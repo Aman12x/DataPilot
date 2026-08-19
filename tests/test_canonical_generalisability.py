@@ -18,6 +18,7 @@ import sys
 import os
 import pytest
 import duckdb
+import datetime
 import pandas as pd
 import numpy as np
 
@@ -122,7 +123,7 @@ def full_db(tmp_path_factory):
     # ── metrics_daily ─────────────────────────────────────────────────────────
     daily_rows = []
     for day_idx in range(28):
-        date = pd.Timestamp("2024-02-01") + pd.Timedelta(days=day_idx)
+        date = pd.Timestamp("2024-02-01") + datetime.timedelta(days=day_idx)
         for platform in ["android", "ios", "web"]:
             daily_rows.append({
                 "date":              date.date(),
