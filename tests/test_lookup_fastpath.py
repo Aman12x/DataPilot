@@ -164,3 +164,31 @@ class TestTelemetry:
         with sqlite3.connect(path) as con:
             cols = {r[1] for r in con.execute("PRAGMA table_info(runs)").fetchall()}
         assert "query_type" in cols
+
+
+class TestLookupHeuristicScope:
+    """The regex override can qualify a run for the gate-free fast path, so a
+    comparison or a cut must never read as a lookup, even when the sentence
+    opens like one."""
+
+    @pytest.mark.parametrize("task", [
+        "what was the average revenue per user by variant",
+        "what is the total revenue vs last month",
+        "how many users per region",
+        "what was the conversion for treatment",
+        "show me total sales over time",
+        "what is the number of orders split by platform",
+    ])
+    def test_comparisons_and_cuts_are_not_lookups(self, task):
+        from agents.analyze.nodes_intent import _is_lookup_task
+        assert not _is_lookup_task(task)
+
+    @pytest.mark.parametrize("task", [
+        "how many TVs were sold?",
+        "what was the total revenue",
+        "list the top 10 customers",
+        "How many enterprise accounts in EMEA signed up yesterday?",
+    ])
+    def test_plain_retrievals_still_are(self, task):
+        from agents.analyze.nodes_intent import _is_lookup_task
+        assert _is_lookup_task(task)

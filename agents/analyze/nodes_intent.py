@@ -20,10 +20,18 @@ _LOOKUP_RE = re.compile(
     r"total\s+(number|count|revenue|sales)|number\s+of\s+)",
     re.IGNORECASE,
 )
+# Anything that reads as a comparison or a cut ("by variant", "vs", "per
+# region", "treatment") is analysis even when it opens like a lookup: the
+# fast path skips both human gates and the audit, so a false "lookup" here
+# ships a bare table as an approved report. The LLM's own "lookup" verdict is
+# not subject to this list — only the regex override is.
 _ANALYSIS_RE = re.compile(
     r"(why|trend|pattern|correlat|impact|cause|relationship|"
     r"significant|compare|breakdown|investigat|driver|anomal|differ|"
-    r"segment|cohort|funnel|retention|churn|uplift|effect)",
+    r"segment|cohort|funnel|retention|churn|uplift|effect|"
+    r"\bvs\.?\b|\bversus\b|\bvariant|\btreatment|\bcontrol\b|"
+    r"\b(by|per|across|between|split)\s+\w|\bover\s+time|"
+    r"\bgroup(ed)?\s+by|\bweek\s+over|\bmonth\s+over|\bchange)",
     re.IGNORECASE,
 )
 
