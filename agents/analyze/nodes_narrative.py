@@ -82,7 +82,6 @@ def _conversation_turns(history: list[dict]) -> list[dict]:
 
 # ── Node 18: generate_narrative ───────────────────────────────────────────────
 
-@observe(name="generate_narrative", as_type="generation")
 def _fmt_value(v) -> str:
     """Human formatting for a single looked-up value. Never raises."""
     try:
@@ -131,8 +130,13 @@ def _apply_audit_patches(narrative: str, findings: list) -> tuple[str, list, lis
 
     Returns (patched_narrative, patched, unpatched). A finding is patchable
     when it carries both a quote and a corrected_sentence and the quote is
-    found in the narrative (exact first, then whitespace-tolerant — the
-    auditor sometimes collapses line breaks when quoting).
+    found in the narrative exactly once (exact first, then whitespace-
+    tolerant — the auditor sometimes collapses line breaks when quoting). A
+    quote that occurs more than once is left unpatched: a short phrase like
+    "3.2 points" can appear correctly in the TL;DR and wrongly in the body,
+    and replacing the first hit would edit the right one, leave the wrong
+    one, and annotate the narrative as fixed. Ambiguous findings ride to the
+    gate instead.
     """
     patched: list = []
     unpatched: list = []
@@ -142,20 +146,21 @@ def _apply_audit_patches(narrative: str, findings: list) -> tuple[str, list, lis
         if not quote or not fix:
             unpatched.append(f)
             continue
+        # The whitespace-tolerant pattern matches a superset of the exact
+        # string, so it is the one that decides uniqueness.
+        loose = re.compile(r"\s+".join(re.escape(w) for w in quote.split()))
+        if len(loose.findall(narrative)) != 1:
+            unpatched.append(f)
+            continue
         if quote in narrative:
             narrative = narrative.replace(quote, fix, 1)
-            patched.append(f)
-            continue
-        loose = r"\s+".join(re.escape(w) for w in quote.split())
-        new_narrative, n = re.subn(loose, lambda m: fix, narrative, count=1)
-        if n:
-            narrative = new_narrative
-            patched.append(f)
         else:
-            unpatched.append(f)
+            narrative = loose.sub(lambda m: fix, narrative, count=1)
+        patched.append(f)
     return narrative, patched, unpatched
 
 
+@observe(name="generate_narrative", as_type="generation")
 def generate_narrative(state: AgentState) -> dict:
     mc     = state.get("metric_config") or load_metric_config()
     metric = state.get("metric") or mc.primary_metric
@@ -179,6 +184,7 @@ def generate_narrative(state: AgentState) -> dict:
             "audit_result":       None,
             "audit_blocked":      False,
             "audit_unpatched":    [],
+            "audit_skipped":      "",
         }
 
     analyst_notes = state.get("analyst_notes") or ""
@@ -338,17 +344,24 @@ def generate_narrative(state: AgentState) -> dict:
 
     audit_result:  Any = None
     audit_blocked: bool = False
+    audit_skipped: str = ""
     unpatched_critical: list = []
+    # The audit must echo the whole narrative back as corrected_narrative
+    # whenever it has a moderate finding, so its output budget scales with
+    # the draft: the 4096 floor is right for a short report and starves a
+    # long one (stop_reason=max_tokens → JSONDecodeError → no audit).
+    # ~3.5 chars/token is conservative for English prose + markdown.
+    audit_max_tokens = max(_MAX_TOKENS_AUDIT, int(len(polished_narrative) / 3.5 * 1.5) + 1024)
     try:
         audit_prompt = NARRATIVE_AUDIT_PROMPT.format(
             narrative=polished_narrative,
             tool_results_json=tool_results_json,
         )
         with trace_generation("narrative_audit", _fast_model(), audit_prompt,
-                              max_tokens=_MAX_TOKENS_AUDIT) as audit_gen:
+                              max_tokens=audit_max_tokens) as audit_gen:
             audit_resp = _anthropic_client().messages.create(
                 model=_fast_model(),
-                max_tokens=_MAX_TOKENS_AUDIT,
+                max_tokens=audit_max_tokens,
                 # The audit is a mechanical arithmetic/consistency check on a
                 # short document. At default effort the model burned most of
                 # its 8192 budget thinking (~60-70s measured); "low" keeps
@@ -366,8 +379,9 @@ def generate_narrative(state: AgentState) -> dict:
             logger.warning(
                 "generate_narrative: audit response truncated at max_tokens=%d "
                 "— raise MAX_TOKENS_AUDIT",
-                _MAX_TOKENS_AUDIT,
+                audit_max_tokens,
             )
+            audit_skipped = f"audit response truncated at max_tokens={audit_max_tokens}"
         raw = response_text(audit_resp).strip()
         if raw.startswith("```"):
             raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
@@ -407,6 +421,19 @@ def generate_narrative(state: AgentState) -> dict:
             )
     except Exception as exc:
         logger.warning("generate_narrative: audit failed — %s", redact_exception(exc))
+        audit_result = None
+        audit_skipped = audit_skipped or f"audit failed: {type(exc).__name__}"
+
+    if audit_skipped:
+        # The narrative was NOT checked. Say so where the analyst will read it
+        # (the gate shows narrative_draft) and in state, so log_run records
+        # audit_passed=False rather than the None-means-passed default that
+        # exists for the fast-lookup path, which legitimately has no audit.
+        polished_narrative += (
+            "\n\n> **Audit unavailable:** the accuracy audit did not complete "
+            f"({audit_skipped}); numbers in this draft have not been cross-checked "
+            "against the tool results."
+        )
 
     # Append this turn to conversation history for potential refinement. Built
     # from the normalised turns, not from raw state, so the stored history stays
@@ -434,6 +461,7 @@ def generate_narrative(state: AgentState) -> dict:
         "audit_result":              audit_result,
         "audit_blocked":             audit_blocked,
         "audit_unpatched":           unpatched_critical,
+        "audit_skipped":             audit_skipped,
         "narrative_revision_count":  (state.get("narrative_revision_count") or 0) + 1,
         "cache_read_tokens":         (state.get("cache_read_tokens") or 0) + cost_info.get("cache_read_tokens", 0),
         "cache_write_tokens":        (state.get("cache_write_tokens") or 0) + cost_info.get("cache_write_tokens", 0),
@@ -754,9 +782,14 @@ def log_run_node(state: AgentState) -> dict:
         estimated_cost_usd=state.get("estimated_cost_usd") or 0.0,
         semantic_cache_hits=1 if state.get("semantic_cache_hit") else 0,
         notes=state.get("analyst_notes") or "",
+        # None means "nothing to audit" (fast lookup) → passed; an audit that
+        # was attempted but did not complete is recorded as NOT passed.
         audit_passed=(
-            (ar := state.get("audit_result")) is None
-            or (hasattr(ar, "passed") and ar.passed)
+            not state.get("audit_skipped")
+            and (
+                (ar := state.get("audit_result")) is None
+                or (hasattr(ar, "passed") and ar.passed)
+            )
         ),
         metric_pack_id=state.get("metric_pack_id") or "",
         connection_id=state.get("connection_id") or "",

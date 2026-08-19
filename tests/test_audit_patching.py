@@ -54,6 +54,28 @@ class TestApplyAuditPatches:
         assert "Apple users" in out
         assert len(patched) == 1 and not unpatched
 
+    def test_ambiguous_quote_is_left_for_the_gate(self):
+        """A phrase that occurs twice (TL;DR and body) must not be patched:
+        replacing the first hit would edit the correct occurrence, leave the
+        wrong one, and annotate the narrative as fixed."""
+        narrative = (
+            "TL;DR: lift of 3.2 points.\n\n"
+            "Body: the headline lift of 3.2 points is driven by iOS."
+        )
+        out, patched, unpatched = _apply_audit_patches(
+            narrative, [_finding("3.2 points", "2.3 points")]
+        )
+        assert out == narrative
+        assert not patched and len(unpatched) == 1
+
+    def test_ambiguous_loose_match_is_left_for_the_gate(self):
+        narrative = "lift of\n3.2 points here; lift of 3.2 points there."
+        out, patched, unpatched = _apply_audit_patches(
+            narrative, [_finding("lift of 3.2 points", "lift of 2.3 points")]
+        )
+        assert out == narrative
+        assert not patched and len(unpatched) == 1
+
     def test_unfindable_quote_is_returned_unpatched(self):
         out, patched, unpatched = _apply_audit_patches(
             NARRATIVE, [_finding("this text is not in the narrative", "fix")]

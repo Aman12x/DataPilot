@@ -87,3 +87,24 @@ def test_lookup_run_logs_without_cache_branch(mem_db):
     assert out["run_id"] == "test-lookup-run"
     row = get_run("test-lookup-run", path=mem_db)
     assert row["query_type"] == "lookup"
+
+
+def test_skipped_audit_logs_as_not_passed(mem_db):
+    """audit_result=None means 'nothing to audit' only when the audit was not
+    attempted; an attempted-but-failed audit must not be recorded as passed."""
+    from agents.analyze.nodes_narrative import log_run_node
+    from memory.store import get_run
+
+    base = {
+        "task":            "what was dau?",
+        "analysis_mode":   "general",
+        "user_id":         "analyst-1",
+        "query_result":    pd.DataFrame({"dau": [1]}),
+        "narrative_draft": "x",
+        "final_narrative": "x",
+        "audit_result":    None,
+    }
+    log_run_node({**base, "run_id": "audit-none"})
+    log_run_node({**base, "run_id": "audit-skipped", "audit_skipped": "audit failed: Timeout"})
+    assert get_run("audit-none", path=mem_db)["audit_passed"] == 1
+    assert get_run("audit-skipped", path=mem_db)["audit_passed"] == 0

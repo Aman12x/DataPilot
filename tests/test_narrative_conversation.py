@@ -193,7 +193,7 @@ def _run_narrative(monkeypatch, history):
             # An inert audit result keeps the correction path out of the way.
             if len(sent) == 1:
                 return _StubResponse("polished narrative")
-            return _StubResponse('{"findings": [], "corrected_narrative": ""}')
+            return _StubResponse('{"passed": true, "findings": [], "corrected_narrative": ""}')
 
         def stream(self, **kwargs):
             return _FakeStream(self.create(**kwargs))
@@ -263,7 +263,7 @@ def test_audit_call_budgets_for_a_thinking_block(monkeypatch):
             calls.append(kwargs)
             if len(calls) == 1:
                 return _StubResponse("polished narrative")
-            return _StubResponse('{"findings": [], "corrected_narrative": ""}')
+            return _StubResponse('{"passed": true, "findings": [], "corrected_narrative": ""}')
 
         def stream(self, **kwargs):
             return _FakeStream(self.create(**kwargs))
@@ -301,3 +301,71 @@ def test_narrative_gate_approval_does_not_generate_deck(monkeypatch):
     assert out["narrative_approved"] is True
     assert out["deck_data"] == {}
     assert out["final_narrative"].startswith("The metric moved.")
+
+
+# ── An audit that did not complete is not a passed audit ─────────────────────
+
+def test_truncated_audit_is_flagged_not_silently_passed(monkeypatch):
+    """stop_reason=max_tokens → JSON fails → previously audit_result=None,
+    which log_run read as passed. Now: audit_skipped carries the reason, the
+    draft says so where the analyst reads it, and the run logs audit_passed=0."""
+    import agents.analyze.nodes_narrative as nn
+
+    calls: list[dict] = []
+
+    class _Messages:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                return _StubResponse("polished narrative")
+            resp = _StubResponse('{"passed": true, "findings": [], "corrected_narr')
+            resp.stop_reason = "max_tokens"
+            return resp
+
+        def stream(self, **kwargs):
+            return _FakeStream(self.create(**kwargs))
+
+    class _Client:
+        messages = _Messages()
+
+    monkeypatch.setattr(nn, "_anthropic_client", lambda: _Client())
+    out = nn.generate_narrative({
+        "analysis_mode": "general",
+        "query_type": "lookup",
+        "task": "what happened to signups",
+        "conversation_history": [],
+    })
+    assert out["audit_result"] is None
+    assert "truncated" in out["audit_skipped"]
+    assert "Audit unavailable" in out["narrative_draft"]
+
+
+def test_audit_budget_scales_with_the_draft(monkeypatch):
+    """The auditor echoes the whole narrative back; a long draft needs more
+    than the 4096 floor or the echo itself truncates."""
+    import agents.analyze.node_shared as shared
+    import agents.analyze.nodes_narrative as nn
+
+    long_draft = "word " * 6000   # ~30k chars ≈ 8.5k tokens
+    calls: list[dict] = []
+
+    class _Messages:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                return _StubResponse(long_draft)
+            return _StubResponse('{"passed": true, "findings": [], "corrected_narrative": ""}')
+
+        def stream(self, **kwargs):
+            return _FakeStream(self.create(**kwargs))
+
+    class _Client:
+        messages = _Messages()
+
+    monkeypatch.setattr(nn, "_anthropic_client", lambda: _Client())
+    nn.generate_narrative({
+        "analysis_mode": "general", "query_type": "lookup",
+        "task": "t", "conversation_history": [],
+    })
+    assert calls[1]["max_tokens"] > shared._MAX_TOKENS_AUDIT
+    assert calls[1]["max_tokens"] >= len(long_draft) / 3.5

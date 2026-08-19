@@ -122,6 +122,7 @@ class AgentState(TypedDict, total=False):
     audit_result:  NarrativeAuditResult # LLM audit result
     audit_blocked: bool                 # True if UNPATCHABLE critical findings exist
     audit_unpatched: list               # critical findings the in-place patcher could not fix
+    audit_skipped: str                  # non-empty when the audit was attempted but did not complete (reason)
 
     # ── HITL gate 3: narrative sign-off ───────────────────────────────────────
     narrative_approved: bool
