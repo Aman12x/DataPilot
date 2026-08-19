@@ -19,6 +19,18 @@ Two Railway services from one repo.
 | backend | FastAPI API | volume, DB paths, budgets, `SECRET_KEY` |
 | frontend | Static SPA via `serve` | `VITE_API_URL`, `CSP_REPORT_ONLY` |
 
+### Verifying a deploy landed
+
+`/health` echoes the commit the running image was built from
+(`RAILWAY_GIT_COMMIT_SHA`), so one request answers "is prod on HEAD yet":
+
+```
+curl -s https://datapilot.singhaman.dev/health | jq -r .commit
+git rev-parse origin/main
+```
+
+`"unknown"` means the variable was not present at build time (local runs).
+
 ### The volume
 
 **Mount at `/app/db`. Never `/app/memory`.**

@@ -433,10 +433,25 @@ async def health(request: Request):
     failed = [k for k, v in checks.items() if v.startswith("error")]
     status_code = 503 if failed else 200
     return Response(
-        content=json.dumps({"status": "ok" if not failed else "degraded", "checks": checks}),
+        content=json.dumps({
+            "status": "ok" if not failed else "degraded",
+            "checks": checks,
+            # Which build is serving: Railway injects the deployed commit at
+            # build time (Sentry already uses it as the release). Lets a
+            # deploy be verified with one curl instead of the Railway CLI.
+            "commit": _deployed_commit(),
+        }),
         media_type="application/json",
         status_code=status_code,
     )
+
+
+def _deployed_commit() -> str:
+    for var in ("RAILWAY_GIT_COMMIT_SHA", "GIT_COMMIT_SHA", "SOURCE_COMMIT"):
+        sha = os.getenv(var, "").strip()
+        if sha:
+            return sha
+    return "unknown"
 
 
 @router.post("/runs", status_code=status.HTTP_201_CREATED)

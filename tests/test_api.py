@@ -528,6 +528,14 @@ class TestHealth:
         assert "checks" in body
         assert body["checks"]["graph"] == "ok"
 
+    def test_health_reports_the_deployed_commit(self, client, monkeypatch):
+        """Railway injects RAILWAY_GIT_COMMIT_SHA; /health echoes it so a
+        deploy can be verified with one curl."""
+        monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", "abc1234def5678")
+        assert client.get("/health").json()["commit"] == "abc1234def5678"
+        monkeypatch.delenv("RAILWAY_GIT_COMMIT_SHA")
+        assert client.get("/health").json()["commit"] == "unknown"
+
     def test_health_surfaces_redis_fallback(self, client):
         """REDIS_URL set but unreachable at boot must not read as the benign
         "not_configured": limits and budgets are single-pod in that state."""
