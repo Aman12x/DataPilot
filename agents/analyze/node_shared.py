@@ -605,6 +605,86 @@ def _safe_df(state: AgentState) -> pd.DataFrame | None:
     return df
 
 
+# Only flag >1 as suspicious for metrics that should be rates (0–1).
+# Revenue, duration, count, and score columns are legitimately > 1.
+_RATE_KEYWORDS = {"rate", "ctr", "cvr", "conversion", "retention", "churn",
+                  "open_rate", "click_rate", "bounce", "engagement_rate"}
+_ENTITY_COLS_LOWER = {"user_id", "customer_id", "patient_id", "userid",
+                      "uid", "entity_id", "shipment_id"}
+
+
+def _looks_like_rate_metric(name: str) -> bool:
+    low = name.lower()
+    return any(kw in low for kw in _RATE_KEYWORDS)
+
+
+def find_entity_col(columns) -> str | None:
+    """The user_id-like column in a result, if any (fan-out detection)."""
+    return next((c for c in columns if str(c).lower() in _ENTITY_COLS_LOWER), None)
+
+
+def _validate_sufficient_stats(ss, mc: "MetricConfig") -> list[str]:
+    """Content validation for the pushdown path — the same warnings
+    _validate_query_content raises off the frame, derived from the moments
+    and shape facts compute_sufficient_stats aggregated in-warehouse.
+
+    The row-level checks (duplicate users, value ranges) have no pushdown
+    analogue; the ones that matter most at scale do: an event-level extract
+    from a missing GROUP BY is the canonical reason a result balloons past
+    the pushdown threshold, and it must still surface as JOIN fan-out.
+    """
+    warnings: list[str] = []
+    overall = ss.overall or {}
+    variants = list(overall)
+    variant_lower = {str(v).lower() for v in variants}
+    has_ctrl = any("control" in v for v in variant_lower)
+    has_trt  = any("treatment" in v for v in variant_lower)
+
+    if not has_ctrl or not has_trt:
+        warnings.append(
+            f"Variant column contains only: {variants}. "
+            "Expected both 'control' and 'treatment' arms — "
+            "assignment join may be broken."
+        )
+    else:
+        ctrl_name = next(v for v in variants if "control" in str(v).lower())
+        trt_name  = next(v for v in variants if "treatment" in str(v).lower())
+        n_ctrl = int(overall[ctrl_name].n)
+        n_trt  = int(overall[trt_name].n)
+        total  = n_ctrl + n_trt
+        ratio  = min(n_ctrl, n_trt) / total if total > 0 else 0.5
+        if ratio < 0.30:
+            warnings.append(
+                f"Arm imbalance: control={n_ctrl:,}, treatment={n_trt:,} "
+                f"(minority arm is {ratio:.1%} of total). "
+                "Possible SRM — check assignment logs."
+            )
+
+    n_metric = sum(int(g.n) for g in overall.values())
+    if _looks_like_rate_metric(ss.metric) and n_metric > 0:
+        frac = ss.metric_over_one / n_metric
+        if frac > 0.8:
+            warnings.append(
+                f"Metric '{ss.metric}' has {frac:.0%} of values > 1.0 "
+                "— looks like a percentage (0–100) rather than a rate (0–1). "
+                "Verify the aggregation expression in the SQL."
+            )
+
+    if ss.entity_col and ss.n_entities > 0:
+        n_variants = max(len(variants), 1)
+        n_weeks    = max(ss.n_weeks, 1)
+        expected   = ss.n_entities * n_variants * n_weeks
+        if expected > 0 and ss.total_rows > expected * 3:
+            warnings.append(
+                f"JOIN fan-out: {ss.total_rows:,} rows but {ss.n_entities:,} unique "
+                f"{ss.entity_col}s × {n_variants} variant(s) × {n_weeks} week(s) = "
+                f"{expected:,} expected ({ss.total_rows / expected:.1f}× over). "
+                "Missing GROUP BY or duplicate JOIN key."
+            )
+
+    return warnings
+
+
 def _validate_query_content(
     df: pd.DataFrame,
     mc: "MetricConfig",
@@ -663,12 +743,7 @@ def _validate_query_content(
 
     if mode == "ab_test" and mc.primary_metric in df.columns:
         col = df[mc.primary_metric].dropna()
-        # Only flag >1 as suspicious for metrics that should be rates (0–1).
-        # Revenue, duration, count, and score columns are legitimately > 1.
-        _RATE_KEYWORDS = {"rate", "ctr", "cvr", "conversion", "retention", "churn",
-                          "open_rate", "click_rate", "bounce", "engagement_rate"}
-        metric_lower = mc.primary_metric.lower()
-        is_rate_metric = any(kw in metric_lower for kw in _RATE_KEYWORDS)
+        is_rate_metric = _looks_like_rate_metric(mc.primary_metric)
         if is_rate_metric and len(col) > 0 and (col > 1.0).mean() > 0.8:
             warnings.append(
                 f"Metric '{mc.primary_metric}' has {(col > 1.0).mean():.0%} of values > 1.0 "
@@ -681,11 +756,7 @@ def _validate_query_content(
     # entities, usually from a missing GROUP BY or a 1-to-many JOIN key.
     # For A/B: rows should be ≤ n_users × n_variants × n_weeks (3× buffer).
     # For general: any entity column with duplicates is suspicious.
-    _ENTITY_COLS_LOWER = {"user_id", "customer_id", "patient_id", "userid",
-                          "uid", "entity_id", "shipment_id"}
-    entity_col = next(
-        (c for c in df.columns if c.lower() in _ENTITY_COLS_LOWER), None
-    )
+    entity_col = find_entity_col(df.columns)
     if entity_col:
         n_rows    = len(df)
         n_unique  = df[entity_col].nunique()

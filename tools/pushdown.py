@@ -193,8 +193,11 @@ def compute_sufficient_stats(
     week_col: str = "week",
     total_rows: int = 0,
     bool_cols: frozenset[str] | None = None,
+    entity_col: str = "",
 ) -> SufficientStats:
-    """Three aggregate queries over the approved SQL → SufficientStats."""
+    """Three aggregate queries over the approved SQL → SufficientStats
+    (a fourth, COUNT DISTINCT over the entity/week columns, when the extract
+    has an entity column — it feeds the JOIN fan-out check)."""
     backend = db.backend
     sub = f"(\n{nestable_sql(base_sql)}\n) AS _dp_push"
     if bool_cols is None:
@@ -212,6 +215,7 @@ def compute_sufficient_stats(
     joint = f"{yq} IS NOT NULL AND {xq} IS NOT NULL"
     parts = [
         _moment_selects(metric, backend, "m", bool_cols),
+        f"SUM(CASE WHEN {yq} IS NOT NULL AND {y} > 1.0 THEN 1 ELSE 0 END) AS m_gt1",
         f"SUM(CASE WHEN {joint} THEN 1 ELSE 0 END) AS j_n",
         f"SUM(CASE WHEN {joint} THEN {y} ELSE 0 END) AS j_sy",
         f"SUM(CASE WHEN {joint} THEN {y}*{y} ELSE 0 END) AS j_syy",
@@ -226,8 +230,10 @@ def compute_sufficient_stats(
 
     overall: dict[str, GroupMoments] = {}
     guardrails: dict[str, dict[str, GroupMoments]] = {gm: {} for gm in guardrail_metrics}
+    metric_over_one = 0
     for _, row in df1.iterrows():
         variant = str(row["_variant"])
+        metric_over_one += int(row["m_gt1"] or 0)
         overall[variant] = GroupMoments(
             n=int(row["m_n"] or 0), s1=float(row["m_s1"] or 0),
             s2=float(row["m_s2"] or 0), s3=float(row["m_s3"] or 0),
@@ -240,6 +246,21 @@ def compute_sufficient_stats(
                 n=int(row[f"g{i}_n"] or 0), s1=float(row[f"g{i}_s1"] or 0),
                 s2=float(row[f"g{i}_s2"] or 0), s3=float(row[f"g{i}_s3"] or 0),
             )
+
+    # Query 4 (cheap, only with an entity column) — distinct entities and
+    # weeks, so the JOIN fan-out check can run without the frame.
+    n_entities = 0
+    n_weeks = 0
+    if entity_col:
+        ent = quote_ident(entity_col, backend)
+        wk = (f"COUNT(DISTINCT {quote_ident(week_col, backend)})" if week_col else "0")
+        try:
+            df4 = db.query(f"SELECT COUNT(DISTINCT {ent}) AS _e, {wk} AS _w FROM {sub}")
+            n_entities = int(df4.iloc[0]["_e"] or 0)
+            n_weeks = int(df4.iloc[0]["_w"] or 0)
+        except Exception as exc:  # noqa: BLE001 — advisory; the check just won't fire
+            logger.info("pushdown: entity count unavailable (%s)", type(exc).__name__)
+            entity_col = ""
 
     # Query 2 — per (all segment cols jointly, variant): metric moments.
     # Mirrors run_hte's cross-product subgroups and its dropna over
@@ -274,6 +295,8 @@ def compute_sufficient_stats(
             metric=metric, covariate=covariate, total_rows=total_rows,
             overall=overall, by_segment=by_segment, by_week=by_week,
             guardrails=guardrails, segment_total=segment_total,
+            entity_col=entity_col, n_entities=n_entities, n_weeks=n_weeks,
+            metric_over_one=metric_over_one,
         )
     w = quote_ident(week_col, backend)
     q3 = (
@@ -295,6 +318,8 @@ def compute_sufficient_stats(
         metric=metric, covariate=covariate, total_rows=total_rows,
         overall=overall, by_segment=by_segment, by_week=by_week,
         guardrails=guardrails, segment_total=segment_total,
+        entity_col=entity_col, n_entities=n_entities, n_weeks=n_weeks,
+        metric_over_one=metric_over_one,
     )
 
 

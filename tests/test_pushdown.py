@@ -316,3 +316,87 @@ def test_count_rows_tolerates_trailing_comment_after_semicolon(typed_db):
 def test_probe_columns_tolerates_trailing_comment(typed_db):
     cols = pushdown.probe_columns(typed_db, TYPED_SQL + "; -- note")
     assert "converted" in cols
+
+
+# ── Content validation in pushdown mode ──────────────────────────────────────
+# The frame-based checks (JOIN fan-out, arm imbalance, rate-vs-percentage)
+# used to be skipped entirely once the extract went in-warehouse — and an
+# event-level extract from a missing GROUP BY is the canonical reason a
+# result balloons past the pushdown threshold in the first place.
+
+@pytest.fixture
+def fanout_db(tmp_path):
+    import duckdb
+    path = str(tmp_path / "fanout.db")
+    con = duckdb.connect(path)
+    con.execute("""
+        CREATE TABLE ev (user_id VARCHAR, variant VARCHAR, week INTEGER,
+                         conversion_rate DOUBLE, pre DOUBLE)
+    """)
+    rows = []
+    for i in range(30):
+        v = "control" if i % 2 == 0 else "treatment"
+        for k in range(10):   # 10 event rows per user, one week → 10× fan-out
+            rows.append((f"u{i}", v, 1, 0.2 + 0.01 * (k % 3) + (0.05 if v == "treatment" else 0), float(i % 5)))
+    con.executemany("INSERT INTO ev VALUES (?,?,?,?,?)", rows)
+    con.close()
+    return DBConnection("duckdb", path=path)
+
+
+def test_sufficient_stats_carry_shape_facts(fanout_db):
+    sql = "SELECT user_id, variant, week, conversion_rate, pre FROM ev"
+    ss = pushdown.compute_sufficient_stats(
+        fanout_db, sql, metric="conversion_rate", covariate="pre",
+        segment_cols=[], guardrail_metrics=[], total_rows=300, entity_col="user_id",
+    )
+    assert ss.entity_col == "user_id"
+    assert ss.n_entities == 30
+    assert ss.n_weeks == 1
+    assert ss.metric_over_one == 0
+
+
+def test_pushdown_fan_out_is_flagged_at_execute_query(fanout_db, monkeypatch):
+    import agents.analyze.nodes_sql as ns
+    from config.analysis_config import load_metric_config
+
+    monkeypatch.setattr(ns, "_PUSHDOWN_ROWS", 50)          # 300 rows → pushdown
+    monkeypatch.setattr(ns, "_db_conn", lambda state: fanout_db)
+    mc = load_metric_config().model_copy(update={
+        "primary_metric": "conversion_rate", "covariate": "pre",
+        "segment_cols": [], "guardrail_metrics": [],
+    })
+    state = {
+        "generated_sql":  "SELECT user_id, variant, week, conversion_rate, pre FROM ev",
+        "analysis_mode":  "ab_test",
+        "metric_config":  mc,
+        "metric":         "conversion_rate",
+        "covariate":      "pre",
+        "schema_context": "TABLE: ev\nuser_id VARCHAR\n",
+        "task":           "did conversion move?",
+    }
+    out = ns.execute_query(state)
+    assert out["sufficient_stats"] is not None
+    warnings = out["sql_validation_warnings"]
+    assert any("JOIN fan-out" in w and "30 unique user_ids" in w for w in warnings), warnings
+
+
+def test_pushdown_clean_extract_has_no_content_warnings(typed_db, monkeypatch):
+    import agents.analyze.nodes_sql as ns
+    from config.analysis_config import load_metric_config
+
+    monkeypatch.setattr(ns, "_PUSHDOWN_ROWS", 10)           # 40 rows → pushdown
+    monkeypatch.setattr(ns, "_db_conn", lambda state: typed_db)
+    mc = load_metric_config().model_copy(update={
+        "primary_metric": "converted", "covariate": "sessions",
+        "segment_cols": [], "guardrail_metrics": ["churned"],
+    })
+    state = {
+        "generated_sql":  TYPED_SQL,
+        "analysis_mode":  "ab_test",
+        "metric_config":  mc,
+        "schema_context": "TABLE: users\nuser_id VARCHAR\n",
+        "task":           "did conversion move?",
+    }
+    out = ns.execute_query(state)
+    assert out["sufficient_stats"] is not None
+    assert out["sql_validation_warnings"] == []

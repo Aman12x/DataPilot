@@ -178,6 +178,13 @@ class SufficientStats(BaseModel):
     by_week:    dict[str, dict[str, GroupMoments]] = {}    # week (str) → variant → moments
     guardrails: dict[str, dict[str, GroupMoments]] = {}    # metric → variant → moments
     segment_total: int = 0                                 # rows with all segment cols non-null
+    # Shape facts for content validation — the pandas path read these off the
+    # frame (JOIN fan-out, percentage-vs-rate); in pushdown mode they are
+    # aggregated alongside the moments so the same warnings still fire.
+    entity_col:      str = ""    # user_id-like column found in the extract, if any
+    n_entities:      int = 0     # COUNT(DISTINCT entity_col) over the extract
+    n_weeks:         int = 0     # COUNT(DISTINCT week) over the extract (0 = no week col)
+    metric_over_one: int = 0     # non-null metric values > 1.0 (rate sanity check)
 
 
 class GuardrailMetric(BaseModel):

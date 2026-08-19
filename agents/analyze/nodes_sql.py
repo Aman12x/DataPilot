@@ -286,6 +286,7 @@ def _fetch_or_pushdown(state: AgentState, sql: str, mc) -> tuple[pd.DataFrame, A
         guardrail_metrics=[g for g in mc.guardrail_metrics if g in cols],
         week_col="week" if "week" in cols else "",
         total_rows=n_rows,
+        entity_col=find_entity_col(cols) or "",
     )
     logger.info(
         "execute_query: pushdown engaged — %s rows stay in the warehouse "
@@ -440,10 +441,13 @@ def execute_query(state: AgentState) -> dict:
     # ── Phase 4: Content validation ───────────────────────────────────────────
     # Replace (not append) so stale warnings from a prior 0-row attempt don't
     # persist after the analyst fixes the SQL and re-executes.
-    # Pushdown mode skips it: the row-level checks it performs (value ranges,
-    # duplicate users) don't apply to a per-variant preview frame.
+    # Pushdown mode validates from the moments instead: the preview frame is
+    # per-variant, but arm presence/imbalance, rate-vs-percentage and JOIN
+    # fan-out are all derivable from what was aggregated in-warehouse.
     if sufficient_stats is not None:
-        content_warnings = []
+        content_warnings = _validate_sufficient_stats(sufficient_stats, mc)
+        for w in content_warnings:
+            logger.warning("execute_query: content validation (pushdown) — %s", redact(w))
         logger.info(
             "execute_query: pushdown mode — %s rows aggregated in-warehouse, "
             "%d moment cells in state.",
