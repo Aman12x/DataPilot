@@ -97,7 +97,12 @@ export default function History() {
 
   const scoreColor = (sc: number) =>
     sc >= 0.8 ? "var(--dp-success)" : sc >= 0.6 ? "var(--dp-warning)" : "var(--dp-danger)";
-  const scoreLabel = (sc: number) => sc >= 0.8 ? "High quality" : sc >= 0.6 ? "Good" : "Needs review";
+  // eval_score is an in-band COVERAGE signal (60% "did every expected tool
+  // node produce a result" + 40% narrative faithfulness/relevancy), not a
+  // judgement of whether the analysis is right. Label it as what it measures.
+  const scoreLabel = (sc: number) => sc >= 0.8 ? "Full coverage" : sc >= 0.6 ? "Partial coverage" : "Gaps";
+  const scoreTitle = "Coverage: share of expected analysis steps that produced a result, "
+    + "plus narrative faithfulness to the data. Not a correctness score.";
 
   return (
     <AppShell
@@ -168,7 +173,7 @@ export default function History() {
                   </span>
 
                   {r.eval_score != null && (
-                    <div style={s.scoreChip}>
+                    <div style={s.scoreChip} title={scoreTitle}>
                       <div style={{ ...s.scoreDot, background: scoreColor(r.eval_score) }} />
                       <span style={{ color: scoreColor(r.eval_score), fontSize: 12, fontWeight: 600 }}>
                         {(r.eval_score * 100).toFixed(0)}% {scoreLabel(r.eval_score)}

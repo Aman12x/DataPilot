@@ -106,6 +106,12 @@ _MAX_TOKENS_NARRATIVE = int(os.getenv("MAX_TOKENS_NARRATIVE", "8192"))
 # what starved outputs before — on claude-sonnet-5, thinking is on by default
 # and spends from this same budget.
 _MAX_TOKENS_AUDIT     = int(os.getenv("MAX_TOKENS_AUDIT",     "4096"))
+# Intent resolution returns ~10 JSON fields, but on adaptive-thinking models
+# thinking spends from the same budget: at 256 the JSON was cut mid-object on
+# a large share of calls (stop_reason=max_tokens → JSONDecodeError → safe
+# default: mode ab_test, default metric, query_type exploratory) and the
+# warning named the parse, not the cause. evals/intent_routing_eval.py found it.
+_MAX_TOKENS_INTENT    = int(os.getenv("MAX_TOKENS_INTENT",    "1024"))
 _MAX_TOKENS_DECK      = int(os.getenv("MAX_TOKENS_DECK",      "4096"))
 
 # Max LLM-based SQL correction retries in execute_query (0 = disabled)

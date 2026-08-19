@@ -160,6 +160,61 @@ def _apply_audit_patches(narrative: str, findings: list) -> tuple[str, list, lis
     return narrative, patched, unpatched
 
 
+def run_narrative_audit(narrative: str, tool_results_json: str) -> tuple[Any, dict, str]:
+    """One audit call over a finished narrative.
+
+    Returns (NarrativeAuditResult | None, cost_info, skipped_reason). The
+    result is None — and skipped_reason says why — when the response was
+    truncated or did not parse; it never raises for those, so callers decide
+    how loud to be. Shared by generate_narrative and evals/audit_eval.py so
+    the eval measures the exact call production makes.
+    """
+    from tools.schemas import NarrativeAuditResult
+
+    # The audit must echo the whole narrative back as corrected_narrative
+    # whenever it has a moderate finding, so its output budget scales with
+    # the draft: the 4096 floor is right for a short report and starves a
+    # long one (stop_reason=max_tokens → JSONDecodeError → no audit).
+    # ~3.5 chars/token is conservative for English prose + markdown.
+    audit_max_tokens = max(_MAX_TOKENS_AUDIT, int(len(narrative) / 3.5 * 1.5) + 1024)
+    audit_prompt = NARRATIVE_AUDIT_PROMPT.format(
+        narrative=narrative,
+        tool_results_json=tool_results_json,
+    )
+    with trace_generation("narrative_audit", _fast_model(), audit_prompt,
+                          max_tokens=audit_max_tokens) as audit_gen:
+        audit_resp = _anthropic_client().messages.create(
+            model=_fast_model(),
+            max_tokens=audit_max_tokens,
+            # The audit is a mechanical arithmetic/consistency check on a
+            # short document. At default effort the model burned most of
+            # its 8192 budget thinking (~60-70s measured); "low" keeps
+            # adaptive thinking on but spends a fraction of that, which is
+            # also what makes the tighter max_tokens safe.
+            output_config={"effort": "low"},
+            messages=[{"role": "user", "content": audit_prompt}],
+        )
+        cost = audit_gen.update(audit_resp)
+
+    skipped = ""
+    if getattr(audit_resp, "stop_reason", None) == "max_tokens":
+        # Truncated output surfaces below as a JSONDecodeError; name the
+        # real cause so a systematic starvation is visible in Sentry.
+        logger.warning(
+            "generate_narrative: audit response truncated at max_tokens=%d "
+            "— raise MAX_TOKENS_AUDIT",
+            audit_max_tokens,
+        )
+        skipped = f"audit response truncated at max_tokens={audit_max_tokens}"
+    raw = response_text(audit_resp).strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
+    try:
+        return NarrativeAuditResult(**json.loads(raw)), cost, skipped
+    except Exception as exc:  # noqa: BLE001 — malformed / truncated JSON
+        return None, cost, skipped or f"audit failed: {type(exc).__name__}"
+
+
 @observe(name="generate_narrative", as_type="generation")
 def generate_narrative(state: AgentState) -> dict:
     mc     = state.get("metric_config") or load_metric_config()
@@ -346,46 +401,14 @@ def generate_narrative(state: AgentState) -> dict:
     audit_blocked: bool = False
     audit_skipped: str = ""
     unpatched_critical: list = []
-    # The audit must echo the whole narrative back as corrected_narrative
-    # whenever it has a moderate finding, so its output budget scales with
-    # the draft: the 4096 floor is right for a short report and starves a
-    # long one (stop_reason=max_tokens → JSONDecodeError → no audit).
-    # ~3.5 chars/token is conservative for English prose + markdown.
-    audit_max_tokens = max(_MAX_TOKENS_AUDIT, int(len(polished_narrative) / 3.5 * 1.5) + 1024)
     try:
-        audit_prompt = NARRATIVE_AUDIT_PROMPT.format(
-            narrative=polished_narrative,
-            tool_results_json=tool_results_json,
+        audit_result, audit_cost, audit_skipped = run_narrative_audit(
+            polished_narrative, tool_results_json
         )
-        with trace_generation("narrative_audit", _fast_model(), audit_prompt,
-                              max_tokens=audit_max_tokens) as audit_gen:
-            audit_resp = _anthropic_client().messages.create(
-                model=_fast_model(),
-                max_tokens=audit_max_tokens,
-                # The audit is a mechanical arithmetic/consistency check on a
-                # short document. At default effort the model burned most of
-                # its 8192 budget thinking (~60-70s measured); "low" keeps
-                # adaptive thinking on but spends a fraction of that, which is
-                # also what makes the tighter max_tokens safe.
-                output_config={"effort": "low"},
-                messages=[{"role": "user", "content": audit_prompt}],
-            )
-            audit_cost = audit_gen.update(audit_resp)
         for k in ("cache_read_tokens", "cache_write_tokens", "estimated_cost_usd"):
             cost_info[k] = cost_info.get(k, 0) + audit_cost.get(k, 0)
-        if getattr(audit_resp, "stop_reason", None) == "max_tokens":
-            # Truncated output surfaces below as a JSONDecodeError; name the
-            # real cause so a systematic starvation is visible in Sentry.
-            logger.warning(
-                "generate_narrative: audit response truncated at max_tokens=%d "
-                "— raise MAX_TOKENS_AUDIT",
-                audit_max_tokens,
-            )
-            audit_skipped = f"audit response truncated at max_tokens={audit_max_tokens}"
-        raw = response_text(audit_resp).strip()
-        if raw.startswith("```"):
-            raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
-        audit_result = NarrativeAuditResult(**json.loads(raw))
+        if audit_result is None:
+            raise ValueError(audit_skipped or "audit produced no result")
 
         critical = [f for f in audit_result.findings if f.severity == "critical"]
         moderate = [f for f in audit_result.findings if f.severity == "moderate"]

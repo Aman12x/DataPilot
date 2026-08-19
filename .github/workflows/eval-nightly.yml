@@ -40,6 +40,29 @@ jobs:
             echo "ANTHROPIC_API_KEY not set — skipping LLM narrative eval"
           fi
 
+      # LLM-live per-stage evals: intent routing (mode / lookup-vs-exploratory /
+      # metric) and narrative-audit catch rate. Both measure the exact calls
+      # production makes; neither is in the per-PR gate.
+      - name: Run intent routing eval
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            python evals/intent_routing_eval.py --json intent_routing_report.json
+          else
+            echo "ANTHROPIC_API_KEY not set — skipping intent routing eval"
+          fi
+
+      - name: Run narrative audit catch-rate eval
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            python evals/audit_eval.py --json audit_report.json
+          else
+            echo "ANTHROPIC_API_KEY not set — skipping audit eval"
+          fi
+
       - name: Run slow relevancy tests
         env:
           SECRET_KEY: test-secret-key-that-is-long-enough-for-hs256

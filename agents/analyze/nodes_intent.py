@@ -30,7 +30,7 @@ _ANALYSIS_RE = re.compile(
     r"significant|compare|breakdown|investigat|driver|anomal|differ|"
     r"segment|cohort|funnel|retention|churn|uplift|effect|"
     r"\bvs\.?\b|\bversus\b|\bvariant|\btreatment|\bcontrol\b|"
-    r"\b(by|per|across|between|split)\s+\w|\bover\s+time|"
+    r"\b(by|per|across|between|split)\s+(?!(number|count|total|amount|volume|sum)\b)\w|\bover\s+time|"
     r"\bgroup(ed)?\s+by|\bweek\s+over|\bmonth\s+over|\bchange)",
     re.IGNORECASE,
 )
@@ -91,10 +91,13 @@ def _llm_resolve_intent(
     try:
         try:
             with trace_generation("resolve_task_intent", _model(), task_prompt,
-                                  max_tokens=256) as gen:
+                                  max_tokens=_MAX_TOKENS_INTENT) as gen:
                 response = _anthropic_client().messages.create(
                     model=_model(),
-                    max_tokens=256,
+                    max_tokens=_MAX_TOKENS_INTENT,
+                    # Same two-part defence as the audit: "low" caps the
+                    # thinking spend so the JSON fits the budget.
+                    output_config={"effort": "low"},
                     messages=messages,
                 )
                 cost_info = gen.update(response)
@@ -110,13 +113,22 @@ def _llm_resolve_intent(
                 _model(), _fast_model(),
             )
             with trace_generation("resolve_task_intent", _fast_model(), task_prompt,
-                                  max_tokens=256) as gen:
+                                  max_tokens=_MAX_TOKENS_INTENT) as gen:
                 response = _anthropic_client().messages.create(
                     model=_fast_model(),
-                    max_tokens=256,
+                    max_tokens=_MAX_TOKENS_INTENT,
+                    output_config={"effort": "low"},
                     messages=messages,
                 )
                 cost_info = gen.update(response)
+        if getattr(response, "stop_reason", None) == "max_tokens":
+            # Name the real cause: truncated JSON surfaces below as a
+            # JSONDecodeError, which is how this hid in production.
+            logger.warning(
+                "_llm_resolve_intent: response truncated at max_tokens=%d — "
+                "raise MAX_TOKENS_INTENT",
+                _MAX_TOKENS_INTENT,
+            )
         raw = response_text(response).strip()
         # Strip markdown fences if present
         if raw.startswith("```"):
@@ -375,6 +387,19 @@ def resolve_task_intent(state: AgentState) -> dict:
             redact(task),
         )
         query_type = "lookup"
+
+    # And the other direction: the fast path skips both human gates and the
+    # audit, so the LLM's own "lookup" verdict does not get to put a
+    # comparison or a cut on it either. evals/intent_routing_eval.py showed
+    # sonnet calling "what is the total revenue vs last quarter" a lookup.
+    if query_type == "lookup" and _ANALYSIS_RE.search(task):
+        logger.info(
+            "resolve_task_intent: LLM said 'lookup' but the task reads as analysis — "
+            "keeping 'exploratory' run=%s task=%s",
+            state.get("run_id", "unknown"),
+            redact(task),
+        )
+        query_type = "exploratory"
 
     return {
         "metric_config":        updated_mc,

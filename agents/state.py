@@ -152,4 +152,4 @@ class AgentState(TypedDict, total=False):
 
     # ── Memory ────────────────────────────────────────────────────────────────
     run_id: str
-    eval_score: float                   # 0-1, did the system surface the right answer?
+    eval_score: float                   # 0-1 coverage signal: tool-node completeness (60%) + narrative faithfulness/relevancy (40%); NOT correctness

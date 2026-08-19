@@ -304,7 +304,13 @@ has run ahead of the pins before.
 affect the other.
 
 **`MODEL` only affects intent resolution** (`nodes_intent.py`), a small JSON
-call. Everything else uses `FAST_MODEL`. If the `MODEL` pin 404s
+call — small in *output*, but on an adaptive-thinking model thinking spends
+from the same `max_tokens`: at 256 the JSON was cut mid-object on a large
+share of production calls and the node fell to its safe default (mode
+`ab_test`, default metric, `exploratory`) while logging only "parse failed".
+It is now `MAX_TOKENS_INTENT=1024` + `effort: low`, and a `stop_reason ==
+max_tokens` is logged by name. Any new small JSON call needs the same two
+things. Everything else uses `FAST_MODEL`. If the `MODEL` pin 404s
 (`anthropic.NotFoundError`), intent retries once on `FAST_MODEL` and logs at
 ERROR; any other error still lands in the safe default.
 
@@ -340,11 +346,15 @@ alone does nothing. Keep that step when touching the workflows.
 Detail — why each is open, the intended fix, and how to verify — lives in
 `docs/future-work.md` (local, untracked). Keep the two in sync.
 
-- **Per-stage eval is partial.** `evals/sql_generation_eval.py` (LLM-live,
-  manual/nightly, not per-PR) now scores SQL generation and table choice per
-  stage — baseline 20/20 strict on claude-sonnet-5 — and `score_faithfulness`
-  no longer fails open. Still ungated: intent routing, audit catch rate, and
-  the production `eval_score` mislabelling completeness as quality.
+- **Per-stage eval is LLM-live only.** `evals/sql_generation_eval.py`,
+  `intent_routing_eval.py` and `audit_eval.py` (Eval Nightly, not per-PR)
+  score SQL generation / table choice, intent routing (mode, lookup-vs-
+  exploratory, metric) and audit catch rate. Baselines 2026-08-19 on
+  claude-sonnet-5: 20/20, 94.7% strict, 8/8 caught with 0 false positives.
+  Nothing LLM-shaped is gated per PR by design (cost, nondeterminism); a
+  regression shows up the next morning, not on the PR. `eval_score` in the
+  runs table / History is a *coverage* signal (tool-node completeness +
+  narrative faithfulness), labelled as such in the UI — not correctness.
 - **Pushdown parity is proven on DuckDB and Postgres** (`tests/test_pushdown.py`,
   `tests/test_pushdown_postgres_integration.py` in the integration job); MySQL
   and BigQuery share the builders but have no integration test.

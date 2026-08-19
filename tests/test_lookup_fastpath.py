@@ -192,3 +192,38 @@ class TestLookupHeuristicScope:
     def test_plain_retrievals_still_are(self, task):
         from agents.analyze.nodes_intent import _is_lookup_task
         assert _is_lookup_task(task)
+
+
+class TestLLMLookupVerdictIsVetoed:
+    def test_llm_lookup_on_a_comparison_is_kept_exploratory(self, monkeypatch):
+        """The fast path skips both gates and the audit; the LLM's own 'lookup'
+        does not get to put a comparison there (the regex already stops the
+        heuristic from doing so)."""
+        from agents.analyze import nodes_intent as ni
+        from config.analysis_config import load_metric_config
+        intent = {"analysis_mode": "general", "query_type": "lookup", "ambiguous": False,
+                  "primary_metric": "revenue", "metric_direction": "increase",
+                  "covariate": "", "guardrail_metrics": [], "clarifying_question": None,
+                  "reasoning": "t"}
+        monkeypatch.setattr(ni, "_llm_resolve_intent", lambda *a: (intent, {}))
+        out = ni.resolve_task_intent({
+            "task": "what is the total revenue vs last quarter",
+            "schema_context": "TABLE: t\nrevenue DOUBLE\n",
+            "metric_config": load_metric_config(), "analysis_mode": "general",
+        })
+        assert out["query_type"] == "exploratory"
+
+    def test_llm_lookup_on_a_plain_retrieval_stands(self, monkeypatch):
+        from agents.analyze import nodes_intent as ni
+        from config.analysis_config import load_metric_config
+        intent = {"analysis_mode": "general", "query_type": "lookup", "ambiguous": False,
+                  "primary_metric": "revenue", "metric_direction": "increase",
+                  "covariate": "", "guardrail_metrics": [], "clarifying_question": None,
+                  "reasoning": "t"}
+        monkeypatch.setattr(ni, "_llm_resolve_intent", lambda *a: (intent, {}))
+        out = ni.resolve_task_intent({
+            "task": "how many orders were placed yesterday",
+            "schema_context": "TABLE: t\nrevenue DOUBLE\n",
+            "metric_config": load_metric_config(), "analysis_mode": "general",
+        })
+        assert out["query_type"] == "lookup"

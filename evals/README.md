@@ -19,6 +19,8 @@ make eval-full     # DAU eval including LLM narrative (needs ANTHROPIC_API_KEY)
 | `generalisability_eval.py` | ≥80% | No | Clinical trial + ecommerce A/B on real sample CSVs |
 | `transactions_eval.py` | ≥80% | No | 15 golden Q&A answers on `customer_transactions_10k.csv` + faithfulness |
 | `fixture_eval.py` | ≥80% | No | Keyword + faithfulness scoring on `tests/fixtures/` CSVs |
+| `intent_routing_eval.py` | ≥85% strict | **Yes** | 19 golden tasks through the real `resolve_task_intent`: analysis_mode, lookup-vs-exploratory (the fast path skips both gates and the audit, so a false "lookup" is the dangerous error), primary metric. Nightly. Baseline 2026-08-19 on claude-sonnet-5: 94.7% strict — its first run found intent JSON truncated at `max_tokens=256` (now 1024 + effort low). |
+| `audit_eval.py` | ≥80% catch, 0 false positives | **Yes** | 8 planted critical errors (wrong gap, flipped direction, invented number) in a correct narrative against fixed tool results, through the production `run_narrative_audit`; also audits the clean narrative for false positives. Nightly. Baseline 2026-08-19: 8/8 caught, 0 FP. |
 | `sql_generation_eval.py` | ≥75% strict | **Yes** | 20 golden questions through the real `generate_sql` node, scored per stage (generated → safe → tables → executes → answer), incl. a decoy-table DB for table selection. **Not in the per-PR gate** — LLM live; run manually or nightly. Baseline 2026-08-03 on claude-sonnet-5: 100% strict. |
 
 ## Regression gate
