@@ -227,23 +227,29 @@ jobs:
       - name: Install Playwright browsers
         working-directory: frontend
         # `--with-deps` runs apt-get, and the runner image's default mirror
-        # (azure.archive.ubuntu.com) has stalled mid-`apt-get update` with no
-        # timeout — the step sat for 18 min until the job limit killed it,
-        # three runs in a row on 2026-08-19 — while archive.ubuntu.com
-        # answered in the same log. Point apt at the canonical mirror, give
-        # it a network timeout, and retry once so a transient blip does not
-        # cost a whole job.
+        # (azure.archive.ubuntu.com, selected via mirror+file:/etc/apt/
+        # apt-mirrors.txt) has stalled mid-`apt-get update` with no timeout —
+        # the step sat for 18 min until the job limit killed it, four runs in
+        # a row on 2026-08-19 — while archive.ubuntu.com answered in the same
+        # log. Pin apt to the canonical mirror, give it network timeouts, do
+        # the apt-get update ourselves under a hard timeout (killing any
+        # stalled apt before a retry so the lock is free), then let
+        # Playwright install its deps and the browser.
         run: |
           set -euo pipefail
-          if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
-            sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
-              /etc/apt/sources.list.d/ubuntu.sources
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            echo "https://archive.ubuntu.com/ubuntu/	priority:1" | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
           fi
+          sudo find /etc/apt -name '*.list' -o -name '*.sources' | \
+            xargs -r sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g'
           echo 'Acquire::http::Timeout "30"; Acquire::https::Timeout "30"; Acquire::Retries "3";' \
             | sudo tee /etc/apt/apt.conf.d/99-datapilot-timeouts >/dev/null
-          timeout 8m npx playwright install --with-deps chromium \
-            || { echo "::warning::Playwright install stalled — retrying once"; \
-                 timeout 8m npx playwright install --with-deps chromium; }
+          apt_update() { sudo timeout --kill-after=10s 4m apt-get update -qq; }
+          apt_update || { echo "::warning::apt-get update stalled — retrying once"; \
+                          sudo pkill -9 -x apt-get || true; sudo rm -f /var/lib/apt/lists/lock; \
+                          sleep 15; apt_update; }
+          timeout --kill-after=10s 6m npx playwright install-deps chromium
+          timeout --kill-after=10s 6m npx playwright install chromium
 
       - name: Run E2E tests
         working-directory: frontend
