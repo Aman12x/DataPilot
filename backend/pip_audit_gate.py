@@ -54,9 +54,29 @@ def main() -> int:
         sys.stderr.write("\npip-audit did not produce a JSON report\n")
         return 2
 
+    deps = report.get("dependencies", [])
+    if not deps:
+        sys.stderr.write("pip-audit reported zero dependencies — the requirements "
+                         "file was not read; refusing to pass an empty audit\n")
+        return 2
+
+    # A pin pip-audit could not look up (not on PyPI under that exact
+    # version: a local-version wheel, an extra index, a renamed package)
+    # comes back with skip_reason and no vulns key. Counting that as clean
+    # would silently stop auditing the pin; fail instead, the same as a
+    # network failure would.
+    skipped = [(d.get("name", "?"), d.get("skip_reason", "")) for d in deps if "skip_reason" in d]
+    if skipped:
+        sys.stderr.write(f"pip-audit skipped {len(skipped)} pin(s) it could not audit:\n")
+        for name, why in skipped:
+            sys.stderr.write(f"  {name}: {why}\n")
+        sys.stderr.write("Every pin must be auditable; pin a PyPI release or move "
+                         "the package out of backend/requirements.txt.\n")
+        return 2
+
     seen: set[str] = set()
     new: list[tuple[str, str, str, str]] = []
-    for dep in report.get("dependencies", []):
+    for dep in deps:
         for v in dep.get("vulns", []):
             vid = v["id"]
             seen.add(vid)
