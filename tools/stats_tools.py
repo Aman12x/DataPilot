@@ -57,7 +57,11 @@ def run_cuped(
     # Theta: OLS coefficient of metric ~ covariate (pooled)
     cov_matrix = np.cov(df[metric_col], df[covariate_col])
     var_covariate = float(df[covariate_col].var(ddof=1))
-    if var_covariate == 0:
+    # Relative, not exact: a constant covariate that is not exactly
+    # representable (0.1 everywhere) has var ≈ 1e-34, not 0, and θ would be
+    # noise/noise. Same tolerance as pushdown.cuped_from_stats.
+    mean_sq = float((df[covariate_col] ** 2).mean())
+    if var_covariate <= 1e-9 * mean_sq:
         raise ValueError(f"Covariate '{covariate_col}' has zero variance — cannot apply CUPED.")
 
     theta = cov_matrix[0, 1] / var_covariate

@@ -400,3 +400,66 @@ def test_pushdown_clean_extract_has_no_content_warnings(typed_db, monkeypatch):
     out = ns.execute_query(state)
     assert out["sufficient_stats"] is not None
     assert out["sql_validation_warnings"] == []
+
+
+# ── CUPED parity with a third arm; zero-variance guard; SRM from moments ────
+
+@pytest.fixture
+def three_arm_db(tmp_path):
+    import duckdb
+    path = str(tmp_path / "three.db")
+    con = duckdb.connect(path)
+    con.execute("CREATE TABLE u (user_id VARCHAR, variant VARCHAR, y DOUBLE, x DOUBLE, c DOUBLE)")
+    rows = []
+    for i in range(90):
+        v = ("control", "treatment", "holdout")[i % 3]
+        x = float(i % 11)
+        y = 2.0 + 0.5 * x + (0.3 if v == "treatment" else 0.0) + (0.7 if v == "holdout" else 0.0) + 0.1 * ((i * 7) % 5)
+        rows.append((f"u{i}", v, y, x, 0.1))
+    con.executemany("INSERT INTO u VALUES (?,?,?,?,?)", rows)
+    con.close()
+    return DBConnection("duckdb", path=path)
+
+
+def test_cuped_matches_pandas_with_a_third_arm(three_arm_db):
+    sql = "SELECT user_id, variant, y, x FROM u"
+    frame = three_arm_db.query(sql)
+    ref = stats_tools.run_cuped(frame, metric_col="y", covariate_col="x", variant_col="variant")
+    ss = pushdown.compute_sufficient_stats(
+        three_arm_db, sql, metric="y", covariate="x",
+        segment_cols=[], guardrail_metrics=[], total_rows=len(frame),
+    )
+    got = pushdown.cuped_from_stats(ss)
+    assert got.theta == pytest.approx(ref.theta, abs=1e-5)
+    assert got.cuped_ate == pytest.approx(ref.cuped_ate, abs=1e-5)
+    assert got.variance_reduction_pct == pytest.approx(ref.variance_reduction_pct, abs=1e-2)
+
+
+def test_cuped_constant_covariate_raises_like_pandas(three_arm_db):
+    sql = "SELECT user_id, variant, y, c FROM u"
+    frame = three_arm_db.query(sql)
+    with pytest.raises(ValueError, match="zero variance"):
+        stats_tools.run_cuped(frame, metric_col="y", covariate_col="c", variant_col="variant")
+    ss = pushdown.compute_sufficient_stats(
+        three_arm_db, sql, metric="y", covariate="c",
+        segment_cols=[], guardrail_metrics=[], total_rows=len(frame),
+    )
+    with pytest.raises(ValueError, match="zero variance"):
+        pushdown.cuped_from_stats(ss)
+
+
+def test_srm_node_reads_arm_sizes_from_moments_when_ttest_is_absent(three_arm_db):
+    from agents.analyze.nodes_analysis import check_srm_node
+    sql = "SELECT user_id, variant, y, x FROM u"
+    ss = pushdown.compute_sufficient_stats(
+        three_arm_db, sql, metric="y", covariate="x",
+        segment_cols=[], guardrail_metrics=[], total_rows=90,
+    )
+    out = check_srm_node({
+        "ttest_result": None,
+        "sufficient_stats": ss,
+        "query_result": pushdown.preview_frame(ss),   # 3 rows — must not be counted
+        "metric": "y",
+    })
+    srm = out["srm_result"]
+    assert srm.n_control == 30 and srm.n_treatment == 30

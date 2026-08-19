@@ -344,9 +344,16 @@ def check_srm_node(state: AgentState) -> dict:
     Falls back to counting the DataFrame directly if ttest_result is absent.
     """
     ttest = state.get("ttest_result")
+    ss = state.get("sufficient_stats")
     if ttest is not None:
         n_ctrl = ttest.n_control
         n_trt  = ttest.n_treatment
+    elif ss is not None:
+        # Pushdown mode: query_result is the per-variant preview frame (one
+        # row per arm), so counting it would test a 1:1 split of n=2. The
+        # arm sizes live in the in-warehouse moments.
+        n_ctrl = int(ss.overall.get("control").n) if ss.overall.get("control") else 0
+        n_trt  = int(ss.overall.get("treatment").n) if ss.overall.get("treatment") else 0
     else:
         df = _safe_df(state)
         mc = state.get("metric_config") or load_metric_config()

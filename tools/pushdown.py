@@ -400,20 +400,31 @@ def ttest_from_stats(
 
 
 def cuped_from_stats(ss: SufficientStats) -> CupedResult:
-    """CUPED from joint moments; mirrors stats_tools.run_cuped (pooled theta)."""
+    """CUPED from joint moments; mirrors stats_tools.run_cuped (pooled theta).
+
+    run_cuped pools EVERY row that survives dropna — a third arm (holdout)
+    contributes to θ, mean(X) and the before/after variances, while the ATE
+    itself is control vs treatment. Same here: pooled sums run over all
+    variants in `overall`, group means over the two arms.
+    """
     ctrl, trt = _arms(ss.overall)
     if ctrl.n_j < 2 or trt.n_j < 2:
         raise ValueError("Need at least 2 observations per variant for CUPED.")
 
-    n = ctrl.n_j + trt.n_j
-    sy = ctrl.sy_j + trt.sy_j
-    syy = ctrl.syy_j + trt.syy_j
-    sx = ctrl.sx_j + trt.sx_j
-    sxx = ctrl.sxx_j + trt.sxx_j
-    sxy = ctrl.sxy_j + trt.sxy_j
+    groups = list(ss.overall.values())
+    n = sum(g.n_j for g in groups)
+    sy = sum(g.sy_j for g in groups)
+    syy = sum(g.syy_j for g in groups)
+    sx = sum(g.sx_j for g in groups)
+    sxx = sum(g.sxx_j for g in groups)
+    sxy = sum(g.sxy_j for g in groups)
 
     var_x = (sxx - sx * sx / n) / (n - 1)
-    if var_x == 0:
+    # One-pass variance of a constant covariate is rounding noise, not zero
+    # (pandas' two-pass var() is exactly 0 and run_cuped raises). Relative
+    # tolerance against the mean square: below 1e-9 the covariate is constant
+    # for any purpose CUPED has, and θ = noise/noise would be reported.
+    if var_x <= 1e-9 * (sxx / n if n else 0.0):
         raise ValueError(f"Covariate '{ss.covariate}' has zero variance — cannot apply CUPED.")
     cov_xy = (sxy - sx * sy / n) / (n - 1)
     theta = cov_xy / var_x
