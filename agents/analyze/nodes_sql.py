@@ -301,6 +301,7 @@ def execute_query(state: AgentState) -> dict:
     current_sql = sql
     df: pd.DataFrame | None = None
     sufficient_stats = None
+    last_exc: Exception | None = None
 
     for attempt in range(_MAX_SQL_RETRIES + 1):
         try:
@@ -309,6 +310,7 @@ def execute_query(state: AgentState) -> dict:
                 logger.info("execute_query: SQL succeeded after %d LLM correction(s).", attempt)
             break
         except Exception as exc:
+            last_exc = exc
             if attempt < _MAX_SQL_RETRIES:
                 logger.warning(
                     "execute_query: attempt %d failed (%s) — requesting LLM correction.",
@@ -347,6 +349,18 @@ def execute_query(state: AgentState) -> dict:
 
     if df is None:
         if not is_ab:
+            from tools.db_tools import ResultTooLargeError
+            if isinstance(last_exc, ResultTooLargeError):
+                # The refusal is the point (6490e10): the analyst must see the
+                # row count and aggregate, not get a "no data" narrative from an
+                # empty frame. Returned as a blocking validation warning so the
+                # router sends the run back to query_gate.
+                logger.warning("execute_query: %s", redact_exception(last_exc))
+                return {
+                    "query_result":            pd.DataFrame(),
+                    "sql_validation_warnings": [str(last_exc)],
+                    "sufficient_stats":        None,
+                }
             logger.warning(
                 "execute_query: LLM SQL failed for general-mode query — "
                 "returning empty DataFrame. Check schema context and SQL generation prompt."

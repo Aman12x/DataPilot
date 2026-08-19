@@ -152,14 +152,24 @@ def _route_after_metric_config_gate(state: AgentState) -> str:
     return "metric_config_gate"
 
 
+# Substrings of sql_validation_warnings that must stop the run at query_gate.
+# "-row limit" is the ResultTooLargeError message (tools/db_tools.py).
+_BLOCKING_WARNING_MARKERS = ("0 rows", "-row limit")
+
+
+def _is_blocking_warning(w: str) -> bool:
+    return any(m in w for m in _BLOCKING_WARNING_MARKERS)
+
+
 def _route_after_execute_query(state: AgentState) -> str:
     """Route to the general analysis path or the A/B test path.
 
-    Hard-block on 0-row results: route back to query_gate so the analyst
-    sees the warning and must rewrite the SQL before any stats run.
+    Hard-block on 0-row results and on results over the materialisation
+    ceiling: route back to query_gate so the analyst sees the warning and
+    must rewrite the SQL before any stats run.
     """
     warnings = state.get("sql_validation_warnings") or []
-    if any("0 rows" in w for w in warnings):
+    if any(_is_blocking_warning(w) for w in warnings):
         return "query_gate"
     if state.get("analysis_mode", "ab_test") == "general":
         return "describe_data"
