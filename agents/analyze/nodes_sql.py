@@ -93,7 +93,7 @@ def generate_sql(state: AgentState) -> dict:
             week_col=mc.week_col,
             guardrail_metrics_csv=", ".join(mc.guardrail_metrics) or "(none)",
             segment_cols_csv=", ".join(mc.segment_cols),
-            sql_template=_canonical_experiment_sql(mc),
+            sql_template=_canonical_experiment_sql(mc, db_backend),
             few_shot_block=few_shot_block,
         )
 
@@ -391,7 +391,7 @@ def execute_query(state: AgentState) -> dict:
                 "sql_validation_warnings": [f"Query failed: {detail}"],
                 "sufficient_stats":        None,
             }
-        canonical_sql = _canonical_experiment_sql(mc)
+        canonical_sql = _canonical_experiment_sql(mc, state.get("db_backend", "duckdb"))
         try:
             df, sufficient_stats = _fetch_or_pushdown(state, canonical_sql, mc)
             current_sql = canonical_sql

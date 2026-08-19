@@ -50,6 +50,7 @@ from agents.tracer import flush, observe, trace_generation
 from memory import retriever, semantic_cache
 from memory.retriever import retrieve_sql_examples
 from memory.store import log_run, update_eval_score
+from tools.db_tools import quote_ident
 from tools.db_tools import quote_ident as _ident
 from tools import (
     anomaly_tools,
@@ -440,7 +441,7 @@ def _metric_context(mc: MetricConfig) -> str:
     return "\n".join(lines)
 
 
-def _canonical_experiment_sql(mc: "MetricConfig") -> str:
+def _canonical_experiment_sql(mc: "MetricConfig", backend: str = "postgres") -> str:
     """
     Return the known-good user-level experiment SQL for the current MetricConfig.
 
@@ -450,7 +451,10 @@ def _canonical_experiment_sql(mc: "MetricConfig") -> str:
     # Every name below comes from MetricConfig, which is LLM-inferred.
     # _sanitise_metric_config coerces names to schema members, but it returns
     # the config untouched when schema_context is empty, so it is not a
-    # whitelist. Quote the identifiers instead of trusting that.
+    # whitelist. Quote the identifiers instead of trusting that — with the
+    # target dialect's delimiter: double quotes are right for DuckDB and
+    # Postgres, but MySQL and BigQuery want backticks.
+    _ident = lambda name: quote_ident(name, backend)  # noqa: E731
     user_id   = _ident(mc.user_id_col)
     covariate = _ident(mc.covariate)
     date_col  = _ident(mc.date_col)

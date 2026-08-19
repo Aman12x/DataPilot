@@ -13,7 +13,9 @@ globals().update({k: v for k, v in vars(_shared).items() if not k.startswith("__
 
 def _aggregate_daily_from_events(conn, mc: MetricConfig) -> pd.DataFrame:
     """Fallback: aggregate daily metric from raw events when no timeseries_table."""
-    # MetricConfig names are LLM-inferred — quote, don't trust.
+    # MetricConfig names are LLM-inferred — quote, don't trust; and quote for
+    # the connection's dialect (backticks on MySQL/BigQuery).
+    _ident = lambda name: quote_ident(name, getattr(conn, "backend", "postgres"))  # noqa: E731
     if mc.metric_agg == "count":
         agg_expr = "COUNT(*)"
     else:
@@ -78,7 +80,7 @@ def load_auxiliary_data(state: AgentState) -> dict:
     # reintroduce the exact transfer the pushdown exists to avoid.
     if mc.funnel_table and state.get("sufficient_stats") is None:
         try:
-            result["funnel_df"] = conn.query(_funnel_join_sql(mc))
+            result["funnel_df"] = conn.query(_funnel_join_sql(mc, getattr(conn, "backend", "postgres")))
         except Exception as exc:
             logger.warning("load_auxiliary_data: funnel query failed: %s", redact_exception(exc))
     elif mc.funnel_table:
@@ -87,10 +89,12 @@ def load_auxiliary_data(state: AgentState) -> dict:
     return result
 
 
-def _funnel_join_sql(mc) -> str:
+def _funnel_join_sql(mc, backend: str = "postgres") -> str:
     """User-level funnel extract (funnel ⋈ experiment). One definition shared
     by the materializing loader and the warehouse-pushdown funnel, so the two
-    paths can never analyze different populations."""
+    paths can never analyze different populations. Quoted for `backend`:
+    the Postgres default was wrong on MySQL/BigQuery (backticks)."""
+    _ident = lambda name: quote_ident(name, backend)  # noqa: E731
     _uid = _ident(mc.user_id_col)
     return f"""\
 SELECT f.{_uid}, ex.{_ident(mc.variant_col)} AS variant, f.step, f.completed
@@ -685,8 +689,9 @@ def compute_funnel_node(state: AgentState) -> dict:
             return {}
         from tools import pushdown
         try:
+            db_push = _db_conn(state)
             result = pushdown.funnel_from_warehouse(
-                _db_conn(state), _funnel_join_sql(mc_push), mc_push.funnel_steps
+                db_push, _funnel_join_sql(mc_push, db_push.backend), mc_push.funnel_steps
             )
         except Exception as exc:
             logger.warning("compute_funnel: pushdown failed — %s", redact_exception(exc))

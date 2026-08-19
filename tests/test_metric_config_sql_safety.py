@@ -35,6 +35,8 @@ def _mc(**over) -> MetricConfig:
 class _CapturingDB:
     """Captures SQL and runs it against a real DuckDB so syntax is validated."""
 
+    backend = "duckdb"
+
     def __init__(self, con=None):
         self.sql: list[str] = []
         self._con = con
